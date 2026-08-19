@@ -128,3 +128,4 @@ function encodeSseEvent(event: RunEventV1): string {
 
 // PostgreSQL adapters are exported from the package seam alongside the journal.
 export * from "./postgres.js";
+export * from "./dispatcher.js";

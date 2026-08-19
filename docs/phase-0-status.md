@@ -22,21 +22,22 @@ Updated: 2026-08-19
 - Client SDK opens fetch-based SSE streams with a resumable event cursor.
 - PostgreSQL atomically allocates event sequences and inserts matching outbox records.
 - Outbox workers use leased `SKIP LOCKED` claims and owner-only acknowledgements.
+- The outbox dispatcher provides explicit at-least-once delivery and acknowledges only completed batches.
 - PostgreSQL behavior is exercised by an embedded PostgreSQL-compatible integration test.
 - Type checking passes across all implemented packages.
 
 ## Current automated baseline
 
 ```text
-Test files: 7 passed
-Tests:      15 passed
+Test files: 8 passed
+Tests:      16 passed
 Typecheck:  all implemented package tasks passed
 ```
 
 ## Pending Phase 0 evidence
 
 - PostgreSQL + pg-boss lease/recovery tracer bullet
-- Long-lived SSE HTTP handler and outbox dispatcher
+- Long-lived SSE HTTP handler and in-process live broadcaster
 - Run-scoped approval/rejection policy and durable continuation recovery
 - Docker runtime limits and cancellation PoC
 - 20 golden tasks, with 5 representative tasks executed for baseline

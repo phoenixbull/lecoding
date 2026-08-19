@@ -11,6 +11,7 @@ Phase 0 implementation of the v3.2 design: a recoverable, policy-enforced coding
 - Strict RunEvent V1 envelopes support ordered status events and `Last-Event-ID` resume.
 - Client SDK exposes a fetch-based event stream usable by Web and Electron clients.
 - PostgreSQL event persistence writes its leased delivery outbox atomically.
+- The event dispatcher delivers outbox batches with documented at-least-once semantics.
 - PolicyEngine hard-denies Docker socket reads even in full-access mode.
 - GitWorkspace creates an isolated worktree and leaves the source checkout unchanged.
 
