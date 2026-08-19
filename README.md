@@ -12,6 +12,7 @@ Phase 0 implementation of the v3.2 design: a recoverable, policy-enforced coding
 - Client SDK exposes a fetch-based event stream usable by Web and Electron clients.
 - PostgreSQL event persistence writes its leased delivery outbox atomically.
 - The event dispatcher delivers outbox batches with documented at-least-once semantics.
+- The SSE handler combines durable replay with race-safe, deduplicated live delivery.
 - PolicyEngine hard-denies Docker socket reads even in full-access mode.
 - GitWorkspace creates an isolated worktree and leaves the source checkout unchanged.
 

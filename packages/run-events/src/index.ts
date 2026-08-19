@@ -5,6 +5,7 @@ import {
   type RunEventV1,
   type RunId
 } from "@lecoding/contracts";
+import { encodeRunEventSse, parseRunEventCursor } from "./sse-codec.js";
 
 /** Input accepted from RunEngine before sequence and timestamp are assigned. */
 export interface PublishRunEvent {
@@ -69,9 +70,9 @@ class DefaultRunEventJournal implements RunEventJournal {
   }
 
   async resume(runId: RunId, lastEventId?: string): Promise<string> {
-    const sequence = parseLastEventId(lastEventId);
+    const sequence = parseRunEventCursor(lastEventId);
     const events = await this.options.repository.readAfter(runId, sequence);
-    return events.map(encodeSseEvent).join("");
+    return events.map(encodeRunEventSse).join("");
   }
 }
 
@@ -106,26 +107,8 @@ class InMemoryRunEventRepository implements RunEventRepository {
   }
 }
 
-/** Last-Event-ID is a sequence cursor, never an arbitrary storage identifier. */
-function parseLastEventId(lastEventId: string | undefined): number {
-  if (lastEventId === undefined || lastEventId === "") {
-    return 0;
-  }
-  if (!/^(0|[1-9]\d*)$/.test(lastEventId)) {
-    throw new Error("Invalid Last-Event-ID");
-  }
-  const sequence = Number(lastEventId);
-  if (!Number.isSafeInteger(sequence)) {
-    throw new Error("Invalid Last-Event-ID");
-  }
-  return sequence;
-}
-
-/** Encodes one complete SSE frame; JSON prevents embedded newlines from splitting data fields. */
-function encodeSseEvent(event: RunEventV1): string {
-  return `id: ${event.sequence}\nevent: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`;
-}
-
 // PostgreSQL adapters are exported from the package seam alongside the journal.
 export * from "./postgres.js";
 export * from "./dispatcher.js";
+export * from "./sse-codec.js";
+export * from "./sse.js";
