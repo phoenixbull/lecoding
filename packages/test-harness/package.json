@@ -1,0 +1,15 @@
+{
+  "name": "@lecoding/test-harness",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": "./src/index.ts",
+  "dependencies": {
+    "@lecoding/contracts": "workspace:*",
+    "@lecoding/policy": "workspace:*",
+    "@lecoding/run-engine": "workspace:*",
+    "@lecoding/run-environment": "workspace:*",
+    "@lecoding/run-events": "workspace:*",
+    "@lecoding/verifier": "workspace:*"
+  }
+}

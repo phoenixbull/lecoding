@@ -1,0 +1,9 @@
+node_modules/
+.turbo/
+dist/
+coverage/
+.env
+.env.local
+.artifacts/
+.worktrees/
+*.log
