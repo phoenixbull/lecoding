@@ -67,6 +67,10 @@ importers:
       '@lecoding/contracts':
         specifier: workspace:*
         version: link:../contracts
+    devDependencies:
+      '@electric-sql/pglite':
+        specifier: ^0.5.5
+        version: 0.5.5
 
   packages/test-harness:
     dependencies:
@@ -98,6 +102,9 @@ importers:
   packages/workspace: {}
 
 packages:
+
+  '@electric-sql/pglite@0.5.5':
+    resolution: {integrity: sha512-QeZ+oB7QaU4EJj2awrB8hwFZ5TXxLRBQ9Gfq0dQauYDdWsRtuWRCERgtri35vRfL07KQHlVlc/4Qxvn7a5AXeA==}
 
   '@esbuild/aix-ppc64@0.28.2':
     resolution: {integrity: sha512-XExcO+dvLKvVtNTibSTBej1NCAbaGhWn9Ww1ZPx80qsahhPFe/8jgWP0IchNe0F3HwkU7n8ejhH8bjonqht8mQ==}
@@ -701,6 +708,8 @@ packages:
     hasBin: true
 
 snapshots:
+
+  '@electric-sql/pglite@0.5.5': {}
 
   '@esbuild/aix-ppc64@0.28.2':
     optional: true

@@ -20,20 +20,23 @@ Updated: 2026-08-19
 - The in-memory RunEventJournal assigns monotonic per-Run sequences and resumes after `Last-Event-ID`.
 - RunEngine publishes ordered status events for Web and future PC clients.
 - Client SDK opens fetch-based SSE streams with a resumable event cursor.
+- PostgreSQL atomically allocates event sequences and inserts matching outbox records.
+- Outbox workers use leased `SKIP LOCKED` claims and owner-only acknowledgements.
+- PostgreSQL behavior is exercised by an embedded PostgreSQL-compatible integration test.
 - Type checking passes across all implemented packages.
 
 ## Current automated baseline
 
 ```text
-Test files: 6 passed
-Tests:      14 passed
+Test files: 7 passed
+Tests:      15 passed
 Typecheck:  all implemented package tasks passed
 ```
 
 ## Pending Phase 0 evidence
 
 - PostgreSQL + pg-boss lease/recovery tracer bullet
-- PostgreSQL event repository, transactional outbox, and long-lived SSE HTTP handler
+- Long-lived SSE HTTP handler and outbox dispatcher
 - Run-scoped approval/rejection policy and durable continuation recovery
 - Docker runtime limits and cancellation PoC
 - 20 golden tasks, with 5 representative tasks executed for baseline

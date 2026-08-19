@@ -125,3 +125,6 @@ function parseLastEventId(lastEventId: string | undefined): number {
 function encodeSseEvent(event: RunEventV1): string {
   return `id: ${event.sequence}\nevent: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`;
 }
+
+// PostgreSQL adapters are exported from the package seam alongside the journal.
+export * from "./postgres.js";
