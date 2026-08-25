@@ -32,6 +32,8 @@ importers:
 
   packages/contracts: {}
 
+  packages/golden-evals: {}
+
   packages/policy:
     dependencies:
       '@lecoding/contracts':

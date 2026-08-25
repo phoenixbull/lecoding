@@ -53,23 +53,25 @@ Updated: 2026-08-25
 - PostgreSQL-backed `ToolCallLedger` claims `(run_id, call_id)` before execution and records the result immediately after the environment returns. A completed result is replayed into the Run snapshot without executing the tool again; an unfinished claim is surfaced as `tool_call_outcome_unknown` and is never automatically replayed.
 - The side-effect crash window has a fault-injection test: Worker A executes the command and loses persistence before recording completion; Worker B observes the durable unfinished claim, performs zero additional commands, and fails the Run safely for reconciliation.
 - `PostgresRunTransitionWriter` atomically applies the Run snapshot CAS, allocates the next event sequence, inserts the `status_changed` event, and queues its outbox record in one SQL statement. RunEngine delegates transition ownership to this seam when injected; a stale snapshot produces neither a state write nor an orphan event.
+- A deterministic golden evaluation catalog now contains 20 initially failing, dependency-free repository tasks across bug-fix, feature, security, documentation, and performance categories. The stable five-task representative set covers one category each and includes both Node and Python fixtures; every task carries explicit acceptance criteria and shell-free verification argv.
+- `createCodexExecGoldenTaskExecutor` materializes every task as a fresh Git repository, invokes non-interactive Codex with workspace-only writes and approvals disabled, parses JSONL token usage, calculates cost from an explicit model pricing snapshot, and independently executes the fixture verification commands. Missing usage fails closed so an unverifiable invocation cannot be recorded as a zero-cost success.
 - Type checking passes across all implemented packages.
 
 ## Current automated baseline
 
 ```text
-Test files: 28 passed with Docker Desktop daemon available
-Tests:      101 passed, 0 skipped with Docker Desktop daemon available
+Test files: 32 passed
+Tests:      106 passed, 2 Docker live tests skipped in the latest sandboxed run
 Typecheck:  all implemented package tasks passed
 ```
 
 ## Pending Phase 0 evidence
 
 - Repeat the Docker isolation matrix on the target Linux Worker host
-- 20 golden tasks, with 5 representative tasks executed for baseline
+- Execute the 5 selected golden tasks against a real model and persist the report
 - Real model gateway PoC proving stable structured tool calls
 - Cost and duration baseline for 5 representative tasks
 
 ## Environment note
 
-Docker Desktop 27.5.1 was running for this baseline and all six Docker PoC tests passed. Docker Desktop on macOS is development evidence only; no target-Linux isolation claim is considered verified yet. PostgreSQL CLI is not installed, so PostgreSQL adapters remain verified with embedded PGlite, and no real pg-boss recovery claim is considered verified yet.
+Docker Desktop 27.5.1 previously ran all six Docker PoC tests successfully. The latest sandboxed full-suite run could not access the daemon and therefore skipped the two live-container cases; the four deterministic Docker-plan tests still passed. Docker Desktop on macOS is development evidence only, and no target-Linux isolation claim is considered verified yet. The local Codex CLI is installed, but nested non-interactive execution from this Codex desktop host was terminated with exit code 137 before emitting JSONL, so no real-model or cost numbers are claimed. PostgreSQL CLI is not installed, so PostgreSQL adapters remain verified with embedded PGlite, and no real pg-boss recovery claim is considered verified yet.

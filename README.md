@@ -19,6 +19,7 @@ Phase 0 implementation of the v3.2 design: a recoverable, policy-enforced coding
 - PolicyEngine hard-denies Docker socket reads even in full-access mode.
 - GitWorkspace creates an isolated worktree and leaves the source checkout unchanged.
 - Docker creation uses an auditable fixed-security plan; the macOS Docker Desktop PoC verifies non-root/read-only execution, bounded resources, scoped writable mounts, and cancellation.
+- A 20-task deterministic golden catalog covers Node and Python changes; five stable cross-category representatives can run through an isolated, cost-accounted Codex CLI executor.
 
 ## Commands
 
@@ -40,8 +41,9 @@ packages/policy       capability authorization and hard denies
 packages/verifier     verification interface
 packages/workspace    Git worktree isolation
 packages/test-harness in-memory adapters for interface tests
+packages/golden-evals deterministic task fixtures and real-model baseline runner seams
 docker/               sandbox image and runtime notes
 docs/                 threat model and Phase 0 evidence
 ```
 
-The current implementation has PostgreSQL adapters for Run snapshots, tool-call idempotency, leases, cancellation, and events, while tests can still use in-memory adapters. A real model gateway, production verifier, pg-boss composition, and the Web/Worker processes remain pending Phase 0/1 work.
+The current implementation has PostgreSQL adapters for Run snapshots, tool-call idempotency, leases, cancellation, and events, while tests can still use in-memory adapters. The golden-task catalog and Codex CLI execution adapter are implemented, but the five-task live model/cost report has not yet been captured. A RunEngine-native real model gateway, production verifier, pg-boss composition, and the Web/Worker processes remain pending Phase 0/1 work.
