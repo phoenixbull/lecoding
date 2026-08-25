@@ -60,13 +60,15 @@ Updated: 2026-08-25
 - Responses continuation is now durable Run state: every tool-call turn may carry the provider `response.id`, RunEngine persists it alongside the executed or denied tool result, and the next model request uses it as `previous_response_id` with a matching `function_call_output`. A composition test drives the Responses adapter through RunEngine command execution and Verifier success.
 - `createOpenAiResponsesClient` provides the HTTP transport boundary, defaulting to the official HTTPS endpoint, with Bearer authentication, a bounded request timeout, configurable compatible endpoint, and status-only provider failures so credentials and remote error bodies do not enter Run failure text.
 - Provider selection is no longer tied to OpenAI credentials or model names: `loadOpenAiCompatibleModelConfig` reads the neutral `LECODING_MODEL_PROTOCOL`, `LECODING_MODEL_BASE_URL`, `LECODING_MODEL_API_KEY`, and `LECODING_MODEL_ID` settings, while `createOpenAiCompatibleAgentModel` composes them into the existing gateway. Remote plaintext endpoints are rejected before credentials can be sent; HTTP remains available only for loopback development servers.
+- Providers exposing only the OpenAI Chat Completions contract are now supported through `openai_chat_completions`. The adapter maps the same strict `execute_command` seam to chat tool calls, persists the stateless assistant/tool message history as the Run continuation, validates that history and its call ID before reuse, and rejects corrupted continuation state before contacting the provider.
+- A live two-turn smoke test against the configured third-party provider completed on 2026-08-25: the first Chat Completions request produced one valid `execute_command` call and durable continuation, and the second request accepted the synthetic command result and returned a completed assistant turn. No provider secret, model response text, or model identifier was captured in the evidence.
 - Type checking passes across all implemented packages.
 
 ## Current automated baseline
 
 ```text
 Test files: 36 passed
-Tests:      116 passed, 2 Docker live tests skipped in the latest sandboxed run
+Tests:      120 passed, 2 Docker live tests skipped in the latest sandboxed run
 Typecheck:  all implemented package tasks passed
 ```
 
@@ -74,9 +76,8 @@ Typecheck:  all implemented package tasks passed
 
 - Repeat the Docker isolation matrix on the target Linux Worker host
 - Execute the 5 selected golden tasks against a real model and persist the report
-- Execute a live provider smoke test proving the structured tool-call contract
 - Cost and duration baseline for 5 representative tasks
 
 ## Environment note
 
-Docker Desktop 27.5.1 previously ran all six Docker PoC tests successfully. The latest sandboxed full-suite run could not access the daemon and therefore skipped the two live-container cases; the four deterministic Docker-plan tests still passed. Docker Desktop on macOS is development evidence only, and no target-Linux isolation claim is considered verified yet. The local Codex CLI is installed, but nested non-interactive execution from this Codex desktop host was terminated with exit code 137 before emitting JSONL. No `LECODING_MODEL_API_KEY` is configured, so the Responses-compatible gateway is verified against recorded protocol fixtures rather than a live provider; no real-model or cost numbers are claimed. PostgreSQL CLI is not installed, so PostgreSQL adapters remain verified with embedded PGlite, and no real pg-boss recovery claim is considered verified yet.
+Docker Desktop 27.5.1 previously ran all six Docker PoC tests successfully. The latest sandboxed full-suite run could not access the daemon and therefore skipped the two live-container cases; the four deterministic Docker-plan tests still passed. Docker Desktop on macOS is development evidence only, and no target-Linux isolation claim is considered verified yet. The local Codex CLI is installed, but nested non-interactive execution from this Codex desktop host was terminated with exit code 137 before emitting JSONL. A third-party Chat Completions provider is configured locally and its two-turn tool-call contract has been verified, but no five-task real-model quality, cost, or duration numbers are claimed. PostgreSQL CLI is not installed, so PostgreSQL adapters remain verified with embedded PGlite, and no real pg-boss recovery claim is considered verified yet.

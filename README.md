@@ -41,7 +41,7 @@ LECODING_MODEL_API_KEY=replace-with-provider-secret
 LECODING_MODEL_ID=provider-model-id
 ```
 
-The endpoint must implement `POST /responses`, strict function calls, `previous_response_id`, and `function_call_output`. Providers that expose only `/chat/completions` are not compatible with this adapter. Remote endpoints must use HTTPS; local development endpoints may use HTTP on loopback addresses.
+Set `LECODING_MODEL_PROTOCOL` to `openai_responses` for `POST /responses`, or to `openai_chat_completions` for providers exposing `POST /chat/completions`. Both adapters require function/tool calling; Responses uses `previous_response_id`, while Chat Completions persists and validates the message history needed to continue its stateless protocol. Remote endpoints must use HTTPS; local development endpoints may use HTTP on loopback addresses.
 
 Before starting a local Worker, export the ignored file into its process environment with `set -a; source .env.local; set +a`. Worker composition then applies `loadOpenAiCompatibleModelConfig(process.env)` and `createOpenAiCompatibleAgentModel(...)`. The repository does not implicitly parse dotenv files, and a production Worker should receive the same variables from its secret manager.
 
@@ -58,9 +58,9 @@ packages/verifier     verification interface
 packages/workspace    Git worktree isolation
 packages/test-harness in-memory adapters for interface tests
 packages/golden-evals deterministic task fixtures and real-model baseline runner seams
-packages/openai-model strict Responses API transport and AgentModel adapter
+packages/openai-model strict Responses and Chat Completions transports and AgentModel adapters
 docker/               sandbox image and runtime notes
 docs/                 threat model and Phase 0 evidence
 ```
 
-The current implementation has PostgreSQL adapters for Run snapshots, tool-call idempotency, leases, cancellation, and events, while tests can still use in-memory adapters. The golden-task catalog, Codex CLI evaluation adapter, and RunEngine-native Responses API gateway are implemented, but no live provider call or five-task model/cost report has yet been captured. A production verifier, pg-boss composition, and the Web/Worker processes remain pending Phase 0/1 work.
+The current implementation has PostgreSQL adapters for Run snapshots, tool-call idempotency, leases, cancellation, and events, while tests can still use in-memory adapters. The golden-task catalog, Codex CLI evaluation adapter, and RunEngine-native OpenAI-compatible model gateway are implemented, but no five-task model/cost report has yet been captured. A production verifier, pg-boss composition, and the Web/Worker processes remain pending Phase 0/1 work.
