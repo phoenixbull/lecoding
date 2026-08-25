@@ -20,7 +20,7 @@ Phase 0 implementation of the v3.2 design: a recoverable, policy-enforced coding
 - GitWorkspace creates an isolated worktree and leaves the source checkout unchanged.
 - Docker creation uses an auditable fixed-security plan; the macOS Docker Desktop PoC verifies non-root/read-only execution, bounded resources, scoped writable mounts, and cancellation.
 - A 20-task deterministic golden catalog covers Node and Python changes; five stable cross-category representatives can run through an isolated, cost-accounted Codex CLI executor.
-- A Responses API model gateway maps strict `execute_command` function calls into RunEngine turns and durably carries provider continuation IDs through tool results.
+- A provider-neutral Responses-compatible gateway maps strict `execute_command` function calls into RunEngine turns and durably carries provider continuation IDs through tool results.
 
 ## Commands
 
@@ -29,6 +29,21 @@ pnpm install
 pnpm test
 pnpm typecheck
 ```
+
+## Model provider configuration
+
+The model gateway is vendor-neutral at configuration time. Copy `.env.example` to the ignored `.env.local` and set:
+
+```dotenv
+LECODING_MODEL_PROTOCOL=openai_responses
+LECODING_MODEL_BASE_URL=https://api.provider.example/v1
+LECODING_MODEL_API_KEY=replace-with-provider-secret
+LECODING_MODEL_ID=provider-model-id
+```
+
+The endpoint must implement `POST /responses`, strict function calls, `previous_response_id`, and `function_call_output`. Providers that expose only `/chat/completions` are not compatible with this adapter. Remote endpoints must use HTTPS; local development endpoints may use HTTP on loopback addresses.
+
+Before starting a local Worker, export the ignored file into its process environment with `set -a; source .env.local; set +a`. Worker composition then applies `loadOpenAiCompatibleModelConfig(process.env)` and `createOpenAiCompatibleAgentModel(...)`. The repository does not implicitly parse dotenv files, and a production Worker should receive the same variables from its secret manager.
 
 ## Workspace
 

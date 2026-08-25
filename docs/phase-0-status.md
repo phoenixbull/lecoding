@@ -59,13 +59,14 @@ Updated: 2026-08-25
 - `createOpenAiResponsesAgentModel` maps the Responses API into the existing `AgentModel` seam with one strict `execute_command` function schema and parallel tool calls disabled. Provider output is treated as untrusted: incomplete responses, unknown tools, multiple calls, missing call IDs, malformed JSON, and invalid argv all fail before PolicyEngine or RunEnvironment can see an action.
 - Responses continuation is now durable Run state: every tool-call turn may carry the provider `response.id`, RunEngine persists it alongside the executed or denied tool result, and the next model request uses it as `previous_response_id` with a matching `function_call_output`. A composition test drives the Responses adapter through RunEngine command execution and Verifier success.
 - `createOpenAiResponsesClient` provides the HTTP transport boundary, defaulting to the official HTTPS endpoint, with Bearer authentication, a bounded request timeout, configurable compatible endpoint, and status-only provider failures so credentials and remote error bodies do not enter Run failure text.
+- Provider selection is no longer tied to OpenAI credentials or model names: `loadOpenAiCompatibleModelConfig` reads the neutral `LECODING_MODEL_PROTOCOL`, `LECODING_MODEL_BASE_URL`, `LECODING_MODEL_API_KEY`, and `LECODING_MODEL_ID` settings, while `createOpenAiCompatibleAgentModel` composes them into the existing gateway. Remote plaintext endpoints are rejected before credentials can be sent; HTTP remains available only for loopback development servers.
 - Type checking passes across all implemented packages.
 
 ## Current automated baseline
 
 ```text
-Test files: 35 passed
-Tests:      113 passed, 2 Docker live tests skipped in the latest sandboxed run
+Test files: 36 passed
+Tests:      116 passed, 2 Docker live tests skipped in the latest sandboxed run
 Typecheck:  all implemented package tasks passed
 ```
 
@@ -78,4 +79,4 @@ Typecheck:  all implemented package tasks passed
 
 ## Environment note
 
-Docker Desktop 27.5.1 previously ran all six Docker PoC tests successfully. The latest sandboxed full-suite run could not access the daemon and therefore skipped the two live-container cases; the four deterministic Docker-plan tests still passed. Docker Desktop on macOS is development evidence only, and no target-Linux isolation claim is considered verified yet. The local Codex CLI is installed, but nested non-interactive execution from this Codex desktop host was terminated with exit code 137 before emitting JSONL. `OPENAI_API_KEY` is also absent, so the Responses gateway is verified against recorded protocol fixtures rather than a live provider; no real-model or cost numbers are claimed. PostgreSQL CLI is not installed, so PostgreSQL adapters remain verified with embedded PGlite, and no real pg-boss recovery claim is considered verified yet.
+Docker Desktop 27.5.1 previously ran all six Docker PoC tests successfully. The latest sandboxed full-suite run could not access the daemon and therefore skipped the two live-container cases; the four deterministic Docker-plan tests still passed. Docker Desktop on macOS is development evidence only, and no target-Linux isolation claim is considered verified yet. The local Codex CLI is installed, but nested non-interactive execution from this Codex desktop host was terminated with exit code 137 before emitting JSONL. No `LECODING_MODEL_API_KEY` is configured, so the Responses-compatible gateway is verified against recorded protocol fixtures rather than a live provider; no real-model or cost numbers are claimed. PostgreSQL CLI is not installed, so PostgreSQL adapters remain verified with embedded PGlite, and no real pg-boss recovery claim is considered verified yet.

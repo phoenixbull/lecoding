@@ -74,6 +74,25 @@ export interface OpenAiResponsesClientOptions {
   fetch?: OpenAiFetch;
 }
 
+/** Provider-neutral configuration for an endpoint implementing the Responses contract. */
+export interface OpenAiCompatibleModelConfig {
+  protocol: "openai_responses";
+  baseUrl: string;
+  apiKey: string;
+  model: string;
+}
+
+/** Environment source accepted by Worker composition and deterministic tests. */
+export type ModelEnvironment = Readonly<Record<string, string | undefined>>;
+
+/** Composition inputs for any vendor implementing the OpenAI Responses contract. */
+export interface OpenAiCompatibleAgentModelOptions {
+  config: OpenAiCompatibleModelConfig;
+  timeoutMs?: number;
+  fetch?: OpenAiFetch;
+  instructions?: string;
+}
+
 /** Construction inputs for the RunEngine-native Responses API adapter. */
 export interface OpenAiResponsesAgentModelOptions {
   model: string;
@@ -102,6 +121,60 @@ const EXECUTE_COMMAND_TOOL: OpenAiFunctionTool = {
 
 const DEFAULT_INSTRUCTIONS =
   "Act as a coding agent. Use execute_command when repository inspection or modification is required. Finish only when the acceptance criteria are satisfied.";
+
+/** Loads one OpenAI Responses-compatible provider without assuming vendor names. */
+export function loadOpenAiCompatibleModelConfig(
+  environment: ModelEnvironment
+): OpenAiCompatibleModelConfig {
+  const protocol = requireModelSetting(environment, "LECODING_MODEL_PROTOCOL");
+  if (protocol !== "openai_responses") {
+    throw new Error(
+      `Unsupported LECODING_MODEL_PROTOCOL: ${protocol}; expected openai_responses`
+    );
+  }
+  const baseUrl = normalizeBaseUrl(
+    requireModelSetting(environment, "LECODING_MODEL_BASE_URL")
+  );
+  return {
+    protocol,
+    baseUrl,
+    apiKey: requireModelSetting(environment, "LECODING_MODEL_API_KEY"),
+    model: requireModelSetting(environment, "LECODING_MODEL_ID")
+  };
+}
+
+/** Composes the provider-neutral configuration into the existing AgentModel seam. */
+export function createOpenAiCompatibleAgentModel(
+  options: OpenAiCompatibleAgentModelOptions
+): AgentModel {
+  if (options.config.protocol !== "openai_responses") {
+    throw new Error(`Unsupported model protocol: ${String(options.config.protocol)}`);
+  }
+  const client = createOpenAiResponsesClient({
+    apiKey: options.config.apiKey,
+    baseUrl: options.config.baseUrl,
+    ...(options.timeoutMs !== undefined ? { timeoutMs: options.timeoutMs } : {}),
+    ...(options.fetch !== undefined ? { fetch: options.fetch } : {})
+  });
+  return createOpenAiResponsesAgentModel({
+    model: options.config.model,
+    client,
+    ...(options.instructions !== undefined
+      ? { instructions: options.instructions }
+      : {})
+  });
+}
+
+function requireModelSetting(
+  environment: ModelEnvironment,
+  name: string
+): string {
+  const value = environment[name]?.trim();
+  if (!value) {
+    throw new Error(`Missing required model setting: ${name}`);
+  }
+  return value;
+}
 
 /** Creates the production HTTP client without exposing its API key to model inputs. */
 export function createOpenAiResponsesClient(
@@ -151,10 +224,14 @@ async function defaultOpenAiFetch(
 }
 
 function normalizeBaseUrl(value: string): string {
-  // URL parsing prevents non-HTTP schemes from reaching the credential-bearing request.
+  // Remote plaintext endpoints would expose the bearer credential in transit.
   const url = new URL(value);
   if (url.protocol !== "https:" && url.protocol !== "http:") {
-    throw new Error("OpenAI base URL must use HTTP or HTTPS");
+    throw new Error("Model base URL must use HTTP or HTTPS");
+  }
+  const loopbackHosts = new Set(["localhost", "127.0.0.1", "[::1]"]);
+  if (url.protocol === "http:" && !loopbackHosts.has(url.hostname)) {
+    throw new Error("Remote model base URL must use HTTPS");
   }
   return url.toString().replace(/\/$/u, "");
 }

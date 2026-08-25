@@ -4,6 +4,7 @@ dist/
 coverage/
 .env
 .env.local
+.env*.swp
 .artifacts/
 .worktrees/
 *.log
