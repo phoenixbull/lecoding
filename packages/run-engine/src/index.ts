@@ -199,6 +199,8 @@ export type AgentModelTurn =
   | {
       type: "tool_call";
       callId: string;
+      /** Provider continuation persisted with the tool result for the next model turn. */
+      continuationId?: string;
       tool: "execute_command";
       arguments: { argv: string[] };
     }
@@ -207,12 +209,19 @@ export type AgentModelTurn =
 export type ModelToolResult =
   | {
       callId: string;
+      /** Provider response that issued this call; required for durable API continuation. */
+      continuationId?: string;
       status: "executed";
       exitCode: number;
       stdout: string;
       stderr: string;
     }
-  | { callId: string; status: "denied"; reason: string };
+  | {
+      callId: string;
+      continuationId?: string;
+      status: "denied";
+      reason: string;
+    };
 
 export interface AgentModel {
   next(input: AgentModelInput): Promise<AgentModelTurn>;
@@ -509,7 +518,6 @@ class DefaultRunEngine implements RunEngine, RunResumer, DisposableEngine {
 
     const toolCall = stored.pendingToolCall;
     delete stored.pendingApproval;
-    delete stored.pendingToolCall;
     await this.transition(stored, "running", token);
 
     const borrowed = this.dependencies.handles.borrow(stored.id);
@@ -520,9 +528,14 @@ class DefaultRunEngine implements RunEngine, RunResumer, DisposableEngine {
       if (command.type === "reject") {
         stored.toolResults.push({
           callId: toolCall.callId,
+          ...(toolCall.continuationId
+            ? { continuationId: toolCall.continuationId }
+            : {}),
           status: "denied",
           reason: "User rejected the tool call"
         });
+        // The denied result is now the durable continuation; the pending call is consumed.
+        delete stored.pendingToolCall;
         stored.version = await this.dependencies.store.save(stored);
       } else {
         await this.performWith(stored, toolCall, borrowed, token);
@@ -724,14 +737,28 @@ class DefaultRunEngine implements RunEngine, RunResumer, DisposableEngine {
       }
       stored = current;
 
-      const turn = await this.dependencies.model.next({
-        runId: stored.id,
-        run: stored.input,
-        toolResults: stored.toolResults
-      });
+      let turn: Extract<AgentModelTurn, { type: "tool_call" }>;
+      if (stored.pendingToolCall) {
+        // A replacement Worker resumes the exact provider call instead of minting a new callId.
+        turn = stored.pendingToolCall;
+      } else {
+        const modelTurn = await this.dependencies.model.next({
+          runId: stored.id,
+          run: stored.input,
+          toolResults: stored.toolResults
+        });
 
-      if (turn.type === "completed") {
-        break;
+        if (modelTurn.type === "completed") {
+          break;
+        }
+        turn = modelTurn;
+        /*
+         * Persist the provider call before policy evaluation or any side effect. If this
+         * Worker dies after perform, a replacement reuses callId + continuationId and the
+         * tool ledger can recover the same claim without invoking the model again.
+         */
+        stored.pendingToolCall = turn;
+        stored.version = await this.dependencies.store.save(stored);
       }
 
       const decision = await this.dependencies.policy.authorize({
@@ -934,9 +961,14 @@ class DefaultRunEngine implements RunEngine, RunResumer, DisposableEngine {
     }
     stored.toolResults.push({
       callId: turn.callId,
+      ...(turn.continuationId
+        ? { continuationId: turn.continuationId }
+        : {}),
       status: "executed",
       ...result
     });
+    // Result and pending-call consumption land in the same optimistic snapshot save.
+    delete stored.pendingToolCall;
     // 回填新版本,使下一次保存仍基于最新观察到的版本
     stored.version = await this.dependencies.store.save(stored);
   }

@@ -34,6 +34,16 @@ importers:
 
   packages/golden-evals: {}
 
+  packages/openai-model:
+    dependencies:
+      '@lecoding/run-engine':
+        specifier: workspace:*
+        version: link:../run-engine
+    devDependencies:
+      '@lecoding/test-harness':
+        specifier: workspace:*
+        version: link:../test-harness
+
   packages/policy:
     dependencies:
       '@lecoding/contracts':

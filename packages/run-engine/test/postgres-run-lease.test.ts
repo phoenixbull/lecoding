@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach } from "vitest";
 import { PGlite } from "@electric-sql/pglite";
 import { createPostgresRunLease } from "../src/postgres-run-lease.js";
+import { createPostgresToolCallLedger } from "../src/postgres-tool-call-ledger.js";
 import type { RunLeaseToken } from "@lecoding/contracts";
 import { createIntervalRecoveryWorker } from "../src/recovery-worker.js";
 import { createTestHarness, InMemoryRunStore } from "@lecoding/test-harness";
@@ -144,13 +145,14 @@ describe("recovery worker (postgres-backed)", () => {
     await createPostgresRunLease(pg);
   });
 
-  it("resumes a run whose lease has expired (simulated worker crash)", async () => {
+  it("recovers an expired run without replaying its in-flight command", async () => {
     // pg-boss recovery tracer bullet:Worker A 驱动到 perform 中途"崩溃"
     // (perform 长 await 无心跳续约,lease 过期),Worker B 的 recovery worker
     // 通过扫描过期 lease 发现该 Run,调用 resumer.resume 接管。
-    // 接管后 B 走 environment_offline 自动恢复 + 重新 prepare,完成 Run。
+    // 接管后 B 恢复持久化 callId,看到 unfinished claim 后停在人工核对终态。
     const sharedStore = new InMemoryRunStore();
     const lease = await createPostgresRunLease(pg);
+    const toolCalls = await createPostgresToolCallLedger(pg);
     let resolvePerform!: () => void;
     let performCount = 0;
     const environment: RunEnvironment = {
@@ -176,11 +178,12 @@ describe("recovery worker (postgres-backed)", () => {
         arguments: { argv: ["echo", "hello"] }
       })
     };
+    let modelBCalls = 0;
     const modelB = {
-      next: async () => ({
-        type: "completed" as const,
-        summary: "B took over and finished"
-      })
+      next: async () => {
+        modelBCalls += 1;
+        throw new Error("B must recover the persisted pending call");
+      }
     };
 
     const harnessA = await createTestHarness({
@@ -190,6 +193,7 @@ describe("recovery worker (postgres-backed)", () => {
       workerId: "worker-A",
       leaseMilliseconds: 20,
       store: sharedStore,
+      toolCalls,
       verificationOutcome: "passed",
       // 模拟 worker-A "进程崩溃":其 heartbeat 不再续约。
       // 此时 perform 挂起在长 await 上,lease 于 20ms 后自然过期,
@@ -204,6 +208,7 @@ describe("recovery worker (postgres-backed)", () => {
       environment,
       workerId: "worker-B",
       store: sharedStore,
+      toolCalls,
       verificationOutcome: "passed"
     });
 
@@ -250,12 +255,13 @@ describe("recovery worker (postgres-backed)", () => {
     }
     await worker.stop();
 
-    expect(finalStatus).toBe("succeeded");
+    expect(finalStatus).toBe("failed");
+    expect(modelBCalls).toBe(0);
 
     // 让 A 的 perform 完成,使其能从 await 中退出(验证失租后静默放弃)
     resolvePerform();
     await expect(resumeA).resolves.not.toThrow();
 
-    expect(performCount).toBe(1); // A 一次 perform,B 走 completed 模型无 perform
+    expect(performCount).toBe(1); // A 一次 perform,B 不重调模型也不重放命令
   });
 });

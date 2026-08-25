@@ -4,6 +4,7 @@ import { createTestHarness, InMemoryRunStore } from "@lecoding/test-harness";
 import type { RunEnvironment } from "@lecoding/run-environment";
 import {
   createPostgresToolCallLedger,
+  type AgentModel,
   type ToolCallLedger
 } from "../src/index.js";
 
@@ -107,17 +108,25 @@ describe("RunEngine tool-call idempotency", () => {
     await firstWorker.engine.resume(runId);
     expect(performCount).toBe(1);
 
-    // A replacement Worker replays the same stable callId from the durable Run input.
+    let replacementModelCalls = 0;
+    const replacementModel: AgentModel = {
+      async next() {
+        replacementModelCalls += 1;
+        throw new Error("Replacement must recover the persisted tool call");
+      }
+    };
+    // The replacement must recover the exact persisted call, not ask the model for a new ID.
     const replacementWorker = await createTestHarness({
       store: sharedStore,
       environment,
       toolCalls: durableLedger,
-      modelTurns: [toolTurn],
+      model: replacementModel,
       workerId: "worker-B"
     });
     await replacementWorker.engine.resume(runId);
 
     expect(performCount).toBe(1);
+    expect(replacementModelCalls).toBe(0);
     await expect(replacementWorker.engine.inspect(runId)).resolves.toMatchObject({
       status: "failed",
       failure: { code: "tool_call_outcome_unknown" }

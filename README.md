@@ -12,7 +12,7 @@ Phase 0 implementation of the v3.2 design: a recoverable, policy-enforced coding
 - Client SDK exposes a fetch-based event stream usable by Web and Electron clients.
 - PostgreSQL event persistence writes its leased delivery outbox atomically.
 - PostgreSQL Run snapshots survive Worker replacement with optimistic version checks.
-- A durable tool-call ledger prevents automatic replay when a side-effect outcome is unknown.
+- A pre-execution pending-call snapshot plus durable tool-call ledger prevents model or command replay when a side-effect outcome is unknown.
 - An atomic transition writer commits Run state, RunEvent, and delivery outbox together.
 - The event dispatcher delivers outbox batches with documented at-least-once semantics.
 - The SSE handler combines durable replay with race-safe, deduplicated live delivery.
@@ -20,6 +20,7 @@ Phase 0 implementation of the v3.2 design: a recoverable, policy-enforced coding
 - GitWorkspace creates an isolated worktree and leaves the source checkout unchanged.
 - Docker creation uses an auditable fixed-security plan; the macOS Docker Desktop PoC verifies non-root/read-only execution, bounded resources, scoped writable mounts, and cancellation.
 - A 20-task deterministic golden catalog covers Node and Python changes; five stable cross-category representatives can run through an isolated, cost-accounted Codex CLI executor.
+- A Responses API model gateway maps strict `execute_command` function calls into RunEngine turns and durably carries provider continuation IDs through tool results.
 
 ## Commands
 
@@ -42,8 +43,9 @@ packages/verifier     verification interface
 packages/workspace    Git worktree isolation
 packages/test-harness in-memory adapters for interface tests
 packages/golden-evals deterministic task fixtures and real-model baseline runner seams
+packages/openai-model strict Responses API transport and AgentModel adapter
 docker/               sandbox image and runtime notes
 docs/                 threat model and Phase 0 evidence
 ```
 
-The current implementation has PostgreSQL adapters for Run snapshots, tool-call idempotency, leases, cancellation, and events, while tests can still use in-memory adapters. The golden-task catalog and Codex CLI execution adapter are implemented, but the five-task live model/cost report has not yet been captured. A RunEngine-native real model gateway, production verifier, pg-boss composition, and the Web/Worker processes remain pending Phase 0/1 work.
+The current implementation has PostgreSQL adapters for Run snapshots, tool-call idempotency, leases, cancellation, and events, while tests can still use in-memory adapters. The golden-task catalog, Codex CLI evaluation adapter, and RunEngine-native Responses API gateway are implemented, but no live provider call or five-task model/cost report has yet been captured. A production verifier, pg-boss composition, and the Web/Worker processes remain pending Phase 0/1 work.

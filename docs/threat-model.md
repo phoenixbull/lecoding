@@ -35,7 +35,10 @@ Hard denies apply in every approval mode, including `full_access`:
 | Concurrent task modifies source checkout | Change exists only inside the Run worktree |
 | Path contains `/var` versus `/private/var` alias | Repository identity uses filesystem `realpath` |
 | Worktree patch uses `../` or an absolute path | Workspace rejects before write |
-| Worker retries a side-effecting call | Durable `call_id` completion is reused; an unfinished claim stops for reconciliation instead of executing again |
+| Worker retries a side-effecting call | The model-issued call is persisted before execution; its durable `call_id` completion is reused, while an unfinished claim stops for reconciliation instead of invoking the model or command again |
+| Model provider returns malformed or multiple function calls | Gateway rejects the response before PolicyEngine or RunEnvironment receives an action |
+| Model call requires continuation after Worker replacement | Provider response ID is persisted with the tool result and reused only with the matching `call_id` output |
+| Model provider rejects a request with credential-bearing detail | Gateway records only the HTTP status and never copies the remote body or API key into Run failure text |
 | Browser disconnects | Run persists independently of SSE connection |
 | Local Runner disconnects | Run enters `environment_offline` and stops receiving actions |
 

@@ -77,6 +77,48 @@ describe("RunEngine", () => {
     });
   });
 
+  it("persists the model continuation with a tool result for the next turn", async () => {
+    const observedResults: ModelToolResult[][] = [];
+    let turn = 0;
+    const model: AgentModel = {
+      async next(input) {
+        observedResults.push(structuredClone(input.toolResults));
+        turn += 1;
+        return turn === 1
+          ? {
+              type: "tool_call",
+              callId: "call-continuation",
+              continuationId: "response-1",
+              tool: "execute_command",
+              arguments: { argv: ["pnpm", "test"] }
+            }
+          : { type: "completed", summary: "Continued after the tool result" };
+      }
+    };
+    const harness = await createTestHarness({ model });
+
+    const runId = await harness.engine.start({
+      projectId: "project-1",
+      environmentId: "environment-1",
+      task: "Continue a provider response after executing its command",
+      acceptanceCriteria: ["The second model turn receives the continuation"],
+      approvalMode: "auto_review",
+      fileAccessScope: "workspace_only"
+    });
+    await harness.engine.resume(runId);
+
+    expect(observedResults[1]).toEqual([
+      {
+        callId: "call-continuation",
+        continuationId: "response-1",
+        status: "executed",
+        exitCode: 0,
+        stdout: "",
+        stderr: ""
+      }
+    ]);
+  });
+
   it("pauses a manual run for approval and resumes the same tool call", async () => {
     const harness = await createTestHarness({
       expectedChangedFile: "src/generated.ts",
@@ -860,11 +902,9 @@ describe("RunEngine", () => {
     expect(view.failure).toBeUndefined();
   });
 
-  it("discards tool results observed after the lease is lost during command execution", async () => {
-    // 失主写入防护的 toolResults 边界:perform 是真实 I/O 的 await 窗口,
-    // 期间失租则旧 owner 不得把执行结果写入存储,否则接管者的模型输入会
-    // 混入旧快照的 toolResults。副作用已实际发生(performCount=1),
-    // 但结果丢弃,由接管轮次基于干净快照重新决策。
+  it("recovers a durably completed tool result after lease loss", async () => {
+    // 旧 owner 失租后不得写 Run 快照;接管者改从幂等账本恢复同一 callId
+    // 的完成结果，再把它作为唯一可信的 toolResults 输入交给模型。
     const lease = createInMemoryRunLease();
     // 可观察面:每次模型调用收到的 toolResults 输入(接管者视角)
     const observedToolResults: ModelToolResult[][] = [];
@@ -945,18 +985,28 @@ describe("RunEngine", () => {
     // 下一次 resume(任意 Worker)接管续跑
     await harness.engine.resume(runId);
 
-    expect(observedToolResults).toEqual([[], []]);
+    expect(observedToolResults).toEqual([
+      [],
+      [
+        {
+          callId: "call-stale",
+          status: "executed",
+          exitCode: 0,
+          stdout: "done",
+          stderr: ""
+        }
+      ]
+    ]);
     expect(performCount).toBe(1);
     await expect(harness.engine.inspect(runId)).resolves.toMatchObject({
       status: "succeeded"
     });
   });
 
-  it("moves a run to environment_offline when command execution throws", async () => {
-    // 环境错误自动联动:perform 抛错(真实 I/O 失败)必须自动转
-    // environment_offline,不得记为 agent_loop_failed;下次 resume 重新 prepare
-    // 并续跑,给 Worker 一个"换环境重试"的窗口。模型调用抛错(records a
-    // model failure)与此处职责分明,保持 failed 路径。
+  it("parks an environment failure and refuses to replay its uncertain call", async () => {
+    // perform 抛错先转 environment_offline 以便换环境;但调用可能已产生
+    // 部分副作用，接管时必须恢复原 callId 并由账本判为 outcome_unknown，
+    // 不得重新询问模型或自动重放。
     let releaseFirstTurn!: (turn: AgentModelTurn) => void;
     let modelCalls = 0;
     const model: AgentModel = {
@@ -1020,12 +1070,15 @@ describe("RunEngine", () => {
     expect(view.failure).toBeUndefined();
     expect(performCount).toBe(1);
 
-    // 下次 resume 重 prepare 并续跑到终态(模型直接返回 completed)
+    // 下次 resume 会重 prepare，但同一未完成 claim 只能进入人工核对终态。
     await harness.engine.resume(runId);
     expect(prepareCount).toBe(2);
     await expect(harness.engine.inspect(runId)).resolves.toMatchObject({
-      status: "succeeded"
+      status: "failed",
+      failure: { code: "tool_call_outcome_unknown" }
     });
+    expect(modelCalls).toBe(1);
+    expect(performCount).toBe(1);
   });
 
   it("waits for the lease to expire before taking over a run", async () => {
@@ -1539,10 +1592,10 @@ describe("Docker runtime limits + cancellation PoC", () => {
     });
   });
 
-  it("moves a run to environment_offline when the perform exceeds the memory limit", async () => {
+  it("does not replay a command after the perform exceeds the memory limit", async () => {
     // PoC runtime limits:perform 抛错(模拟 cgroup OOM kill)触发
     // RunEngine 的 environment_offline 自动联动,Run 进入 environment_offline,
-    // 下次 resume 重新 prepare。
+    // 下次 resume 重新 prepare 后仍需把未完成 claim 作为不确定结果停住。
     const env = new FakeDockerRunEnvironment({
       failNextCommand: "memory_exceeded"
     });
@@ -1585,11 +1638,12 @@ describe("Docker runtime limits + cancellation PoC", () => {
     const offline = await harness.engine.inspect(runId);
     expect(offline.status).toBe("environment_offline");
 
-    // 第二次 resume:重新 prepare,perform 正常返回,完成 Run
+    // 第二次 resume:重新 prepare,但不重放可能已部分执行的命令
     await harness.engine.resume(runId);
     expect(prepareCount).toBe(2);
     await expect(harness.engine.inspect(runId)).resolves.toMatchObject({
-      status: "succeeded"
+      status: "failed",
+      failure: { code: "tool_call_outcome_unknown" }
     });
   });
 

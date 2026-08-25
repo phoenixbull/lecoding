@@ -112,8 +112,9 @@ describe("cancel path releases the handle even when transition fails", () => {
      * 让 save#6(drive 的 markRunCancelled 的 transition("cancelled"))抛 LeaseLostError,
      * 模拟该时刻 lease 已被抢占:
      * - save#1-3: start + preparing + running(全部成功)
-     * - save#4: cancel 命令的 transition("cancelling") 成功
-     * - save#5: cancel 命令的 transition("cancelled") 成功
+     * - save#4:模型工具调用在副作用前持久化(成功)
+     * - save#5: cancel 命令的 transition("cancelling") 抛冲突
+     * - save#6: drive 的 markRunCancelled transition 抛失租
      *   → cancel 命令 dispose + release(handle 已 release)
      * - drive 的 markRunCancelled 调 transition("cancelled"),save#6 抛 LeaseLostError
      *   → markRunCancelled catch 守卫吞
@@ -127,8 +128,8 @@ describe("cancel path releases the handle even when transition fails", () => {
      */
     const store = new FailingStore(
       [
-        { on: 4, error: "RunConflictError" }, // cancel 命令 cancelling 抛错
-        { on: 5, error: "RunConflictError" }  // markRunCancelled cancelled 抛错
+        { on: 5, error: "RunConflictError" }, // cancel 命令 cancelling 抛错
+        { on: 6, error: "LeaseLostError" } // markRunCancelled cancelled 抛错
       ],
       innerStore
     );

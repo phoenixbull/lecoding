@@ -1,0 +1,16 @@
+{
+  "name": "@lecoding/openai-model",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": "./src/index.ts",
+  "scripts": {
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@lecoding/run-engine": "workspace:*"
+  },
+  "devDependencies": {
+    "@lecoding/test-harness": "workspace:*"
+  }
+}
