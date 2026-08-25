@@ -69,15 +69,15 @@ Updated: 2026-08-25
 ## Current automated baseline
 
 ```text
-Test files: 37 passed, 1 opt-in live baseline file skipped
-Tests:      124 passed, 3 live tests skipped in the latest sandboxed run
+Test files: 38 passed, 1 opt-in live baseline file skipped
+Tests:      127 passed, 3 live tests skipped in the latest sandboxed run
 Typecheck:  all implemented package tasks passed
 ```
 
 ## Pending Phase 0 evidence
 
-- Repeat the Docker isolation matrix on the target Linux Worker host
+- Run `node scripts/run-target-linux-isolation.mjs <report-path>` on the actual target Linux Worker host and commit its generated report. The Linux-only runner is implemented and fail-closed, but this Darwin host cannot produce the evidence.
 
 ## Environment note
 
-Docker Desktop 27.5.1 previously ran all six Docker PoC tests successfully. The latest sandboxed full-suite run may skip daemon-backed cases when socket access is unavailable; deterministic Docker-plan tests still run. Docker Desktop on macOS and the five-task baseline are development evidence only, and no target-Linux isolation claim is considered verified yet. The configured third-party Chat Completions provider has passed both a two-turn protocol smoke test and the five-task quality baseline. PostgreSQL CLI is not installed, so PostgreSQL adapters remain verified with embedded PGlite, and no real pg-boss recovery claim is considered verified yet.
+Docker Desktop 27.5.1 previously ran all six Docker PoC tests successfully. The latest sandboxed full-suite run may skip daemon-backed cases when socket access is unavailable; deterministic Docker-plan tests still run. Docker Desktop on macOS and the five-task baseline are development evidence only, and no target-Linux isolation claim is considered verified yet. `run-target-linux-isolation.mjs` was exercised on this Darwin host and correctly refused to run before contacting Docker or writing a report. The configured third-party Chat Completions provider has passed both a two-turn protocol smoke test and the five-task quality baseline. PostgreSQL CLI is not installed, so PostgreSQL adapters remain verified with embedded PGlite, and no real pg-boss recovery claim is considered verified yet.

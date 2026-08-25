@@ -19,8 +19,9 @@ Phase 0 implementation of the v3.2 design: a recoverable, policy-enforced coding
 - PolicyEngine hard-denies Docker socket reads even in full-access mode.
 - GitWorkspace creates an isolated worktree and leaves the source checkout unchanged.
 - Docker creation uses an auditable fixed-security plan; the macOS Docker Desktop PoC verifies non-root/read-only execution, bounded resources, scoped writable mounts, and cancellation.
+- A fail-closed Linux-only evidence command builds the project sandbox image, rejects skipped isolation cases, and records target host/Docker/image metadata without accepting Docker Desktop as production evidence.
 - A 20-task deterministic golden catalog covers Node and Python changes; five stable cross-category representatives can run through an isolated, cost-accounted Codex CLI executor.
-- A provider-neutral Responses-compatible gateway maps strict `execute_command` function calls into RunEngine turns and durably carries provider continuation IDs through tool results.
+- A provider-neutral OpenAI-compatible gateway maps strict `execute_command` function calls into RunEngine turns and durably carries Responses IDs or validated Chat Completions history through tool results.
 
 ## Commands
 

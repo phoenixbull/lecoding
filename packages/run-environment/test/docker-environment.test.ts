@@ -159,7 +159,7 @@ describe("createDockerRunEnvironment (PoC)", () => {
       // The container's fixed uid must be able to exercise the dedicated test mount.
       await chmod(workspacePath, 0o777);
       const env = createDockerRunEnvironment({
-        image: "alpine:latest",
+        image: process.env.LECODING_DOCKER_TEST_IMAGE ?? "alpine:latest",
         worktreeRoot: tmpdir(),
         workspacePath,
         memory: "256m",
@@ -229,7 +229,7 @@ describe("createDockerRunEnvironment (PoC)", () => {
       const workspacePath = await mkdtemp(join(tmpdir(), "lecoding-docker-abort-"));
       await chmod(workspacePath, 0o777);
       const env = createDockerRunEnvironment({
-        image: "alpine:latest",
+        image: process.env.LECODING_DOCKER_TEST_IMAGE ?? "alpine:latest",
         worktreeRoot: tmpdir(),
         workspacePath,
         network: "none"
