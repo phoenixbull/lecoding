@@ -13,5 +13,8 @@
     "@lecoding/run-environment": "workspace:*",
     "@lecoding/run-events": "workspace:*",
     "@lecoding/verifier": "workspace:*"
+  },
+  "devDependencies": {
+    "@electric-sql/pglite": "^0.5.5"
   }
 }

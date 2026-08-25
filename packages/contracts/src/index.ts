@@ -28,6 +28,13 @@ export interface StartRun {
   acceptanceCriteria: string[];
   approvalMode: ApprovalMode;
   fileAccessScope: FileAccessScope;
+  /**
+   * Run 作用域的命令拒绝列表:匹配到 argv[0] 的命令一律 deny,
+   * 优先级高于 approvalMode 的全局规则。
+   * 用于"这个 Run 特定禁用某些命令"的场景,例如安全敏感任务
+   * 即使 approvalMode 是 full_access 也不允许跑 curl/docker。
+   */
+  deniedCommands?: string[];
 }
 
 export type VerificationOutcome = "passed" | "failed" | "inconclusive";
@@ -78,12 +85,125 @@ export type RunCommand =
       type: "approve";
       approvalId: string;
       scope: "once" | "run";
-    };
+    }
+  /**
+   * Worker 主动放弃当前环境:把 Run 转为 environment_offline,释放本地句柄,
+   * 并 dispose 已注册环境。下次 resume() 会重新 prepare。
+   */
+  | { type: "recover_environment"; reason: string };
 
 export interface RunEngine {
   start(input: StartRun): Promise<RunId>;
   command(runId: RunId, command: RunCommand): Promise<void>;
   inspect(runId: RunId): Promise<RunView>;
+}
+
+/**
+ * Worker 侧入口:把 Run 从 queued 推进到终态(可恢复执行,也可被其他 Worker 接管)。
+ * 对非可驱动状态(novel driver: 非 queued/preparing/waiting_approval/waiting_user/environment_offline)
+ * 静默返回,保证幂等,允许调度器无副作用地轮询。
+ */
+export interface RunResumer {
+  resume(runId: RunId): Promise<void>;
+
+  /**
+   * Worker 内部环境故障自检入口:独立获取租约(不经用户 command 接口),
+   * 把 Run 转为 environment_offline、dispose 已注册环境并释放本地句柄,
+   * 下一次 resume() 会重新 prepare。
+   * 其他 Worker 持有有效租约时静默返回;语义与
+   * command(runId, { type: "recover_environment" }) 一致。
+   */
+  recoverEnvironment(runId: RunId): Promise<void>;
+}
+
+/**
+ * Run 租约:跨 Worker 互斥、限时、自动续约。
+ * acquire/renew 返回 token 时表示调用方拿到本 Run 的驱动权;
+ * 返回 undefined 表示当前已有其他 Worker 持有有效租约(本轮不应推进)。
+ * release 必须由持 token 方调用;非 owner 调用安全忽略。
+ *
+ * 生产可由 PostgreSQL 行锁或 pg-boss 风格 lease 实现。
+ * 测试可用本地互斥实现。
+ */
+export interface RunLease {
+  acquire(input: RunLeaseAcquire): Promise<RunLeaseToken | undefined>;
+  renew(input: RunLeaseRenew): Promise<boolean>;
+  release(input: RunLeaseRelease): Promise<void>;
+  /** 标记 run 的当前租约失效;任意持有方在下一次检查时会被踢出。 */
+  invalidate(input: RunLeaseRelease): Promise<void>;
+}
+
+export interface RunLeaseAcquire {
+  runId: RunId;
+  ownerId: string;
+  leaseUntil: string;
+}
+
+export interface RunLeaseRenew {
+  runId: RunId;
+  ownerId: string;
+  leaseUntil: string;
+  /**
+   * 乐观锁世代号:PG 等持久化租约实现使用。
+   * 内存实现忽略;调用方从 acquire 返回的 token 中透传即可。
+   * 缺省表示"不做版本校验,仅按 owner 匹配"——旧调用方兼容。
+   */
+  generation?: number;
+}
+
+export interface RunLeaseRelease {
+  runId: RunId;
+  ownerId: string;
+  /** 乐观锁世代号;同 RunLeaseRenew.generation 语义。 */
+  generation?: number;
+}
+
+export interface RunLeaseToken {
+  runId: RunId;
+  ownerId: string;
+  /**
+   * 乐观锁世代号:PG 等持久化租约实现填充。
+   * Opaque token:RunEngine 不读,仅在 renew/release/invalidate 时透传。
+   * 内存实现不设置。
+   */
+  generation?: number;
+}
+
+/**
+ * acquire 重试策略:RunEngine 在 lease 被抢占时按策略循环重试,
+ * 避免立即放弃。wait 函数返回本次重试前的等待毫秒数;shouldRetry
+ * 在超出总预算时返回 false,RunEngine 视为放弃本次推进。
+ * 默认实现 see `createDefaultRunLeaseRetryPolicy` in @lecoding/run-engine,
+ * 5 秒封顶,指数退避 25ms 起。
+ */
+export interface RetryPolicy {
+  /** 决策:是否应再试一次 acquire?总预算耗尽时返回 false。 */
+  shouldRetry(input: { attempt: number; elapsedMs: number }): boolean;
+  /** 等待:在下次尝试前挂起,返回实际等待毫秒数。 */
+  wait(input: { attempt: number; elapsedMs: number }): Promise<number>;
+}
+
+/**
+ * 租约心跳:把长 await(镜像拉取、远端验证等)包进守护,
+ * 在 leaseMilliseconds/2 间隔持续 renewLease,
+ * 避免长 await 期间租约过期被新 Worker 接管。
+ * 适配器内部启动 setInterval 调度;fn resolve 后清除守护。
+ * 失租立即抛 LeaseLostError,RunEngine 静默放弃驱动。
+ */
+export interface LeaseHeartbeat {
+  withHeartbeat<T>(
+    token: RunLeaseToken,
+    intervalMs: number,
+    fn: () => Promise<T>,
+    /**
+     * 每次 renewLease tick 同步触发——提供给 RunEngine 的"store 兜底检测"钩子:
+     * 当 PG LISTEN/NOTIFY 漏派时,heartbeat 在 lease 间隔内主动查 store,
+     * 发现终态取消立即调 handles.abort 让 perform reject。
+     * 错误隔离:onTick 抛错被吞,不污染主路径 fn。
+     * 不传则维持原行为(向后兼容)。
+     */
+    onTick?: () => Promise<void>
+  ): Promise<T>;
 }
 
 export interface EnvironmentHandle {

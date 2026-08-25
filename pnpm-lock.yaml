@@ -55,6 +55,10 @@ importers:
       '@lecoding/verifier':
         specifier: workspace:*
         version: link:../verifier
+    devDependencies:
+      '@electric-sql/pglite':
+        specifier: ^0.5.5
+        version: 0.5.5
 
   packages/run-environment:
     dependencies:
