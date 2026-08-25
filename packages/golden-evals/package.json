@@ -6,5 +6,10 @@
   "exports": "./src/index.ts",
   "scripts": {
     "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@lecoding/openai-model": "workspace:*",
+    "@lecoding/run-engine": "workspace:*",
+    "@lecoding/run-environment": "workspace:*"
   }
 }

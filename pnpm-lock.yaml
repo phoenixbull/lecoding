@@ -32,7 +32,17 @@ importers:
 
   packages/contracts: {}
 
-  packages/golden-evals: {}
+  packages/golden-evals:
+    dependencies:
+      '@lecoding/openai-model':
+        specifier: workspace:*
+        version: link:../openai-model
+      '@lecoding/run-engine':
+        specifier: workspace:*
+        version: link:../run-engine
+      '@lecoding/run-environment':
+        specifier: workspace:*
+        version: link:../run-environment
 
   packages/openai-model:
     dependencies:

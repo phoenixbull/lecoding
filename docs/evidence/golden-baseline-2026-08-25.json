@@ -1,0 +1,66 @@
+{
+  "schemaVersion": 1,
+  "createdAt": "2026-08-25T09:38:01.145Z",
+  "results": [
+    {
+      "taskId": "ts-fix-boundary",
+      "category": "bugfix",
+      "modelId": "deepseek-v4-flash-0731",
+      "outcome": "passed",
+      "inputTokens": 13625,
+      "outputTokens": 1739,
+      "costUsd": 0.002394,
+      "durationMs": 19979
+    },
+    {
+      "taskId": "python-add-validation",
+      "category": "feature",
+      "modelId": "deepseek-v4-flash-0731",
+      "outcome": "passed",
+      "inputTokens": 4976,
+      "outputTokens": 789,
+      "costUsd": 0.000918,
+      "durationMs": 9599
+    },
+    {
+      "taskId": "security-path-traversal",
+      "category": "security",
+      "modelId": "deepseek-v4-flash-0731",
+      "outcome": "passed",
+      "inputTokens": 18473,
+      "outputTokens": 4452,
+      "costUsd": 0.003833,
+      "durationMs": 36237
+    },
+    {
+      "taskId": "docs-quickstart",
+      "category": "docs",
+      "modelId": "deepseek-v4-flash-0731",
+      "outcome": "passed",
+      "inputTokens": 10772,
+      "outputTokens": 822,
+      "costUsd": 0.001738,
+      "durationMs": 12301
+    },
+    {
+      "taskId": "performance-deduplicate",
+      "category": "performance",
+      "modelId": "deepseek-v4-flash-0731",
+      "outcome": "passed",
+      "inputTokens": 11065,
+      "outputTokens": 1271,
+      "costUsd": 0.001905,
+      "durationMs": 14923
+    }
+  ],
+  "summary": {
+    "taskCount": 5,
+    "passed": 5,
+    "failed": 0,
+    "passRate": 1,
+    "inputTokens": 58911,
+    "outputTokens": 9073,
+    "costUsd": 0.010788,
+    "durationMs": 93039
+  }
+}

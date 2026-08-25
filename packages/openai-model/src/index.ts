@@ -43,6 +43,13 @@ export interface OpenAiChatToolCall {
   function: { name: "execute_command"; arguments: string };
 }
 
+interface PersistedChatContinuation {
+  version: 1;
+  messages: OpenAiChatMessage[];
+  activeCallId: string;
+  pendingCalls: OpenAiChatToolCall[];
+}
+
 /** Chat Completions wrapper for the strict command function. */
 export interface OpenAiChatFunctionTool {
   type: "function";
@@ -133,6 +140,14 @@ export interface OpenAiCompatibleAgentModelOptions {
   timeoutMs?: number;
   fetch?: OpenAiFetch;
   instructions?: string;
+  /** Receives validated per-request usage for evaluation and billing telemetry. */
+  onUsage?: (usage: OpenAiModelUsage) => void;
+}
+
+/** Provider-neutral token counts from one completed model HTTP response. */
+export interface OpenAiModelUsage {
+  inputTokens: number;
+  outputTokens: number;
 }
 
 /** Construction inputs for the RunEngine-native Responses API adapter. */
@@ -140,6 +155,7 @@ export interface OpenAiResponsesAgentModelOptions {
   model: string;
   client: OpenAiResponsesClient;
   instructions?: string;
+  onUsage?: (usage: OpenAiModelUsage) => void;
 }
 
 /** Construction inputs for the RunEngine-native Chat Completions adapter. */
@@ -147,6 +163,7 @@ export interface OpenAiChatCompletionsAgentModelOptions {
   model: string;
   client: OpenAiChatCompletionsClient;
   instructions?: string;
+  onUsage?: (usage: OpenAiModelUsage) => void;
 }
 
 const EXECUTE_COMMAND_TOOL: OpenAiFunctionTool = {
@@ -211,7 +228,8 @@ export function createOpenAiCompatibleAgentModel(
       client,
       ...(options.instructions !== undefined
         ? { instructions: options.instructions }
-        : {})
+        : {}),
+      ...(options.onUsage !== undefined ? { onUsage: options.onUsage } : {})
     });
   }
   const client = createOpenAiResponsesClient({
@@ -225,7 +243,8 @@ export function createOpenAiCompatibleAgentModel(
     client,
     ...(options.instructions !== undefined
       ? { instructions: options.instructions }
-      : {})
+      : {}),
+    ...(options.onUsage !== undefined ? { onUsage: options.onUsage } : {})
   });
 }
 
@@ -353,7 +372,11 @@ export function createOpenAiResponsesAgentModel(
       const response = await options.client.create(
         buildRequest(input, options.model, options.instructions ?? DEFAULT_INSTRUCTIONS)
       );
-      return parseResponse(response);
+      const turn = parseResponse(response);
+      if (options.onUsage) {
+        options.onUsage(parseModelUsage(response, "responses"));
+      }
+      return turn;
     }
   };
 }
@@ -372,19 +395,31 @@ export function createOpenAiChatCompletionsAgentModel(
         options.instructions ?? DEFAULT_INSTRUCTIONS
       );
       const latestResult = input.toolResults.at(-1);
-      const persistedMessages = latestResult
-        ? parsePersistedChatMessages(latestResult.continuationId, latestResult.callId)
-        : [];
-      const continuationMessages: OpenAiChatMessage[] = latestResult
-        ? [
-            ...persistedMessages,
-            {
-              role: "tool",
-              tool_call_id: latestResult.callId,
-              content: toFunctionCallOutput(latestResult).output
-            }
-          ]
-        : [];
+      let continuationMessages: OpenAiChatMessage[] = [];
+      if (latestResult) {
+        const state = parsePersistedChatContinuation(
+          latestResult.continuationId,
+          latestResult.callId
+        );
+        continuationMessages = [
+          ...state.messages,
+          {
+            role: "tool",
+            tool_call_id: latestResult.callId,
+            content: toFunctionCallOutput(latestResult).output
+          }
+        ];
+        const [nextCall, ...remainingCalls] = state.pendingCalls;
+        if (nextCall) {
+          // Provider batches are exposed one at a time so policy and side effects stay serial.
+          return toChatToolTurn(nextCall, {
+            version: 1,
+            messages: continuationMessages,
+            activeCallId: nextCall.id,
+            pendingCalls: remainingCalls
+          });
+        }
+      }
       const response = await options.client.create({
         model: options.model,
         messages: [...initialMessages, ...continuationMessages],
@@ -402,9 +437,37 @@ export function createOpenAiChatCompletionsAgentModel(
         tool_choice: "auto",
         parallel_tool_calls: false
       });
-      return parseChatCompletion(response, continuationMessages);
+      const turn = parseChatCompletion(response, continuationMessages);
+      if (options.onUsage) {
+        options.onUsage(parseModelUsage(response, "chat_completions"));
+      }
+      return turn;
     }
   };
+}
+
+function parseModelUsage(
+  value: unknown,
+  protocol: "responses" | "chat_completions"
+): OpenAiModelUsage {
+  if (!isRecord(value) || !isRecord(value.usage)) {
+    throw new Error("OpenAI response is missing token usage");
+  }
+  const input =
+    protocol === "responses" ? value.usage.input_tokens : value.usage.prompt_tokens;
+  const output =
+    protocol === "responses"
+      ? value.usage.output_tokens
+      : value.usage.completion_tokens;
+  if (
+    !Number.isSafeInteger(input) ||
+    Number(input) < 0 ||
+    !Number.isSafeInteger(output) ||
+    Number(output) < 0
+  ) {
+    throw new Error("OpenAI response contains invalid token usage");
+  }
+  return { inputTokens: Number(input), outputTokens: Number(output) };
 }
 
 function buildInitialChatMessages(
@@ -445,10 +508,28 @@ function parseChatCompletion(
     }
     return { type: "completed", summary: message.content };
   }
-  if (calls.length > 1) {
-    throw new Error(`OpenAI chat completion returned multiple function calls: ${calls.length}`);
+  const toolCalls = calls.map((rawCall) => parseChatToolCall(rawCall));
+  if (new Set(toolCalls.map((call) => call.id)).size !== toolCalls.length) {
+    throw new Error("OpenAI chat completion returned duplicate function call ids");
   }
-  const rawCall = calls[0];
+  const [toolCall, ...pendingCalls] = toolCalls;
+  if (!toolCall) {
+    throw new Error("OpenAI chat completion is missing its function call");
+  }
+  const assistantMessage: OpenAiChatMessage = {
+    role: "assistant",
+    content: typeof message.content === "string" ? message.content : null,
+    tool_calls: toolCalls
+  };
+  return toChatToolTurn(toolCall, {
+    version: 1,
+    messages: [...continuationMessages, assistantMessage],
+    activeCallId: toolCall.id,
+    pendingCalls
+  });
+}
+
+function parseChatToolCall(rawCall: unknown): OpenAiChatToolCall {
   if (!isRecord(rawCall) || rawCall.type !== "function" || !isRecord(rawCall.function)) {
     throw new Error("OpenAI chat completion returned a malformed function call");
   }
@@ -463,7 +544,7 @@ function parseChatCompletion(
   if (typeof rawCall.function.arguments !== "string") {
     throw new Error("OpenAI function call arguments must be JSON text");
   }
-  const toolCall: OpenAiChatToolCall = {
+  return {
     id: rawCall.id,
     type: "function",
     function: {
@@ -471,23 +552,26 @@ function parseChatCompletion(
       arguments: rawCall.function.arguments
     }
   };
+}
+
+function toChatToolTurn(
+  toolCall: OpenAiChatToolCall,
+  continuation: PersistedChatContinuation
+): Extract<AgentModelTurn, { type: "tool_call" }> {
   return {
     type: "tool_call",
     callId: toolCall.id,
-    // The stateless protocol must persist the assistant call for the next request.
-    continuationId: JSON.stringify([
-      ...continuationMessages,
-      { role: "assistant", content: null, tool_calls: [toolCall] }
-    ]),
+    // The versioned envelope survives Worker replacement and queues provider batches.
+    continuationId: JSON.stringify(continuation),
     tool: "execute_command",
     arguments: parseCommandArguments(toolCall.function.arguments)
   };
 }
 
-function parsePersistedChatMessages(
+function parsePersistedChatContinuation(
   continuationId: string | undefined,
   expectedCallId: string
-): OpenAiChatMessage[] {
+): PersistedChatContinuation {
   if (!continuationId) {
     throw new Error("OpenAI tool result is missing its persisted continuation id");
   }
@@ -497,7 +581,86 @@ function parsePersistedChatMessages(
   } catch {
     throw new Error("OpenAI chat continuation is invalid JSON");
   }
-  if (!Array.isArray(value) || value.length === 0) {
+  if (Array.isArray(value)) {
+    // Accept continuations written before the versioned queue envelope shipped.
+    const messages = parsePersistedChatMessages(value);
+    const last = messages.at(-1);
+    if (
+      last?.role !== "assistant" ||
+      last.tool_calls?.[0]?.id !== expectedCallId
+    ) {
+      throw new Error("OpenAI chat continuation does not match the tool result call id");
+    }
+    return {
+      version: 1,
+      messages,
+      activeCallId: expectedCallId,
+      pendingCalls: []
+    };
+  }
+  if (
+    !isRecord(value) ||
+    value.version !== 1 ||
+    !Array.isArray(value.messages) ||
+    typeof value.activeCallId !== "string" ||
+    !Array.isArray(value.pendingCalls)
+  ) {
+    throw new Error("OpenAI chat continuation must contain message history");
+  }
+  if (value.activeCallId !== expectedCallId) {
+    throw new Error("OpenAI chat continuation does not match the tool result call id");
+  }
+  const messages = parsePersistedChatMessages(value.messages);
+  const pendingCalls = value.pendingCalls.map((call) => parseChatToolCall(call));
+  validatePersistedChatQueue(messages, value.activeCallId, pendingCalls);
+  return {
+    version: 1,
+    messages,
+    activeCallId: value.activeCallId,
+    pendingCalls
+  };
+}
+
+function validatePersistedChatQueue(
+  messages: OpenAiChatMessage[],
+  activeCallId: string,
+  pendingCalls: OpenAiChatToolCall[]
+): void {
+  let assistantIndex = -1;
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    if (messages[index]?.role === "assistant") {
+      assistantIndex = index;
+      break;
+    }
+  }
+  const assistant = messages[assistantIndex];
+  const batch = assistant?.role === "assistant" ? assistant.tool_calls ?? [] : [];
+  const batchIds = batch.map((call) => call.id);
+  const activeIndex = batchIds.indexOf(activeCallId);
+  const completedIds = messages
+    .slice(assistantIndex + 1)
+    .map((message) => (message.role === "tool" ? message.tool_call_id : undefined));
+  const expectedCompletedIds = batchIds.slice(0, activeIndex);
+  const expectedPending = batch.slice(activeIndex + 1);
+  const queueMatches =
+    activeIndex >= 0 &&
+    new Set(batchIds).size === batchIds.length &&
+    completedIds.every((id): id is string => id !== undefined) &&
+    completedIds.length === expectedCompletedIds.length &&
+    completedIds.every((id, index) => id === expectedCompletedIds[index]) &&
+    pendingCalls.length === expectedPending.length &&
+    pendingCalls.every(
+      (call, index) => JSON.stringify(call) === JSON.stringify(expectedPending[index])
+    );
+  if (!queueMatches) {
+    throw new Error(
+      "OpenAI chat continuation queue does not match its assistant batch"
+    );
+  }
+}
+
+function parsePersistedChatMessages(value: unknown[]): OpenAiChatMessage[] {
+  if (value.length === 0) {
     throw new Error("OpenAI chat continuation must contain message history");
   }
   const messages: OpenAiChatMessage[] = [];
@@ -519,41 +682,15 @@ function parsePersistedChatMessages(
     if (item.role !== "assistant" || !Array.isArray(item.tool_calls)) {
       throw new Error("OpenAI chat continuation contains an unsupported message");
     }
-    if (item.tool_calls.length !== 1) {
-      throw new Error("OpenAI chat continuation must contain one function call per turn");
+    if (item.tool_calls.length === 0) {
+      throw new Error("OpenAI chat continuation has an empty function-call batch");
     }
-    const rawCall = item.tool_calls[0];
-    if (
-      !isRecord(rawCall) ||
-      rawCall.type !== "function" ||
-      typeof rawCall.id !== "string" ||
-      !isRecord(rawCall.function) ||
-      rawCall.function.name !== "execute_command" ||
-      typeof rawCall.function.arguments !== "string"
-    ) {
-      throw new Error("OpenAI chat continuation contains a malformed function call");
-    }
+    const toolCalls = item.tool_calls.map((call) => parseChatToolCall(call));
     messages.push({
       role: "assistant",
       content: typeof item.content === "string" ? item.content : null,
-      tool_calls: [
-        {
-          id: rawCall.id,
-          type: "function",
-          function: {
-            name: "execute_command",
-            arguments: rawCall.function.arguments
-          }
-        }
-      ]
+      tool_calls: toolCalls
     });
-  }
-  const last = messages.at(-1);
-  if (
-    last?.role !== "assistant" ||
-    last.tool_calls?.[0]?.id !== expectedCallId
-  ) {
-    throw new Error("OpenAI chat continuation does not match the tool result call id");
   }
   return messages;
 }

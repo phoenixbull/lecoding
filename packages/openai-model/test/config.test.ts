@@ -168,6 +168,51 @@ describe("loadOpenAiCompatibleModelConfig", () => {
     });
   });
 
+  it("observes validated Chat Completions token usage without changing the model turn", async () => {
+    const observedUsage: Array<{ inputTokens: number; outputTokens: number }> = [];
+    const model = createOpenAiCompatibleAgentModel({
+      config: {
+        protocol: "openai_chat_completions",
+        baseUrl: "https://model.vendor.example/v2",
+        apiKey: "vendor-secret",
+        model: "vendor-coder-v3"
+      },
+      onUsage: (usage) => observedUsage.push(usage),
+      fetch: async () => ({
+        ok: true,
+        status: 200,
+        async json() {
+          return {
+            id: "chatcmpl-usage",
+            choices: [
+              {
+                finish_reason: "stop",
+                message: { role: "assistant", content: "Done" }
+              }
+            ],
+            usage: { prompt_tokens: 123, completion_tokens: 45 }
+          };
+        }
+      })
+    });
+
+    await expect(
+      model.next({
+        runId: "run-usage",
+        run: {
+          projectId: "project-1",
+          environmentId: "environment-1",
+          task: "Finish",
+          acceptanceCriteria: ["Done"],
+          approvalMode: "auto_review",
+          fileAccessScope: "workspace_only"
+        },
+        toolResults: []
+      })
+    ).resolves.toEqual({ type: "completed", summary: "Done" });
+    expect(observedUsage).toEqual([{ inputTokens: 123, outputTokens: 45 }]);
+  });
+
   it("continues a stateless Chat Completions tool call from persisted history", async () => {
     const bodies: unknown[] = [];
     let requestCount = 0;
@@ -275,6 +320,141 @@ describe("loadOpenAiCompatibleModelConfig", () => {
     });
   });
 
+  it("serializes multiple provider tool calls without contacting the provider between results", async () => {
+    const bodies: unknown[] = [];
+    const model = createOpenAiCompatibleAgentModel({
+      config: {
+        protocol: "openai_chat_completions",
+        baseUrl: "https://model.vendor.example/v2",
+        apiKey: "vendor-secret",
+        model: "vendor-coder-v3"
+      },
+      fetch: async (_url, init) => {
+        bodies.push(JSON.parse(init.body));
+        return {
+          ok: true,
+          status: 200,
+          async json() {
+            return bodies.length === 1
+              ? {
+                  choices: [
+                    {
+                      message: {
+                        role: "assistant",
+                        content: null,
+                        tool_calls: [
+                          {
+                            id: "call-read",
+                            type: "function",
+                            function: {
+                              name: "execute_command",
+                              arguments: '{"argv":["cat","src/subject.js"]}'
+                            }
+                          },
+                          {
+                            id: "call-test",
+                            type: "function",
+                            function: {
+                              name: "execute_command",
+                              arguments: '{"argv":["node","--test"]}'
+                            }
+                          }
+                        ]
+                      }
+                    }
+                  ]
+                }
+              : {
+                  choices: [
+                    {
+                      message: { role: "assistant", content: "Done" }
+                    }
+                  ]
+                };
+          }
+        };
+      }
+    });
+    const run = {
+      projectId: "project-1",
+      environmentId: "environment-1",
+      task: "Fix tests",
+      acceptanceCriteria: ["Tests pass"],
+      approvalMode: "auto_review" as const,
+      fileAccessScope: "workspace_only" as const
+    };
+
+    const first = await model.next({ runId: "run-1", run, toolResults: [] });
+    expect(first).toMatchObject({
+      type: "tool_call",
+      callId: "call-read",
+      arguments: { argv: ["cat", "src/subject.js"] }
+    });
+    if (first.type !== "tool_call" || !first.continuationId) {
+      throw new Error("Expected first queued tool call");
+    }
+    const second = await model.next({
+      runId: "run-1",
+      run,
+      toolResults: [
+        {
+          callId: first.callId,
+          continuationId: first.continuationId,
+          status: "executed",
+          exitCode: 0,
+          stdout: "source",
+          stderr: ""
+        }
+      ]
+    });
+    expect(second).toMatchObject({
+      type: "tool_call",
+      callId: "call-test",
+      arguments: { argv: ["node", "--test"] }
+    });
+    expect(bodies).toHaveLength(1);
+    if (second.type !== "tool_call" || !second.continuationId) {
+      throw new Error("Expected second queued tool call");
+    }
+    await expect(
+      model.next({
+        runId: "run-1",
+        run,
+        toolResults: [
+          {
+            callId: first.callId,
+            continuationId: first.continuationId,
+            status: "executed",
+            exitCode: 0,
+            stdout: "source",
+            stderr: ""
+          },
+          {
+            callId: second.callId,
+            continuationId: second.continuationId,
+            status: "executed",
+            exitCode: 0,
+            stdout: "ok",
+            stderr: ""
+          }
+        ]
+      })
+    ).resolves.toEqual({ type: "completed", summary: "Done" });
+    expect(bodies).toHaveLength(2);
+    expect(bodies[1]).toMatchObject({
+      messages: [
+        { role: "system" },
+        { role: "user" },
+        {
+          role: "assistant",
+          tool_calls: [{ id: "call-read" }, { id: "call-test" }]
+        },
+        { role: "tool", tool_call_id: "call-read" },
+        { role: "tool", tool_call_id: "call-test" }
+      ]
+    });
+  });
+
   it("rejects corrupted Chat Completions continuation before contacting the provider", async () => {
     let contactedProvider = false;
     const model = createOpenAiCompatibleAgentModel({
@@ -311,6 +491,77 @@ describe("loadOpenAiCompatibleModelConfig", () => {
         ]
       })
     ).rejects.toThrow("OpenAI chat continuation is invalid JSON");
+    expect(contactedProvider).toBe(false);
+  });
+
+  it("rejects a pending call injected into persisted Chat Completions state", async () => {
+    let contactedProvider = false;
+    const model = createOpenAiCompatibleAgentModel({
+      config: {
+        protocol: "openai_chat_completions",
+        baseUrl: "https://model.vendor.example/v2",
+        apiKey: "vendor-secret",
+        model: "vendor-coder-v3"
+      },
+      fetch: async () => {
+        contactedProvider = true;
+        throw new Error("Provider must not be contacted");
+      }
+    });
+    const continuationId = JSON.stringify({
+      version: 1,
+      messages: [
+        {
+          role: "assistant",
+          content: null,
+          tool_calls: [
+            {
+              id: "call-safe",
+              type: "function",
+              function: {
+                name: "execute_command",
+                arguments: '{"argv":["node","--test"]}'
+              }
+            }
+          ]
+        }
+      ],
+      activeCallId: "call-safe",
+      pendingCalls: [
+        {
+          id: "call-injected",
+          type: "function",
+          function: {
+            name: "execute_command",
+            arguments: '{"argv":["node","-e","malicious"]}'
+          }
+        }
+      ]
+    });
+
+    await expect(
+      model.next({
+        runId: "run-1",
+        run: {
+          projectId: "project-1",
+          environmentId: "environment-1",
+          task: "Fix tests",
+          acceptanceCriteria: ["Tests pass"],
+          approvalMode: "auto_review",
+          fileAccessScope: "workspace_only"
+        },
+        toolResults: [
+          {
+            callId: "call-safe",
+            continuationId,
+            status: "executed",
+            exitCode: 0,
+            stdout: "ok",
+            stderr: ""
+          }
+        ]
+      })
+    ).rejects.toThrow("OpenAI chat continuation queue does not match its assistant batch");
     expect(contactedProvider).toBe(false);
   });
 

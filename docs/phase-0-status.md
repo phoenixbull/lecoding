@@ -62,22 +62,22 @@ Updated: 2026-08-25
 - Provider selection is no longer tied to OpenAI credentials or model names: `loadOpenAiCompatibleModelConfig` reads the neutral `LECODING_MODEL_PROTOCOL`, `LECODING_MODEL_BASE_URL`, `LECODING_MODEL_API_KEY`, and `LECODING_MODEL_ID` settings, while `createOpenAiCompatibleAgentModel` composes them into the existing gateway. Remote plaintext endpoints are rejected before credentials can be sent; HTTP remains available only for loopback development servers.
 - Providers exposing only the OpenAI Chat Completions contract are now supported through `openai_chat_completions`. The adapter maps the same strict `execute_command` seam to chat tool calls, persists the stateless assistant/tool message history as the Run continuation, validates that history and its call ID before reuse, and rejects corrupted continuation state before contacting the provider.
 - A live two-turn smoke test against the configured third-party provider completed on 2026-08-25: the first Chat Completions request produced one valid `execute_command` call and durable continuation, and the second request accepted the synthetic command result and returned a completed assistant turn. No provider secret, model response text, or model identifier was captured in the evidence.
+- Chat Completions provider batches are serialized even when an upstream ignores `parallel_tool_calls: false`: the versioned continuation envelope persists the active call and remaining queue, RunEngine observes one call at a time, and the provider is contacted again only after every result in the batch is present. Duplicate call IDs, malformed queues, and mismatched result IDs fail closed.
+- The five representative golden tasks completed 5/5 through the configured third-party model and Docker-isolated execution path. The run observed 58,911 input tokens, 9,073 output tokens, and 93.039 seconds total duration; the `$0.010788` cost is an official pay-as-you-go list-price equivalent, not the actual personal Token Plan charge. Full evidence is recorded in [`evidence/golden-baseline-2026-08-25.md`](evidence/golden-baseline-2026-08-25.md).
 - Type checking passes across all implemented packages.
 
 ## Current automated baseline
 
 ```text
-Test files: 36 passed
-Tests:      120 passed, 2 Docker live tests skipped in the latest sandboxed run
+Test files: 37 passed, 1 opt-in live baseline file skipped
+Tests:      124 passed, 3 live tests skipped in the latest sandboxed run
 Typecheck:  all implemented package tasks passed
 ```
 
 ## Pending Phase 0 evidence
 
 - Repeat the Docker isolation matrix on the target Linux Worker host
-- Execute the 5 selected golden tasks against a real model and persist the report
-- Cost and duration baseline for 5 representative tasks
 
 ## Environment note
 
-Docker Desktop 27.5.1 previously ran all six Docker PoC tests successfully. The latest sandboxed full-suite run could not access the daemon and therefore skipped the two live-container cases; the four deterministic Docker-plan tests still passed. Docker Desktop on macOS is development evidence only, and no target-Linux isolation claim is considered verified yet. The local Codex CLI is installed, but nested non-interactive execution from this Codex desktop host was terminated with exit code 137 before emitting JSONL. A third-party Chat Completions provider is configured locally and its two-turn tool-call contract has been verified, but no five-task real-model quality, cost, or duration numbers are claimed. PostgreSQL CLI is not installed, so PostgreSQL adapters remain verified with embedded PGlite, and no real pg-boss recovery claim is considered verified yet.
+Docker Desktop 27.5.1 previously ran all six Docker PoC tests successfully. The latest sandboxed full-suite run may skip daemon-backed cases when socket access is unavailable; deterministic Docker-plan tests still run. Docker Desktop on macOS and the five-task baseline are development evidence only, and no target-Linux isolation claim is considered verified yet. The configured third-party Chat Completions provider has passed both a two-turn protocol smoke test and the five-task quality baseline. PostgreSQL CLI is not installed, so PostgreSQL adapters remain verified with embedded PGlite, and no real pg-boss recovery claim is considered verified yet.

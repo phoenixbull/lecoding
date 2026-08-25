@@ -1,7 +1,12 @@
 import { execFile } from "node:child_process";
-import { mkdir, writeFile } from "node:fs/promises";
+import { chmod, mkdir, writeFile } from "node:fs/promises";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { promisify } from "node:util";
+import type {
+  AgentModel,
+  ModelToolResult
+} from "@lecoding/run-engine";
+import type { RunEnvironment } from "@lecoding/run-environment";
 
 const exec = promisify(execFile);
 
@@ -516,6 +521,178 @@ export function createCodexExecGoldenTaskExecutor(
       };
     }
   };
+}
+
+/** Validated per-request usage emitted by an observable provider model. */
+export interface GoldenModelUsage {
+  inputTokens: number;
+  outputTokens: number;
+}
+
+/** Inputs for evaluating an AgentModel exclusively through a RunEnvironment. */
+export interface AgentModelGoldenTaskExecutorOptions {
+  workingRoot: string;
+  modelId: string;
+  pricing: GoldenModelPricing;
+  maxTurns?: number;
+  createModel(onUsage: (usage: GoldenModelUsage) => void): AgentModel;
+  createEnvironment(workspacePath: string): RunEnvironment;
+}
+
+/**
+ * Creates a real-model executor whose model commands and independent verification
+ * both run inside the caller-provided isolated environment.
+ */
+export function createAgentModelGoldenTaskExecutor(
+  options: AgentModelGoldenTaskExecutorOptions
+): GoldenTaskExecutor {
+  const workingRoot = resolve(options.workingRoot);
+  if (!isAbsolute(options.workingRoot)) {
+    throw new Error("AgentModel golden workingRoot must be absolute");
+  }
+  if (options.modelId.trim() === "") {
+    throw new Error("AgentModel golden modelId must not be empty");
+  }
+  validatePricing(options.pricing);
+  const maxTurns = options.maxTurns ?? 20;
+  if (!Number.isSafeInteger(maxTurns) || maxTurns < 1) {
+    throw new Error("AgentModel golden maxTurns must be a positive integer");
+  }
+
+  return {
+    async execute(task) {
+      const repositoryPath = join(workingRoot, task.id);
+      await materializeGoldenTask(task, { repositoryPath });
+      await makeGoldenWorkspaceWritable(task, repositoryPath);
+      const usage = { inputTokens: 0, outputTokens: 0 };
+      const model = options.createModel((observation) => {
+        validateGoldenUsage(task.id, observation);
+        usage.inputTokens += observation.inputTokens;
+        usage.outputTokens += observation.outputTokens;
+      });
+      const environment = options.createEnvironment(repositoryPath);
+      const runId = `golden-${task.id}`;
+      const handle = await environment.prepare({
+        runId,
+        projectId: "phase-0-golden",
+        environmentId: "golden-sandbox",
+        fileAccessScope: "workspace_only"
+      });
+      const toolResults: ModelToolResult[] = [];
+      let failure: string | undefined;
+
+      try {
+        let completed = false;
+        for (let turnIndex = 0; turnIndex < maxTurns; turnIndex += 1) {
+          const turn = await model.next({
+            runId,
+            run: {
+              projectId: "phase-0-golden",
+              environmentId: "golden-sandbox",
+              task: task.task,
+              acceptanceCriteria: task.acceptanceCriteria,
+              approvalMode: "auto_review",
+              fileAccessScope: "workspace_only"
+            },
+            toolResults
+          });
+          if (turn.type === "completed") {
+            completed = true;
+            break;
+          }
+          const result = await environment.perform(handle, {
+            type: "execute",
+            command: turn.arguments.argv
+          });
+          toolResults.push({
+            callId: turn.callId,
+            ...(turn.continuationId
+              ? { continuationId: turn.continuationId }
+              : {}),
+            status: "executed",
+            exitCode: result.exitCode,
+            stdout: result.stdout,
+            stderr: result.stderr
+          });
+        }
+        if (!completed) {
+          failure = `AgentModel exceeded ${maxTurns} turns`;
+        }
+        if (!failure) {
+          for (const [file, ...args] of task.verificationCommands) {
+            if (!file) {
+              throw new Error(`Golden task ${task.id} has an empty verification command`);
+            }
+            const verification = await environment.perform(handle, {
+              type: "execute",
+              command: [file, ...args]
+            });
+            if (verification.exitCode !== 0) {
+              failure = formatEnvironmentFailure(file, verification);
+              break;
+            }
+          }
+        }
+      } catch (error) {
+        failure = formatAgentModelFailure(error);
+      } finally {
+        await environment.dispose(handle, failure ? "discard" : "keep");
+      }
+
+      const execution = {
+        modelId: options.modelId,
+        outcome: failure ? ("failed" as const) : ("passed" as const),
+        inputTokens: usage.inputTokens,
+        outputTokens: usage.outputTokens,
+        costUsd: calculateCost(usage, options.pricing)
+      };
+      return failure ? { ...execution, failure } : execution;
+    }
+  };
+}
+
+async function makeGoldenWorkspaceWritable(
+  task: GoldenTask,
+  repositoryPath: string
+): Promise<void> {
+  // Docker's fixed uid 10001 may modify only this disposable fixture, never its parent.
+  await chmod(repositoryPath, 0o777);
+  const directories = new Set(
+    task.repository.seedFiles.map((seed) => dirname(resolve(repositoryPath, seed.path)))
+  );
+  await Promise.all([
+    ...Array.from(directories, (directory) => chmod(directory, 0o777)),
+    ...task.repository.seedFiles.map((seed) =>
+      chmod(resolve(repositoryPath, seed.path), 0o666)
+    )
+  ]);
+}
+
+function validateGoldenUsage(taskId: string, usage: GoldenModelUsage): void {
+  if (
+    !Number.isSafeInteger(usage.inputTokens) ||
+    usage.inputTokens < 0 ||
+    !Number.isSafeInteger(usage.outputTokens) ||
+    usage.outputTokens < 0
+  ) {
+    throw new Error(`Golden task ${taskId} observed invalid model usage`);
+  }
+}
+
+function formatEnvironmentFailure(
+  file: string,
+  result: { exitCode: number; stdout: string; stderr: string }
+): string {
+  const detail = (result.stderr.trim() || result.stdout.trim() || "no diagnostics").slice(
+    0,
+    500
+  );
+  return `Verification ${file} exited with code ${result.exitCode}: ${detail}`;
+}
+
+function formatAgentModelFailure(error: unknown): string {
+  const message = error instanceof Error ? error.message : String(error);
+  return `AgentModel execution failed: ${message}`.slice(0, 500);
 }
 
 async function runGoldenCommand(
