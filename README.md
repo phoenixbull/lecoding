@@ -18,6 +18,7 @@ Phase 0 implementation of the v3.2 design: a recoverable, policy-enforced coding
 - The SSE handler combines durable replay with race-safe, deduplicated live delivery.
 - PolicyEngine hard-denies Docker socket reads even in full-access mode.
 - GitWorkspace creates an isolated worktree and leaves the source checkout unchanged.
+- Docker creation uses an auditable fixed-security plan; the macOS Docker Desktop PoC verifies non-root/read-only execution, bounded resources, scoped writable mounts, and cancellation.
 
 ## Commands
 

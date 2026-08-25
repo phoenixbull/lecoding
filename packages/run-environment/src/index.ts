@@ -33,5 +33,8 @@ export {
 
 export {
   createDockerRunEnvironment,
-  type DockerRunLimits
+  createDockerRunPlan,
+  type DockerRunLimits,
+  type DockerRunPlan,
+  type DockerRunPlanInput
 } from "./docker-environment.js";

@@ -1,5 +1,7 @@
 import { spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
+import { realpath } from "node:fs/promises";
+import { isAbsolute, relative, resolve, sep } from "node:path";
 import type {
   EnvironmentAction,
   EnvironmentHandle,
@@ -26,10 +28,136 @@ export interface DockerRunLimits {
   cpus?: number;
   /** Docker run --pids-limit,默认 256。 */
   pidsLimit?: number;
-  /** Docker run --network,默认 "none" 以隔离 Run。 */
-  network?: "none" | "bridge" | "host";
+  /** 已解析的单 Run worktree 绝对路径;prepare 前必须提供。 */
+  workspacePath?: string;
+  /** 管理员注册的 worktree 根目录;workspacePath 必须是其严格子目录。 */
+  worktreeRoot?: string;
+  /** Phase 0 仅允许 none;保留字段用于显式配置和未来受控网络扩展。 */
+  network?: "none";
+  /** 容器内 /tmp 的 tmpfs 大小,默认 64 MiB。 */
+  tmpfsSizeMb?: number;
+  /** 进程可打开文件描述符软/硬上限,默认 1024。 */
+  nofileLimit?: number;
   /** 单次 perform 的 docker exec 超时(毫秒);缺省 5 分钟。 */
   execTimeoutMs?: number;
+}
+
+/** Immutable, auditable Docker CLI plan executed by prepare(). */
+export interface DockerRunPlan {
+  executable: "docker";
+  args: string[];
+}
+
+/** Inputs for constructing one security-bounded container creation plan. */
+export interface DockerRunPlanInput {
+  containerId: string;
+  spec: EnvironmentSpec;
+  limits: DockerRunLimits;
+}
+
+/**
+ * Builds the exact Docker creation contract without contacting the daemon.
+ * The workspace path must already be canonical and dedicated to this Run.
+ */
+export function createDockerRunPlan(input: DockerRunPlanInput): DockerRunPlan {
+  const memory = input.limits.memory ?? "2g";
+  const cpus = input.limits.cpus ?? 2;
+  const pidsLimit = input.limits.pidsLimit ?? 256;
+  const tmpfsSizeMb = input.limits.tmpfsSizeMb ?? 64;
+  const nofileLimit = input.limits.nofileLimit ?? 1024;
+  const image = input.limits.image ?? "lecoding/agent-runner:latest";
+  const workspacePath = input.limits.workspacePath;
+  const worktreeRoot = input.limits.worktreeRoot;
+
+  if (!workspacePath || !worktreeRoot) {
+    throw new Error(
+      "DockerRunEnvironment requires worktreeRoot and a dedicated workspacePath"
+    );
+  }
+  if (
+    !isAbsolute(workspacePath) ||
+    resolve(workspacePath) !== workspacePath ||
+    workspacePath.includes(",") ||
+    workspacePath.includes("\n") ||
+    !isAbsolute(worktreeRoot) ||
+    resolve(worktreeRoot) !== worktreeRoot ||
+    worktreeRoot.includes(",") ||
+    worktreeRoot.includes("\n")
+  ) {
+    throw new Error("Docker worktree paths must be canonical absolute paths");
+  }
+  const workspaceWithinRoot = relative(worktreeRoot, workspacePath);
+  if (
+    workspaceWithinRoot === "" ||
+    workspaceWithinRoot === ".." ||
+    workspaceWithinRoot.startsWith(`..${sep}`) ||
+    isAbsolute(workspaceWithinRoot)
+  ) {
+    throw new Error("Docker workspacePath is outside the registered worktree root");
+  }
+  if (!/^[a-zA-Z0-9][a-zA-Z0-9_.-]*$/.test(input.containerId)) {
+    throw new Error("Docker containerId contains unsupported characters");
+  }
+  if (!/^[1-9][0-9]*(?:b|k|m|g)$/i.test(memory)) {
+    throw new Error("DockerRunEnvironment requires a bounded Docker memory value");
+  }
+  if (!Number.isFinite(cpus) || cpus <= 0) {
+    throw new Error("Docker CPU limit must be positive");
+  }
+  if (!Number.isSafeInteger(pidsLimit) || pidsLimit < 1) {
+    throw new Error("Docker PID limit must be a positive integer");
+  }
+  if (!Number.isSafeInteger(tmpfsSizeMb) || tmpfsSizeMb < 1) {
+    throw new Error("Docker tmpfs limit must be a positive integer");
+  }
+  if (!Number.isSafeInteger(nofileLimit) || nofileLimit < 1) {
+    throw new Error("Docker nofile limit must be a positive integer");
+  }
+  if (input.spec.fileAccessScope !== "workspace_only") {
+    throw new Error("Server Docker runs only support workspace_only access");
+  }
+
+  return {
+    executable: "docker",
+    args: [
+      "run",
+      "-d",
+      "--name",
+      input.containerId,
+      "--read-only",
+      "--user",
+      "10001:10001",
+      "--cap-drop",
+      "ALL",
+      "--security-opt",
+      "no-new-privileges",
+      "--memory",
+      memory,
+      "--cpus",
+      String(cpus),
+      "--pids-limit",
+      String(pidsLimit),
+      "--ulimit",
+      `nofile=${nofileLimit}:${nofileLimit}`,
+      "--network",
+      "none",
+      "--tmpfs",
+      `/tmp:rw,noexec,nosuid,nodev,size=${tmpfsSizeMb}m`,
+      "--mount",
+      `type=bind,source=${workspacePath},target=/workspace`,
+      "--workdir",
+      "/workspace",
+      "--env",
+      "HOME=/tmp",
+      "--label",
+      `run-id=${input.spec.runId}`,
+      "--label",
+      `project-id=${input.spec.projectId}`,
+      image,
+      "sleep",
+      "infinity"
+    ]
+  };
 }
 
 interface ContainerRecord {
@@ -39,7 +167,7 @@ interface ContainerRecord {
 
 /**
  * 创建 Docker-backed 适配器。骨架形态:
- * - prepare → docker run -d(--memory/--cpus/--pids-limit/--network)
+ * - prepare → 执行 createDockerRunPlan 的固定安全契约
  * - perform → docker exec + signal-aware:abort() 触发 docker kill
  * - inspect → docker diff
  * - dispose → docker rm -f
@@ -48,38 +176,25 @@ export function createDockerRunEnvironment(
   limits: DockerRunLimits = {}
 ): RunEnvironment {
   const containers = new Map<string, ContainerRecord>();
-  const memory = limits.memory ?? "2g";
-  const cpus = limits.cpus ?? 2.0;
-  const pidsLimit = limits.pidsLimit ?? 256;
-  const network = limits.network ?? "none";
   const execTimeoutMs = limits.execTimeoutMs ?? 5 * 60_000;
-  const defaultImage = limits.image ?? "lecoding/agent-runner:latest";
 
   return {
     async prepare(spec: EnvironmentSpec): Promise<EnvironmentHandle> {
       const containerId = `lecoding-${randomBytes(6).toString("hex")}`;
-      const args = [
-        "run",
-        "-d",
-        "--name",
-        containerId,
-        "--memory",
-        memory,
-        "--cpus",
-        String(cpus),
-        "--pids-limit",
-        String(pidsLimit),
-        "--network",
-        network,
-        "--label",
-        `run-id=${spec.runId}`,
-        "--label",
-        `project-id=${spec.projectId}`,
-        defaultImage,
-        "sleep",
-        "infinity"
-      ];
-      await runDocker(args);
+      let planLimits = limits;
+      if (limits.worktreeRoot && limits.workspacePath) {
+        /*
+         * Resolve both identities before containment checks so a symlink below the
+         * registered root cannot redirect Docker to another host directory.
+         */
+        const [worktreeRoot, workspacePath] = await Promise.all([
+          realpath(limits.worktreeRoot),
+          realpath(limits.workspacePath)
+        ]);
+        planLimits = { ...limits, worktreeRoot, workspacePath };
+      }
+      const plan = createDockerRunPlan({ containerId, spec, limits: planLimits });
+      await runDocker(plan.args);
       const handle: EnvironmentHandle = {
         id: containerId,
         environmentId: spec.environmentId

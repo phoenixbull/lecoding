@@ -24,7 +24,9 @@ Updated: 2026-08-25
 - Cross-worker cancel via PG LISTEN/NOTIFY with a heartbeat-based loss fallback: `createPostgresRunCancelBus` backgrounds a `LISTEN run_engine_cancel` session, `publish` fires `pg_notify`, and the cancel path additionally marks the run `cancelled` in the shared store. If the NOTIFY broadcast is ever lost (session disconnect, cross-server isolation), `performWith`'s per-tick `tickCancellationFallback` reads the store and aborts the handle once the terminal state is visible, so cancel degrades from "broadcast" to "eventual-consistency store check" rather than being dropped. Failover reconnects with exponential backoff and re-registers the LISTEN. Covered by two complementary integration matrices with PGlite: (a) single-instance multi-session fanout (equivalent to many workers on one PG server), and (b) multi-instance isolation (real cross-server boundary where NOTIFY provably does not cross) proving the store+heartbeat path aborts a hung perform and disposes its environment.
 - pg-boss-style recovery tracer bullet: `createIntervalRecoveryWorker` polls the `run_engine_leases` table on a cadence and calls `resumer.resume(runId)` for every expired lease, so a crashed worker's run is picked up by a live worker without manual intervention. Built on top of an `RunRecoveryWorker` seam (`start`/`stop`) that a real pg-boss adapter can plug into without changing RunEngine. Tested end-to-end with PGlite: worker A crashes mid-perform, its lease expires, worker B's recovery worker detects it, and the run finishes under B's drive.
 - Run-scoped approval/rejection policy and durable continuation recovery: each Run can declare `deniedCommands` at start time; commands matching the list are denied before any global rule, so a Run can opt out of `curl`/`docker` even when `approvalMode` is `full_access`. Paired with a continuation-recovery guard at the top of `drive` that refuses to re-invoke the model when the Run is in `waiting_approval` — a worker that resumes a run left waiting for approval now leaves it waiting (the persisted `pendingApproval` is the continuation point), instead of restarting the model loop and producing a duplicate tool call.
-- Docker runtime limits + cancellation PoC: `RunEnvironment.perform` accepts an `AbortSignal`, the `RunHandleRegistry` keeps an `AbortController` per registered handle, and the `cancel` command invokes `handles.abort(runId)` before its `cancelling` transition so a long-running `perform` is interrupted immediately rather than waiting for natural completion. The skeleton `createDockerRunEnvironment` wires runtime limits (`--memory`/`--cpus`/`--pids-limit`/`--network`) and an `execTimeoutMs` into `docker run`/`exec`/`kill`, and `FakeDockerRunEnvironment` simulates the OOM/cgroup-failure path so `perform` errors automatically transition the Run to `environment_offline`. Live docker tests are guarded by a `docker info` probe and currently skip because no daemon is reachable in the baseline environment.
+- Docker runtime limits + cancellation PoC: `RunEnvironment.perform` accepts an `AbortSignal`, the `RunHandleRegistry` keeps an `AbortController` per registered handle, and the `cancel` command invokes `handles.abort(runId)` before its `cancelling` transition so a long-running `perform` is interrupted immediately rather than waiting for natural completion. `createDockerRunEnvironment` executes the fixed security plan and applies `execTimeoutMs` across `docker run`/`exec`/`kill`; `FakeDockerRunEnvironment` retains deterministic OOM/cgroup-failure coverage so environment errors transition the Run to `environment_offline`.
+- `createDockerRunPlan` makes the container creation contract independently auditable and non-downgradable: numeric uid/gid 10001, read-only rootfs, `cap-drop=ALL`, `no-new-privileges`, network none, positive CPU/memory/PID/nofile limits, bounded noexec/nosuid/nodev tmpfs, and exactly one workspace mount below the registered worktree root. `prepare` resolves both paths through filesystem `realpath`, so lexical and symlink mount escapes are rejected before Docker is invoked; unbounded memory configurations are rejected too.
+- Docker Desktop 27.5.1 live PoC now executes rather than permanently skipping: a real Alpine container is observed through `RunEnvironment` as uid 10001, unable to write `/etc`, able to write only the worktree and `/tmp`, and an in-flight `sleep 30` is interrupted by AbortSignal/docker kill. This is macOS development evidence; target-Linux isolation evidence remains required.
 - Runs waiting for approval can be cancelled and their environment discarded.
 - Cancellation racing a pending model call keeps the Run cancelled: the driver loop re-checks state at the model-call boundary and never executes the cancelled tool call.
 - Cancellation racing an in-flight command keeps the Run cancelled: RunStore saves are guarded by an optimistic version, stale writes fail with RunConflictError, and a superseded loop never overwrites the concurrent terminal state.
@@ -56,18 +58,18 @@ Updated: 2026-08-25
 ## Current automated baseline
 
 ```text
-Test files: 27 passed (1 Docker test file / 2 tests skipped when no daemon)
-Tests:      95 passed, 2 skipped
+Test files: 28 passed with Docker Desktop daemon available
+Tests:      101 passed, 0 skipped with Docker Desktop daemon available
 Typecheck:  all implemented package tasks passed
 ```
 
 ## Pending Phase 0 evidence
 
-- Docker runtime limits and cancellation PoC
+- Repeat the Docker isolation matrix on the target Linux Worker host
 - 20 golden tasks, with 5 representative tasks executed for baseline
 - Real model gateway PoC proving stable structured tool calls
 - Cost and duration baseline for 5 representative tasks
 
 ## Environment note
 
-Docker CLI 27.5.1 is installed, but the Docker daemon was not running during this baseline. PostgreSQL CLI is not installed; PostgreSQL adapters are currently verified with embedded PGlite. No target-Linux Docker isolation or real pg-boss recovery claim is considered verified yet.
+Docker Desktop 27.5.1 was running for this baseline and all six Docker PoC tests passed. Docker Desktop on macOS is development evidence only; no target-Linux isolation claim is considered verified yet. PostgreSQL CLI is not installed, so PostgreSQL adapters remain verified with embedded PGlite, and no real pg-boss recovery claim is considered verified yet.
