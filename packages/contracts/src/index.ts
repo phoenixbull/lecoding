@@ -62,7 +62,7 @@ export interface RunView {
 }
 
 export interface RunFailure {
-  code: "agent_loop_failed" | "policy_denied";
+  code: "agent_loop_failed" | "policy_denied" | "tool_call_outcome_unknown";
   message: string;
 }
 

@@ -11,6 +11,9 @@ Phase 0 implementation of the v3.2 design: a recoverable, policy-enforced coding
 - Strict RunEvent V1 envelopes support ordered status events and `Last-Event-ID` resume.
 - Client SDK exposes a fetch-based event stream usable by Web and Electron clients.
 - PostgreSQL event persistence writes its leased delivery outbox atomically.
+- PostgreSQL Run snapshots survive Worker replacement with optimistic version checks.
+- A durable tool-call ledger prevents automatic replay when a side-effect outcome is unknown.
+- An atomic transition writer commits Run state, RunEvent, and delivery outbox together.
 - The event dispatcher delivers outbox batches with documented at-least-once semantics.
 - The SSE handler combines durable replay with race-safe, deduplicated live delivery.
 - PolicyEngine hard-denies Docker socket reads even in full-access mode.
@@ -40,4 +43,4 @@ docker/               sandbox image and runtime notes
 docs/                 threat model and Phase 0 evidence
 ```
 
-The current implementation deliberately uses in-memory adapters and a fake verifier. PostgreSQL, pg-boss, the real model gateway, and the Web/Worker processes come after the Phase 0 interfaces prove stable.
+The current implementation has PostgreSQL adapters for Run snapshots, tool-call idempotency, leases, cancellation, and events, while tests can still use in-memory adapters. A real model gateway, production verifier, pg-boss composition, and the Web/Worker processes remain pending Phase 0/1 work.

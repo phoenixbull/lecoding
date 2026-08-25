@@ -35,7 +35,7 @@ Hard denies apply in every approval mode, including `full_access`:
 | Concurrent task modifies source checkout | Change exists only inside the Run worktree |
 | Path contains `/var` versus `/private/var` alias | Repository identity uses filesystem `realpath` |
 | Worktree patch uses `../` or an absolute path | Workspace rejects before write |
-| Worker retries a side-effecting call | Stable `call_id` prevents a second execution |
+| Worker retries a side-effecting call | Durable `call_id` completion is reused; an unfinished claim stops for reconciliation instead of executing again |
 | Browser disconnects | Run persists independently of SSE connection |
 | Local Runner disconnects | Run enters `environment_offline` and stops receiving actions |
 

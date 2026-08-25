@@ -24,6 +24,8 @@ import {
   type LeaseHeartbeat,
   type RetryPolicy,
   type RunStore,
+  type ToolCallLedger,
+  type RunTransitionWriter,
   type RunCancelBus
 } from "@lecoding/run-engine";
 import type { RunEnvironment } from "@lecoding/run-environment";
@@ -68,6 +70,10 @@ export async function createTestHarness(options: {
   verifier?: Verifier;
   /** 注入共享 RunStore;缺省时 harness 自带独立内存 store。 */
   store?: RunStore;
+  /** 注入工具调用幂等账本;跨 Worker 测试可共享 PostgreSQL 实现。 */
+  toolCalls?: ToolCallLedger;
+  /** 注入状态 + 事件原子 writer;提供时替代 legacy 两步发布路径。 */
+  transitions?: RunTransitionWriter;
 }): Promise<TestHarness> {
   const store = options.store ?? new InMemoryRunStore();
   const environment = options.environment ?? new FakeRunEnvironment();
@@ -99,6 +105,10 @@ export async function createTestHarness(options: {
     verifier,
     handles: createInMemoryRunHandleRegistry(),
     lease,
+    ...(options.toolCalls !== undefined ? { toolCalls: options.toolCalls } : {}),
+    ...(options.transitions !== undefined
+      ? { transitions: options.transitions }
+      : {}),
     heartbeat: options.heartbeat ?? createIntervalLeaseHeartbeat(lease),
     ...(options.cancelBus !== undefined ? { cancelBus: options.cancelBus } : {}),
     workerId: options.workerId ?? "worker-1",

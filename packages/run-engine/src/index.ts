@@ -23,8 +23,33 @@ import type { PolicyEngine } from "@lecoding/policy";
 import type { RunEnvironment } from "@lecoding/run-environment";
 import type { RunEventJournal } from "@lecoding/run-events";
 import type { Verifier } from "@lecoding/verifier";
+import {
+  createInMemoryToolCallLedger,
+  type ToolCallLedger
+} from "./postgres-tool-call-ledger.js";
+import type { RunTransitionWriter } from "./postgres-run-transition.js";
 
 export type { RetryPolicy, LeaseHeartbeat } from "@lecoding/contracts";
+export {
+  createPostgresRunStore,
+  RUN_STORE_SCHEMA_SQL
+} from "./postgres-run-store.js";
+export { createPostgresRunTransitionWriter } from "./postgres-run-transition.js";
+export type {
+  PostgresRunTransitionWriterOptions,
+  RunTransitionWriter
+} from "./postgres-run-transition.js";
+export {
+  createInMemoryToolCallLedger,
+  createPostgresToolCallLedger,
+  TOOL_CALL_LEDGER_SCHEMA_SQL
+} from "./postgres-tool-call-ledger.js";
+export type {
+  ToolCallClaim,
+  ToolCallClaimInput,
+  ToolCallCompleteInput,
+  ToolCallLedger
+} from "./postgres-tool-call-ledger.js";
 
 /** Worker 进程内的句柄注册表:handle 是运行时资源,不允许进入持久化快照。 */
 interface RegisteredHandle {
@@ -131,6 +156,13 @@ export interface RunEngineDependencies {
   /** 跨 Worker 互斥租约:resume 期间持有 lease,过期或被抢走即停止驱动。 */
   lease: RunLease;
   /**
+   * 工具副作用的 callId 幂等账本。生产必须注入 PostgreSQL 实现;
+   * 缺省内存实现仅供单进程开发和既有接口测试。
+   */
+  toolCalls?: ToolCallLedger;
+  /** 原子保存 Run 状态和 RunEvent/outbox;生产 PostgreSQL 组合必须注入。 */
+  transitions?: RunTransitionWriter;
+  /**
    * 长 await 心跳守护器:prepare 等真实 I/O 期间按 leaseMilliseconds/2 间隔
    * 持续 renewLease。缺省为 setInterval 实现(详见 createIntervalLeaseHeartbeat)。
    */
@@ -211,6 +243,7 @@ export async function createRunEngine(
 
 class DefaultRunEngine implements RunEngine, RunResumer, DisposableEngine {
   private cancelSubscriptionStop: (() => void) | undefined;
+  private readonly toolCalls: ToolCallLedger;
 
   constructor(private readonly dependencies: RunEngineDependencies) {
     /*
@@ -218,6 +251,7 @@ class DefaultRunEngine implements RunEngine, RunResumer, DisposableEngine {
      * 由 init() 显式 await,确保 createRunEngine 返回的 Promise
      * resolve 后订阅一定生效,worker 可以立即 publish。
      */
+    this.toolCalls = dependencies.toolCalls ?? createInMemoryToolCallLedger();
   }
 
   /*
@@ -817,45 +851,77 @@ class DefaultRunEngine implements RunEngine, RunResumer, DisposableEngine {
     token: RunLeaseToken
   ): Promise<void> {
     let result: EnvironmentResult;
-    try {
-      /*
-       * 用 heartbeat 守护 perform 的长 await 边界:
-       * - renewLease 每 heartbeatIntervalMs/2 持续续约,避免 perform 期间被抢占
-       * - onTick 兜底检测:PG LISTEN/NOTIFY 漏派(cancelBus 消费者断线)
-       *   时,每次 tick 查 store——若 run 已被 cancel 命令写成终态
-       *   (cancelled),直接调 handles.abort 触发 AbortSignal,
-       *   perform reject → RunCancelledByAbortError → markRunCancelled。
-       *   这把 cancel 从"依赖 NOTIFY 广播"降级为"依赖最终一致性 store
-       *   检查",任何 cancel 命令写入一定被 perform 在下个 tick 观察到。
-       */
-      result = await this.dependencies.heartbeat.withHeartbeat(
-        token,
-        this.heartbeatIntervalMs(),
-        () =>
-          this.dependencies.environment.perform(
-            borrowed.handle,
-            {
-              type: "execute",
-              command: turn.arguments.argv
-            },
-            borrowed.abort?.signal
-          ),
-        () => this.tickCancellationFallback(stored)
-      );
-    } catch (error) {
-      /*
-       * 区分 cancel 触发的 error 与真实 I/O 失败:
-       * cancel 命令调 handles.abort() 后 AbortSignal.aborted === true,
-       * perform reject 通常来自适配器内部(例如 docker kill)——
-       * 这种情况下不是环境损坏,Run 不应走 environment_offline 重 prepare,
-       * 而应直接走 cancelled 终态。
-       * 真实 I/O 错误(OOM、daemon unreachable 等)信号未被 abort,
-       * 继续上抛由 drive catch 走 markEnvironmentOffline。
-       */
-      if (borrowed.abort?.signal.aborted === true) {
-        throw new RunCancelledByAbortError(stored.id, error);
+    const action = {
+      type: "execute" as const,
+      command: turn.arguments.argv
+    };
+    /*
+     * claim 必须先于环境调用落库。若已有未完成 claim,说明前任 Worker
+     * 可能已经产生副作用,此时宁可停止并要求核对,也不能自动重放。
+     */
+    const claim = await this.toolCalls.claim({
+      runId: stored.id,
+      callId: turn.callId,
+      action
+    });
+    if (claim.status === "outcome_unknown") {
+      stored.failure = {
+        code: "tool_call_outcome_unknown",
+        message: `Tool call outcome requires reconciliation: ${turn.callId}`
+      };
+      await this.transition(stored, "failed", token);
+      return;
+    }
+    if (claim.status === "completed") {
+      // A prior Worker completed the side effect; only recover its durable result.
+      result = claim.result;
+    } else {
+      try {
+        /*
+         * 用 heartbeat 守护 perform 的长 await 边界:
+         * - renewLease 每 heartbeatIntervalMs/2 持续续约,避免 perform 期间被抢占
+         * - onTick 兜底检测:PG LISTEN/NOTIFY 漏派(cancelBus 消费者断线)
+         *   时,每次 tick 查 store——若 run 已被 cancel 命令写成终态
+         *   (cancelled),直接调 handles.abort 触发 AbortSignal,
+         *   perform reject → RunCancelledByAbortError → markRunCancelled。
+         *   这把 cancel 从"依赖 NOTIFY 广播"降级为"依赖最终一致性 store
+         *   检查",任何 cancel 命令写入一定被 perform 在下个 tick 观察到。
+         */
+        result = await this.dependencies.heartbeat.withHeartbeat(
+          token,
+          this.heartbeatIntervalMs(),
+          () =>
+            this.dependencies.environment.perform(
+              borrowed.handle,
+              action,
+              borrowed.abort?.signal
+            ),
+          () => this.tickCancellationFallback(stored)
+        );
+      } catch (error) {
+        /*
+         * 区分 cancel 触发的 error 与真实 I/O 失败:
+         * cancel 命令调 handles.abort() 后 AbortSignal.aborted === true,
+         * perform reject 通常来自适配器内部(例如 docker kill)——
+         * 这种情况下不是环境损坏,Run 不应走 environment_offline 重 prepare,
+         * 而应直接走 cancelled 终态。
+         * 真实 I/O 错误(OOM、daemon unreachable 等)信号未被 abort,
+         * 继续上抛由 drive catch 走 markEnvironmentOffline。
+         */
+        if (borrowed.abort?.signal.aborted === true) {
+          throw new RunCancelledByAbortError(stored.id, error);
+        }
+        throw error;
       }
-      throw error;
+      /*
+       * 先完成幂等账本、再保存 Run 快照。若随后崩溃,接管 Worker 会复用
+       * completed 结果;若在此之前崩溃,executing claim 会阻止副作用重放。
+       */
+      await this.toolCalls.complete({
+        runId: stored.id,
+        callId: turn.callId,
+        result
+      });
     }
     /*
      * perform 是真实 I/O 的 await 边界,期间租约可能被抢占。
@@ -902,7 +968,8 @@ class DefaultRunEngine implements RunEngine, RunResumer, DisposableEngine {
 
   /**
    * Persists state before publishing it so an SSE client can immediately inspect
-   * the state named by an event. A database outbox will make both writes atomic.
+   * the state named by an event. Production injects RunTransitionWriter to commit
+   * the snapshot, event, and outbox atomically; the fallback preserves test adapters.
    *
    * 写入边界租约校验:持 token 的调用方在持久化前必须仍持有有效租约。
    * 失租说明新 owner 已(或即将)接管,这里必须抛 LeaseLostError 中止写入,
@@ -918,13 +985,18 @@ class DefaultRunEngine implements RunEngine, RunResumer, DisposableEngine {
       throw new LeaseLostError(stored.id);
     }
     stored.status = status;
-    // 回填新版本,使下一次保存仍基于最新观察到的版本
-    stored.version = await this.dependencies.store.save(stored);
-    await this.dependencies.events.publish({
-      runId: stored.id,
-      type: "status_changed",
-      data: { status }
-    });
+    if (this.dependencies.transitions) {
+      // PostgreSQL writer owns both writes, preventing a crash between state and event.
+      stored.version = await this.dependencies.transitions.persist(stored, status);
+    } else {
+      // Compatibility path for in-memory tests and non-production adapters.
+      stored.version = await this.dependencies.store.save(stored);
+      await this.dependencies.events.publish({
+        runId: stored.id,
+        type: "status_changed",
+        data: { status }
+      });
+    }
   }
 
   private async recordAgentLoopFailure(

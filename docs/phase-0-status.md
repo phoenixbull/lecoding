@@ -1,6 +1,6 @@
 # Phase 0 Status
 
-Updated: 2026-08-21
+Updated: 2026-08-25
 
 ## Evidence completed
 
@@ -47,13 +47,17 @@ Updated: 2026-08-21
 - The long-lived SSE handler replays backlog before ordered live events without a subscription race.
 - SSE clients deduplicate repeated outbox deliveries by stable per-Run sequence.
 - PostgreSQL behavior is exercised by an embedded PostgreSQL-compatible integration test.
+- PostgreSQL-backed `RunStore` persists the complete Run continuation snapshot and applies compare-and-swap version checks across adapter instances, so a replacement Worker reads the latest durable state and stale writers cannot overwrite it.
+- PostgreSQL-backed `ToolCallLedger` claims `(run_id, call_id)` before execution and records the result immediately after the environment returns. A completed result is replayed into the Run snapshot without executing the tool again; an unfinished claim is surfaced as `tool_call_outcome_unknown` and is never automatically replayed.
+- The side-effect crash window has a fault-injection test: Worker A executes the command and loses persistence before recording completion; Worker B observes the durable unfinished claim, performs zero additional commands, and fails the Run safely for reconciliation.
+- `PostgresRunTransitionWriter` atomically applies the Run snapshot CAS, allocates the next event sequence, inserts the `status_changed` event, and queues its outbox record in one SQL statement. RunEngine delegates transition ownership to this seam when injected; a stale snapshot produces neither a state write nor an orphan event.
 - Type checking passes across all implemented packages.
 
 ## Current automated baseline
 
 ```text
-Test files: 22 passed (2 docker PoC tests skipped when no daemon)
-Tests:      86 passed, 2 skipped
+Test files: 27 passed (1 Docker test file / 2 tests skipped when no daemon)
+Tests:      95 passed, 2 skipped
 Typecheck:  all implemented package tasks passed
 ```
 
@@ -61,7 +65,9 @@ Typecheck:  all implemented package tasks passed
 
 - Docker runtime limits and cancellation PoC
 - 20 golden tasks, with 5 representative tasks executed for baseline
+- Real model gateway PoC proving stable structured tool calls
+- Cost and duration baseline for 5 representative tasks
 
 ## Environment note
 
-Docker CLI 27.5.1 is installed, but the Docker daemon was not running during this baseline. PostgreSQL CLI is also not installed. No Docker isolation or pg-boss recovery claim is considered verified yet.
+Docker CLI 27.5.1 is installed, but the Docker daemon was not running during this baseline. PostgreSQL CLI is not installed; PostgreSQL adapters are currently verified with embedded PGlite. No target-Linux Docker isolation or real pg-boss recovery claim is considered verified yet.
