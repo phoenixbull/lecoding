@@ -1,0 +1,18 @@
+{
+  "name": "@lecoding/worker",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": "./src/index.ts",
+  "scripts": {
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@lecoding/openai-model": "workspace:*",
+    "@lecoding/policy": "workspace:*",
+    "@lecoding/run-engine": "workspace:*",
+    "@lecoding/run-environment": "workspace:*",
+    "@lecoding/run-events": "workspace:*",
+    "@lecoding/verifier": "workspace:*"
+  }
+}

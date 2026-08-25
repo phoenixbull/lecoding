@@ -22,6 +22,7 @@ Phase 0 implementation of the v3.2 design: a recoverable, policy-enforced coding
 - A fail-closed Linux-only evidence command builds the project sandbox image, rejects skipped isolation cases, and records target host/Docker/image metadata without accepting Docker Desktop as production evidence.
 - A 20-task deterministic golden catalog covers Node and Python changes; five stable cross-category representatives can run through an isolated, cost-accounted Codex CLI executor.
 - A provider-neutral OpenAI-compatible gateway maps strict `execute_command` function calls into RunEngine turns and durably carries Responses IDs or validated Chat Completions history through tool results.
+- `apps/worker` composes the durable PostgreSQL adapters, Docker environment, model gateway, policy, injected Verifier, cancellation listener, lease heartbeat, and recovery scanner behind one idempotent process lifecycle.
 
 ## Commands
 
@@ -46,10 +47,13 @@ Set `LECODING_MODEL_PROTOCOL` to `openai_responses` for `POST /responses`, or to
 
 Before starting a local Worker, export the ignored file into its process environment with `set -a; source .env.local; set +a`. Worker composition then applies `loadOpenAiCompatibleModelConfig(process.env)` and `createOpenAiCompatibleAgentModel(...)`. The repository does not implicitly parse dotenv files, and a production Worker should receive the same variables from its secret manager.
 
+The Worker also requires `LECODING_WORKER_ID`, canonical `LECODING_WORKTREE_ROOT` and `LECODING_WORKSPACE_PATH` values, plus an immutable `LECODING_DOCKER_IMAGE` digest; see `.env.example`. The workspace must be a dedicated strict child of the registered root. `composeProductionWorker(...)` takes ownership of an injected PostgreSQL query pool and a separate LISTEN connection, initializes every durable adapter before accepting work, and closes them after recovery and engine subscriptions stop.
+
 ## Workspace
 
 ```text
-apps/                 future Web, Worker, Desktop, and Local Runner processes
+apps/worker           production Worker composition and lifecycle root
+apps/                 future Web, Desktop, and Local Runner processes
 packages/contracts    versioned shared Run and environment contracts
 packages/run-engine   orchestration through the RunEngine interface
 packages/run-environment portable execution environment interface
@@ -64,4 +68,4 @@ docker/               sandbox image and runtime notes
 docs/                 threat model and Phase 0 evidence
 ```
 
-The current implementation has PostgreSQL adapters for Run snapshots, tool-call idempotency, leases, cancellation, and events, while tests can still use in-memory adapters. The golden-task catalog, Codex CLI and provider-native evaluation adapters, and RunEngine-native OpenAI-compatible model gateway are implemented. The configured third-party model passed the five-task Phase 0 development baseline; see [`docs/evidence/golden-baseline-2026-08-25.md`](docs/evidence/golden-baseline-2026-08-25.md). A production verifier, pg-boss composition, target-Linux isolation evidence, and the Web/Worker processes remain pending Phase 0/1 work.
+The current implementation has PostgreSQL adapters for Run snapshots, tool-call idempotency, leases, cancellation, and events, while tests can still use in-memory adapters. The Worker composition seam is implemented, but the deployment host must still supply concrete PostgreSQL connections and a production Verifier; pg-boss remains a later replacement for interval recovery. The golden-task catalog, Codex CLI and provider-native evaluation adapters, and RunEngine-native OpenAI-compatible model gateway are implemented. The configured third-party model passed the five-task Phase 0 development baseline; see [`docs/evidence/golden-baseline-2026-08-25.md`](docs/evidence/golden-baseline-2026-08-25.md). A production verifier, pg-boss adapter, executable Web/deployment hosts, and target-Linux isolation evidence remain pending Phase 0/1 work.

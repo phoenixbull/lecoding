@@ -251,7 +251,7 @@ export async function createRunEngine(
 }
 
 class DefaultRunEngine implements RunEngine, RunResumer, DisposableEngine {
-  private cancelSubscriptionStop: (() => void) | undefined;
+  private cancelSubscriptionStop: (() => void | Promise<void>) | undefined;
   private readonly toolCalls: ToolCallLedger;
 
   constructor(private readonly dependencies: RunEngineDependencies) {
@@ -292,8 +292,10 @@ class DefaultRunEngine implements RunEngine, RunResumer, DisposableEngine {
      * 幂等 dispose:即使 cancelSubscriptionStop 未赋值(无 cancelBus 路径)
      * 或被多次调用,也安全——空闭包是 no-op。
      */
-    this.cancelSubscriptionStop?.();
+    const stop = this.cancelSubscriptionStop;
     this.cancelSubscriptionStop = undefined;
+    // Await PostgreSQL UNLISTEN before the Worker closes its dedicated client.
+    await stop?.();
   }
 
   async start(input: StartRun): Promise<RunId> {

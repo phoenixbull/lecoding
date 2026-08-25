@@ -24,6 +24,27 @@ importers:
         specifier: ^3.2.0
         version: 3.2.7(@types/node@22.20.1)
 
+  apps/worker:
+    dependencies:
+      '@lecoding/openai-model':
+        specifier: workspace:*
+        version: link:../../packages/openai-model
+      '@lecoding/policy':
+        specifier: workspace:*
+        version: link:../../packages/policy
+      '@lecoding/run-engine':
+        specifier: workspace:*
+        version: link:../../packages/run-engine
+      '@lecoding/run-environment':
+        specifier: workspace:*
+        version: link:../../packages/run-environment
+      '@lecoding/run-events':
+        specifier: workspace:*
+        version: link:../../packages/run-events
+      '@lecoding/verifier':
+        specifier: workspace:*
+        version: link:../../packages/verifier
+
   packages/client-sdk:
     dependencies:
       '@lecoding/contracts':

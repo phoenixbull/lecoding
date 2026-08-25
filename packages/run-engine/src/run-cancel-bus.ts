@@ -15,9 +15,12 @@ import type { RunId } from "@lecoding/contracts";
 export interface RunCancelBus {
   publish(runId: RunId): Promise<void>;
   /**
-   * 注册订阅者;返回 stop() 用于 worker 关闭时取消订阅。
+   * 注册订阅者;返回 stop() 用于 worker 关闭时取消订阅。生产 LISTEN
+   * 清理可以异步,调用方必须 await 后再关闭底层数据库连接。
    */
-  subscribe(handler: (runId: RunId) => void): Promise<() => void>;
+  subscribe(
+    handler: (runId: RunId) => void
+  ): Promise<() => void | Promise<void>>;
 }
 
 /**
