@@ -1,0 +1,9 @@
+version: 1
+verify:
+  required:
+    - name: tests
+      argv: [pnpm, test]
+      covers: ["*"]
+    - name: typecheck
+      argv: [pnpm, typecheck]
+      covers: ["*"]
