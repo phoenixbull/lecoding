@@ -1,6 +1,6 @@
 # Phase 0 Status
 
-Updated: 2026-08-25
+Updated: 2026-08-26
 
 ## Evidence completed
 
@@ -64,14 +64,15 @@ Updated: 2026-08-25
 - A live two-turn smoke test against the configured third-party provider completed on 2026-08-25: the first Chat Completions request produced one valid `execute_command` call and durable continuation, and the second request accepted the synthetic command result and returned a completed assistant turn. No provider secret, model response text, or model identifier was captured in the evidence.
 - Chat Completions provider batches are serialized even when an upstream ignores `parallel_tool_calls: false`: the versioned continuation envelope persists the active call and remaining queue, RunEngine observes one call at a time, and the provider is contacted again only after every result in the batch is present. Duplicate call IDs, malformed queues, and mismatched result IDs fail closed.
 - The five representative golden tasks completed 5/5 through the configured third-party model and Docker-isolated execution path. The run observed 58,911 input tokens, 9,073 output tokens, and 93.039 seconds total duration; the `$0.010788` cost is an official pay-as-you-go list-price equivalent, not the actual personal Token Plan charge. Full evidence is recorded in [`evidence/golden-baseline-2026-08-25.md`](evidence/golden-baseline-2026-08-25.md).
-- The production Worker composition root now initializes PostgreSQL Run storage, atomic transitions/events, the tool-call ledger, leases, PG cancellation, Docker isolation, the configured OpenAI-compatible model, policy, an injected Verifier, heartbeat, and interval recovery as one unit. Its `start`/`stop` lifecycle is idempotent, stops producers before consumers, attempts every cleanup after failures, and waits for asynchronous UNLISTEN before closing database resources. Startup validates that the fixed workspace is a strict child of its registered root and that the Docker image is pinned by sha256 digest.
+- The production Worker composition root now initializes PostgreSQL Run storage, atomic transitions/events, the tool-call ledger, leases, PG cancellation, Docker isolation, the configured OpenAI-compatible model, policy, production Verifier, heartbeat, and interval recovery as one unit. Its `start`/`stop` lifecycle is idempotent, stops producers before consumers, attempts every cleanup after failures, and waits for asynchronous UNLISTEN before closing database resources. Startup validates that the fixed workspace is a strict child of its registered root and that the Docker image is pinned by sha256 digest.
+- `createProductionVerifier` now resolves an administrator-reviewed minimum plan, validates non-empty shell-free argv commands and unique evidence names, executes every required command in an independent restricted RunEnvironment, and always adds a system-owned `git diff --check HEAD --` check. Each user acceptance criterion must be covered exactly by at least one required check; missing coverage is `inconclusive`, while a nonzero required check is `failed`. Plan loading, container startup, command execution, diff inspection, and cleanup failures are converted to stable redacted `inconclusive` evidence rather than leaked exceptions. Worker composition constructs this Verifier directly and accepts only the reviewed-plan provider seam.
 - Type checking passes across all implemented packages.
 
 ## Current automated baseline
 
 ```text
-Test files: 39 passed, 1 opt-in live baseline file skipped
-Tests:      133 passed, 3 live tests skipped in the latest sandboxed run
+Test files: 40 passed, 1 opt-in live baseline file skipped
+Tests:      141 passed, 3 live tests skipped in the latest sandboxed run
 Typecheck:  all implemented package tasks passed
 ```
 
@@ -83,4 +84,4 @@ Typecheck:  all implemented package tasks passed
 
 Docker Desktop 27.5.1 previously ran all six Docker PoC tests successfully. The latest sandboxed full-suite run may skip daemon-backed cases when socket access is unavailable; deterministic Docker-plan tests still run. Docker Desktop on macOS and the five-task baseline are development evidence only, and no target-Linux isolation claim is considered verified yet. `run-target-linux-isolation.mjs` was exercised on this Darwin host and correctly refused to run before contacting Docker or writing a report. The configured third-party Chat Completions provider has passed both a two-turn protocol smoke test and the five-task quality baseline. PostgreSQL CLI is not installed, so PostgreSQL adapters remain verified with embedded PGlite, and no real pg-boss recovery claim is considered verified yet.
 
-The Worker composition is intentionally a deployment seam rather than a standalone executable today: a host still needs to create the real PostgreSQL pool plus dedicated LISTEN client and inject the production Verifier. It currently binds one dedicated workspace per Worker process because `RunEnvironment` is an instance dependency; resolving a distinct managed worktree per Run requires a later environment-factory contract instead of weakening the current mount boundary.
+The Worker composition is intentionally a deployment seam rather than a standalone executable today: a host still needs to create the real PostgreSQL pool plus dedicated LISTEN client and load committed/admin-reviewed project plans (the `.ai-agent/project.yaml` loader is not implemented yet). It currently binds one dedicated workspace per Worker process because `RunEnvironment` is an instance dependency; resolving a distinct managed worktree per Run requires a later environment-factory contract instead of weakening the current mount boundary. Verification commands have the Docker execution timeout but do not yet receive a cancellation signal from RunEngine, so cancellation during verification can leave the independent check running until that bound expires even though stale lease writes remain blocked.

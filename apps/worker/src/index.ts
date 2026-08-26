@@ -25,7 +25,10 @@ import {
   createPostgresRunEventRepository,
   createRunEventJournal
 } from "@lecoding/run-events";
-import type { Verifier } from "@lecoding/verifier";
+import {
+  createProductionVerifier,
+  type VerificationPlanProvider
+} from "@lecoding/verifier";
 
 /** Durable PostgreSQL resources supplied by the deployment-specific adapter. */
 export interface WorkerDatabase {
@@ -49,8 +52,8 @@ export interface WorkerConfig {
 /** Inputs whose concrete implementations belong to the deployment host. */
 export interface ProductionWorkerOptions {
   database: WorkerDatabase;
-  /** Production verification is injected until the dedicated verifier item lands. */
-  verifier: Verifier;
+  /** Reviewed project commands are the only configurable verification authority. */
+  verificationPlans: VerificationPlanProvider;
   environment: ModelEnvironment;
   /** Deterministic clock seam shared by state and event persistence. */
   now?: () => string;
@@ -119,7 +122,7 @@ export function loadWorkerConfig(environment: ModelEnvironment): WorkerConfig {
  * Composes the production Worker around PostgreSQL durability, Docker isolation,
  * the configured OpenAI-compatible model, policy checks, and recovery scanning.
  * The deployment host remains responsible for creating real pg connections and
- * injecting a Verifier; ownership transfers here and close() runs on shutdown.
+ * loading reviewed plans; ownership transfers here and close() runs on shutdown.
  */
 export async function composeProductionWorker(
   options: ProductionWorkerOptions
@@ -145,6 +148,18 @@ export async function composeProductionWorker(
     const cancelBus = createPostgresRunCancelBus(
       options.database.notifications
     );
+    const runtimeEnvironment = createDockerRunEnvironment({
+      image: config.dockerImage,
+      worktreeRoot: config.worktreeRoot,
+      workspacePath: config.workspacePath,
+      network: "none"
+    });
+    const verificationEnvironment = createDockerRunEnvironment({
+      image: config.dockerImage,
+      worktreeRoot: config.worktreeRoot,
+      workspacePath: config.workspacePath,
+      network: "none"
+    });
     const engine = await createRunEngine({
       store,
       transitions,
@@ -153,16 +168,14 @@ export async function composeProductionWorker(
       heartbeat: createIntervalLeaseHeartbeat(lease),
       handles: createInMemoryRunHandleRegistry(),
       cancelBus,
-      environment: createDockerRunEnvironment({
-        image: config.dockerImage,
-        worktreeRoot: config.worktreeRoot,
-        workspacePath: config.workspacePath,
-        network: "none"
-      }),
+      environment: runtimeEnvironment,
       model: createOpenAiCompatibleAgentModel({ config: modelConfig }),
       policy: createPolicyEngine(),
       events,
-      verifier: options.verifier,
+      verifier: createProductionVerifier({
+        plans: options.verificationPlans,
+        environment: verificationEnvironment
+      }),
       workerId: config.workerId,
       now,
       createId: options.createId ?? randomUUID

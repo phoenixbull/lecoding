@@ -22,7 +22,8 @@ Phase 0 implementation of the v3.2 design: a recoverable, policy-enforced coding
 - A fail-closed Linux-only evidence command builds the project sandbox image, rejects skipped isolation cases, and records target host/Docker/image metadata without accepting Docker Desktop as production evidence.
 - A 20-task deterministic golden catalog covers Node and Python changes; five stable cross-category representatives can run through an isolated, cost-accounted Codex CLI executor.
 - A provider-neutral OpenAI-compatible gateway maps strict `execute_command` function calls into RunEngine turns and durably carries Responses IDs or validated Chat Completions history through tool results.
-- `apps/worker` composes the durable PostgreSQL adapters, Docker environment, model gateway, policy, injected Verifier, cancellation listener, lease heartbeat, and recovery scanner behind one idempotent process lifecycle.
+- `apps/worker` composes the durable PostgreSQL adapters, Docker environment, model gateway, policy, production Verifier, cancellation listener, lease heartbeat, and recovery scanner behind one idempotent process lifecycle.
+- The production Verifier executes every reviewed required argv command plus a system-owned `git diff --check` in a separate restricted container; uncovered acceptance criteria and infrastructure uncertainty fail closed as `inconclusive`.
 
 ## Commands
 
@@ -59,7 +60,7 @@ packages/run-engine   orchestration through the RunEngine interface
 packages/run-environment portable execution environment interface
 packages/run-events    ordered Run event journal and SSE resume encoding
 packages/policy       capability authorization and hard denies
-packages/verifier     verification interface
+packages/verifier     reviewed-plan production verification and reports
 packages/workspace    Git worktree isolation
 packages/test-harness in-memory adapters for interface tests
 packages/golden-evals deterministic task fixtures and real-model baseline runner seams
@@ -68,4 +69,4 @@ docker/               sandbox image and runtime notes
 docs/                 threat model and Phase 0 evidence
 ```
 
-The current implementation has PostgreSQL adapters for Run snapshots, tool-call idempotency, leases, cancellation, and events, while tests can still use in-memory adapters. The Worker composition seam is implemented, but the deployment host must still supply concrete PostgreSQL connections and a production Verifier; pg-boss remains a later replacement for interval recovery. The golden-task catalog, Codex CLI and provider-native evaluation adapters, and RunEngine-native OpenAI-compatible model gateway are implemented. The configured third-party model passed the five-task Phase 0 development baseline; see [`docs/evidence/golden-baseline-2026-08-25.md`](docs/evidence/golden-baseline-2026-08-25.md). A production verifier, pg-boss adapter, executable Web/deployment hosts, and target-Linux isolation evidence remain pending Phase 0/1 work.
+The current implementation has PostgreSQL adapters for Run snapshots, tool-call idempotency, leases, cancellation, and events, while tests can still use in-memory adapters. The Worker and production Verifier composition seams are implemented, but the deployment host must still supply concrete PostgreSQL connections and a provider for committed/admin-reviewed project verification plans; pg-boss remains a later replacement for interval recovery. The golden-task catalog, Codex CLI and provider-native evaluation adapters, and RunEngine-native OpenAI-compatible model gateway are implemented. The configured third-party model passed the five-task Phase 0 development baseline; see [`docs/evidence/golden-baseline-2026-08-25.md`](docs/evidence/golden-baseline-2026-08-25.md). A project YAML plan loader, pg-boss adapter, executable Web/deployment hosts, and target-Linux isolation evidence remain pending Phase 0/1 work.

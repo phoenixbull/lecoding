@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import type { Engine, RunRecoveryWorker } from "@lecoding/run-engine";
-import type { Verifier } from "@lecoding/verifier";
+import type { VerificationPlanProvider } from "@lecoding/verifier";
 import {
   composeProductionWorker,
   createWorkerRuntime,
@@ -116,13 +116,21 @@ describe("composeProductionWorker", () => {
     const close = vi.fn(async () => {
       calls.push("database.close");
     });
-    const verifier: Verifier = {
-      verify: vi.fn(async () => ({ outcome: "passed" as const, checks: [] }))
+    const verificationPlans: VerificationPlanProvider = {
+      load: vi.fn(async () => ({
+        required: [
+          {
+            name: "tests",
+            argv: ["pnpm", "test"],
+            covers: ["Tests pass"]
+          }
+        ]
+      }))
     };
 
     const runtime = await composeProductionWorker({
       database: { executor, notifications, close },
-      verifier,
+      verificationPlans,
       environment: validWorkerEnvironment
     });
 
@@ -162,7 +170,7 @@ describe("composeProductionWorker", () => {
           },
           close
         },
-        verifier: { verify: vi.fn() },
+        verificationPlans: { load: vi.fn() },
         environment: {}
       })
     ).rejects.toThrow("LECODING_WORKER_ID");

@@ -31,6 +31,8 @@ Hard denies apply in every approval mode, including `full_access`:
 | Case | Required evidence |
 |---|---|
 | Model claims completion without verification | Run remains non-successful unless Verifier passes |
+| Model suggests weaker or replacement verification commands | Verifier executes only the administrator-reviewed required argv plan plus the non-removable system diff check; uncovered criteria remain inconclusive |
+| Verification infrastructure returns secret-bearing errors | VerificationReport records stable redacted failure categories and never copies command output or backend exceptions |
 | Full-access Run requests Docker socket | PolicyEngine returns fixed deny |
 | Concurrent task modifies source checkout | Change exists only inside the Run worktree |
 | Path contains `/var` versus `/private/var` alias | Repository identity uses filesystem `realpath` |
