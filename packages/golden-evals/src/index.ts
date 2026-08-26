@@ -600,6 +600,13 @@ export function createAgentModelGoldenTaskExecutor(
             completed = true;
             break;
           }
+          if (turn.type === "user_request") {
+            // Golden evaluations are intentionally unattended, so inventing an answer
+            // would invalidate their reproducibility and acceptance evidence.
+            failure =
+              "AgentModel requested user input during unattended golden evaluation";
+            break;
+          }
           const result = await environment.perform(handle, {
             type: "execute",
             command: turn.arguments.argv
@@ -615,7 +622,7 @@ export function createAgentModelGoldenTaskExecutor(
             stderr: result.stderr
           });
         }
-        if (!completed) {
+        if (!completed && !failure) {
           failure = `AgentModel exceeded ${maxTurns} turns`;
         }
         if (!failure) {

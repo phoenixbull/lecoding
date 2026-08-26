@@ -7,7 +7,8 @@ import type {
 } from "@lecoding/contracts";
 import type { AgentModel, AgentModelTurn, ModelToolResult } from "@lecoding/run-engine";
 import {
-  createInMemoryRunLease
+  createInMemoryRunLease,
+  InMemoryRunCancelBus
 } from "@lecoding/run-engine";
 import type { RunEnvironment } from "@lecoding/run-environment";
 import { FakeDockerRunEnvironment } from "@lecoding/run-environment";
@@ -35,6 +36,31 @@ describe("RunEngine", () => {
         outcome: "passed"
       }
     });
+
+  });
+
+  it("removes the runtime container while retaining terminal worktree evidence", async () => {
+    const environment = new RecordingRunEnvironment();
+    const harness = await createTestHarness({
+      environment,
+      verificationOutcome: "passed"
+    });
+    const runId = await harness.engine.start({
+      projectId: "project-1",
+      environmentId: "environment-1",
+      task: "Complete without tools",
+      acceptanceCriteria: ["Verification passes"],
+      approvalMode: "manual",
+      fileAccessScope: "workspace_only"
+    });
+
+    await harness.engine.resume(runId);
+
+    await expect(harness.engine.inspect(runId)).resolves.toMatchObject({
+      status: "succeeded"
+    });
+    expect(environment.disposeCount).toBe(1);
+    expect(environment.lastDisposeOutcome).toBe("keep");
   });
 
   it("executes a model-requested command before verification succeeds", async () => {
@@ -75,6 +101,43 @@ describe("RunEngine", () => {
         ]
       }
     });
+
+    const lifecycle = parseSseEvents(await harness.events.resume(runId)).filter(
+      (event) =>
+        event.type === "tool_started" ||
+        event.type === "tool_completed" ||
+        event.type === "verification_completed" ||
+        (event.type === "status_changed" &&
+          (event.data.status === "verifying" ||
+            event.data.status === "succeeded"))
+    );
+    expect(lifecycle).toEqual([
+      expect.objectContaining({
+        type: "tool_started",
+        data: { callId: "call-1", command: "pnpm", argumentCount: 2 }
+      }),
+      expect.objectContaining({
+        type: "tool_completed",
+        data: {
+          callId: "call-1",
+          outcome: "executed",
+          exitCode: 0,
+          recovered: false
+        }
+      }),
+      expect.objectContaining({
+        type: "status_changed",
+        data: { status: "verifying" }
+      }),
+      expect.objectContaining({
+        type: "verification_completed",
+        data: { outcome: "passed", checkCount: 1 }
+      }),
+      expect.objectContaining({
+        type: "status_changed",
+        data: { status: "succeeded" }
+      })
+    ]);
   });
 
   it("persists the model continuation with a tool result for the next turn", async () => {
@@ -153,6 +216,17 @@ describe("RunEngine", () => {
       }
     });
 
+    expect(parseSseEvents(await harness.events.resume(runId))).toContainEqual(
+      expect.objectContaining({
+        type: "approval_requested",
+        data: {
+          approvalId: "approval-call-approval",
+          callId: "call-approval",
+          summary: "Run pnpm test"
+        }
+      })
+    );
+
     await harness.engine.command(runId, {
       type: "approve",
       approvalId: "approval-call-approval",
@@ -203,6 +277,256 @@ describe("RunEngine", () => {
         checks: [{ name: "unchanged workspace", outcome: "passed" }]
       }
     });
+
+  });
+
+  it("persists a model question and continues from the matching user answer", async () => {
+    const observedResults: ModelToolResult[][] = [];
+    let turn = 0;
+    const harness = await createTestHarness({
+      model: {
+        async next(input) {
+          observedResults.push(structuredClone(input.toolResults));
+          turn += 1;
+          return turn === 1
+            ? {
+                type: "user_request" as const,
+                requestId: "question-1",
+                continuationId: "response-1",
+                prompt: "Which API path should remain compatible?"
+              }
+            : { type: "completed" as const, summary: "Continued with user input" };
+        }
+      }
+    });
+    const runId = await harness.engine.start({
+      projectId: "project-1",
+      environmentId: "environment-1",
+      task: "Update the API",
+      acceptanceCriteria: ["Compatibility is preserved"],
+      approvalMode: "manual",
+      fileAccessScope: "workspace_only"
+    });
+
+    await harness.engine.resume(runId);
+    await expect(harness.engine.inspect(runId)).resolves.toMatchObject({
+      status: "waiting_user",
+      pendingUserRequest: {
+        id: "question-1",
+        prompt: "Which API path should remain compatible?"
+      }
+    });
+    // A delayed browser tab must not answer a newer question by reusing stale state.
+    await expect(
+      harness.engine.command(runId, {
+        type: "answer",
+        commandId: "answer-stale",
+        requestId: "stale-question",
+        value: "This answer is stale"
+      })
+    ).rejects.toThrow(/matching user input/i);
+    await harness.engine.command(runId, {
+      type: "answer",
+      commandId: "answer-question-1",
+      requestId: "question-1",
+      value: "/api/v1 must remain compatible"
+    });
+    // A lost HTTP response can be retried after the Run has already completed.
+    await expect(
+      harness.engine.command(runId, {
+        type: "answer",
+        commandId: "answer-question-1",
+        requestId: "question-1",
+        value: "/api/v1 must remain compatible"
+      })
+    ).resolves.toBeUndefined();
+    await expect(
+      harness.engine.command(runId, {
+        type: "answer",
+        commandId: "answer-question-1",
+        requestId: "question-1",
+        value: "Use /api/v2 instead"
+      })
+    ).rejects.toThrow(/different payload/i);
+
+    await expect(harness.engine.inspect(runId)).resolves.toMatchObject({
+      status: "succeeded"
+    });
+    expect(observedResults[1]).toEqual([
+      {
+        callId: "question-1",
+        continuationId: "response-1",
+        status: "answered",
+        value: "/api/v1 must remain compatible"
+      }
+    ]);
+    const conversationEvents = (await harness.events.resume(runId))
+      .split("\n")
+      .filter((line) => line.startsWith("data: "))
+      .map((line) => JSON.parse(line.slice(6)))
+      .filter((event) =>
+        [
+          "agent_question",
+          "user_message_submitted",
+          "user_message_delivered"
+        ].includes(event.type)
+      );
+    expect(conversationEvents.map((event) => event.type)).toEqual([
+      "agent_question",
+      "user_message_submitted",
+      "user_message_delivered"
+    ]);
+  });
+
+  it("applies steering text to the question currently waiting for user input", async () => {
+    const observedResults: ModelToolResult[][] = [];
+    let turn = 0;
+    const harness = await createTestHarness({
+      model: {
+        async next(input) {
+          observedResults.push(structuredClone(input.toolResults));
+          turn += 1;
+          return turn === 1
+            ? {
+                type: "user_request" as const,
+                requestId: "question-steer",
+                prompt: "Which compatibility constraints apply?"
+              }
+            : { type: "completed" as const, summary: "Applied steering" };
+        }
+      }
+    });
+    const runId = await harness.engine.start({
+      projectId: "project-1",
+      environmentId: "environment-1",
+      task: "Update the API",
+      acceptanceCriteria: ["Compatibility is preserved"],
+      approvalMode: "manual",
+      fileAccessScope: "workspace_only"
+    });
+
+    await harness.engine.resume(runId);
+    await harness.engine.command(runId, {
+      type: "steer",
+      commandId: "steer-waiting-question",
+      message: "Keep response error codes unchanged"
+    });
+
+    await expect(harness.engine.inspect(runId)).resolves.toMatchObject({
+      status: "succeeded"
+    });
+    expect(observedResults[1]).toEqual([
+      {
+        callId: "question-steer",
+        status: "answered",
+        value: "Keep response error codes unchanged"
+      }
+    ]);
+  });
+
+  it("queues steering while another worker owns the active model turn", async () => {
+    const observedSteering: string[][] = [];
+    let resolveFirstTurn!: (turn: AgentModelTurn) => void;
+    let markModelEntered!: () => void;
+    const modelEntered = new Promise<void>((resolve) => {
+      markModelEntered = resolve;
+    });
+    let turn = 0;
+    const harness = await createTestHarness({
+      model: {
+        async next(input) {
+          observedSteering.push([...(input.steeringMessages ?? [])]);
+          turn += 1;
+          if (turn === 1) {
+            markModelEntered();
+            return new Promise<AgentModelTurn>((resolve) => {
+              resolveFirstTurn = resolve;
+            });
+          }
+          return { type: "completed" as const, summary: "Applied live steering" };
+        }
+      }
+    });
+    const runId = await harness.engine.start({
+      projectId: "project-1",
+      environmentId: "environment-1",
+      task: "Update the API",
+      acceptanceCriteria: ["Compatibility is preserved"],
+      approvalMode: "auto_review",
+      fileAccessScope: "workspace_only"
+    });
+
+    const resume = harness.engine.resume(runId);
+    await modelEntered;
+    // Mailbox enqueue must not contend for the lease held by the active driver.
+    await harness.engine.command(runId, {
+      type: "steer",
+      commandId: "steer-live-1",
+      message: "Keep the legacy error payload"
+    });
+    await harness.engine.command(runId, {
+      type: "steer",
+      commandId: "steer-live-1",
+      message: "Keep the legacy error payload"
+    });
+    await expect(
+      harness.engine.command(runId, {
+        type: "steer",
+        commandId: "steer-live-1",
+        message: "Replace the payload instead"
+      })
+    ).rejects.toThrow(/different message/i);
+    resolveFirstTurn({
+      type: "tool_call",
+      callId: "call-before-steer",
+      tool: "execute_command",
+      arguments: { argv: ["pnpm", "test"] }
+    });
+    await resume;
+
+    expect(observedSteering).toEqual([
+      [],
+      ["Keep the legacy error payload"]
+    ]);
+    const conversationEvents = (await harness.events.resume(runId))
+      .split("\n")
+      .filter((line) => line.startsWith("data: "))
+      .map((line) => JSON.parse(line.slice(6)))
+      .filter((event) =>
+        ["user_message_submitted", "user_message_delivered"].includes(
+          event.type
+        )
+      );
+    expect(conversationEvents).toEqual([
+      expect.objectContaining({
+        type: "user_message_submitted",
+        data: expect.objectContaining({
+          mode: "steer",
+          message: "Keep the legacy error payload"
+        })
+      }),
+      expect.objectContaining({
+        type: "user_message_delivered",
+        data: expect.objectContaining({ messageIds: ["steer:1"] })
+      })
+    ]);
+    await expect(harness.engine.inspect(runId)).resolves.toMatchObject({
+      status: "succeeded"
+    });
+    await expect(
+      harness.engine.command(runId, {
+        type: "steer",
+        commandId: "steer-live-1",
+        message: "Keep the legacy error payload"
+      })
+    ).resolves.toBeUndefined();
+    await expect(
+      harness.engine.command(runId, {
+        type: "steer",
+        commandId: "steer-live-1",
+        message: "Change the legacy payload"
+      })
+    ).rejects.toThrow(/different message/i);
   });
 
   it("does not re-invoke the model when resuming a run waiting for approval", async () => {
@@ -320,6 +644,22 @@ describe("RunEngine", () => {
         message: "Model provider unavailable"
       }
     });
+
+    expect(
+      parseSseEvents(await harness.events.resume(runId)).slice(-2)
+    ).toEqual([
+      expect.objectContaining({
+        type: "run_failed",
+        data: {
+          code: "agent_loop_failed",
+          message: "Model provider unavailable"
+        }
+      }),
+      expect.objectContaining({
+        type: "status_changed",
+        data: { status: "failed" }
+      })
+    ]);
   });
 
   it("cancels a run while it is waiting for approval", async () => {
@@ -371,7 +711,9 @@ describe("RunEngine", () => {
     const statuses = stream
       .split("\n")
       .filter((line) => line.startsWith("data: "))
-      .map((line) => JSON.parse(line.slice(6)).data.status);
+      .map((line) => JSON.parse(line.slice(6)))
+      .filter((event) => event.type === "status_changed")
+      .map((event) => event.data.status);
 
     expect(statuses).toEqual([
       "queued",
@@ -731,7 +1073,9 @@ describe("RunEngine", () => {
 
     await harness.engine.resume(runId);
     expect(environment.prepareCount).toBe(2);
-    expect(environment.disposeCount).toBe(1);
+    // One discard handles offline recovery; terminal completion then keeps evidence.
+    expect(environment.disposeCount).toBe(2);
+    expect(environment.lastDisposeOutcome).toBe("keep");
     const view = await harness.engine.inspect(runId);
     expect(view.status).toBe("succeeded");
     expect(view.failure).toBeUndefined();
@@ -740,7 +1084,7 @@ describe("RunEngine", () => {
   it("keeps terminal runs untouched when recover_environment arrives late", async () => {
     // 终态防复活:Run 已 succeeded 后迟到的恢复请求(命令或自检入口)
     // 必须是 no-op,不得把它拉回 environment_offline 重新驱动,
-    // 也不得 dispose 已完成 Run 的环境。
+    // 也不得在终态清理完成后重复 dispose。
     const environment = new RecordingRunEnvironment();
     const harness = await createTestHarness({
       environment,
@@ -765,7 +1109,8 @@ describe("RunEngine", () => {
     });
     await harness.engine.recoverEnvironment(runId);
 
-    expect(environment.disposeCount).toBe(0);
+    expect(environment.disposeCount).toBe(1);
+    expect(environment.lastDisposeOutcome).toBe("keep");
     expect(environment.prepareCount).toBe(1);
     await expect(harness.engine.inspect(runId)).resolves.toMatchObject({
       status: "succeeded"
@@ -1001,6 +1346,24 @@ describe("RunEngine", () => {
     await expect(harness.engine.inspect(runId)).resolves.toMatchObject({
       status: "succeeded"
     });
+    const toolEvents = parseSseEvents(
+      await harness.events.resume(runId)
+    ).filter(
+      (event) => event.type === "tool_started" || event.type === "tool_completed"
+    );
+    expect(toolEvents).toEqual([
+      expect.objectContaining({
+        type: "tool_started",
+        data: expect.objectContaining({ callId: "call-stale" })
+      }),
+      expect.objectContaining({
+        type: "tool_completed",
+        data: expect.objectContaining({
+          callId: "call-stale",
+          recovered: true
+        })
+      })
+    ]);
   });
 
   it("parks an environment failure and refuses to replay its uncertain call", async () => {
@@ -1369,6 +1732,56 @@ describe("RunEngine", () => {
     });
   });
 
+  it("passes the run cancellation signal into verification", async () => {
+    const cancelBus = new InMemoryRunCancelBus();
+    let enteredVerification!: () => void;
+    const verificationEntered = new Promise<void>((resolve) => {
+      enteredVerification = resolve;
+    });
+    let receivedSignal: AbortSignal | undefined;
+    const harness = await createTestHarness({
+      cancelBus,
+      verifier: {
+        async verify(_input, signal) {
+          receivedSignal = signal;
+          enteredVerification();
+          await new Promise<void>((resolve) => {
+            if (signal?.aborted) {
+              resolve();
+              return;
+            }
+            signal?.addEventListener("abort", () => resolve(), { once: true });
+          });
+          return {
+            outcome: "inconclusive",
+            checks: [
+              {
+                name: "verification cancellation",
+                outcome: "inconclusive",
+                detail: "Verification was cancelled"
+              }
+            ]
+          };
+        }
+      }
+    });
+    const runId = await harness.engine.start({
+      projectId: "project-1",
+      environmentId: "environment-1",
+      task: "Run checks",
+      acceptanceCriteria: ["Checks pass"],
+      approvalMode: "auto_review",
+      fileAccessScope: "workspace_only"
+    });
+
+    const resume = harness.engine.resume(runId);
+    await verificationEntered;
+    await cancelBus.publish(runId);
+    await resume;
+
+    expect(receivedSignal?.aborted).toBe(true);
+  });
+
   it("invalidates the lease when the heartbeat renew fails mid-await", async () => {
     // 跨进程旁路语义:本地心跳续约失败(例如网络分区、PG 不可达)时,
     // 心跳必须主动 invalidate 当前 lease 让其他 Worker 立刻接管,
@@ -1522,6 +1935,20 @@ describe("RunEngine", () => {
     });
   });
 });
+
+/** Parses the public SSE seam so lifecycle assertions match Web replay behavior. */
+function parseSseEvents(payload: string): Array<{
+  type: string;
+  data: Record<string, unknown>;
+}> {
+  return payload
+    .split("\n")
+    .filter((line) => line.startsWith("data: "))
+    .map((line) => JSON.parse(line.slice(6)) as {
+      type: string;
+      data: Record<string, unknown>;
+    });
+}
 
 describe("Docker runtime limits + cancellation PoC", () => {
   it("aborts an in-flight perform when the run is cancelled", async () => {

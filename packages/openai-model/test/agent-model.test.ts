@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vitest";
+import type { AgentModelInput, ModelToolResult } from "@lecoding/run-engine";
 import {
+  createOpenAiChatCompletionsAgentModel,
   createOpenAiResponsesAgentModel,
+  type OpenAiChatCompletionsRequest,
   type OpenAiResponsesRequest
 } from "../src/index.js";
 
@@ -53,19 +56,197 @@ describe("createOpenAiResponsesAgentModel", () => {
       model: "gpt-test",
       parallel_tool_calls: false,
       store: true,
-      tool_choice: "auto",
-      tools: [
-        {
+      tool_choice: "auto"
+    });
+    expect(requests[0]?.instructions).toContain(
+      "argv[0] is exactly one executable"
+    );
+    expect(requests[0]?.instructions).toContain(
+      "Git metadata is intentionally unavailable"
+    );
+    expect(requests[0]?.instructions).toContain(
+      "minimize exploratory commands"
+    );
+    expect(requests[0]?.instructions).toContain(
+      "do not execute acceptance verification commands"
+    );
+    expect(requests[0]?.tools).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
           type: "function",
           name: "execute_command",
           strict: true,
-          parameters: {
+          parameters: expect.objectContaining({
             type: "object",
             additionalProperties: false,
             required: ["argv"]
-          }
+          })
+        }),
+        expect.objectContaining({ name: "request_user_input" })
+      ])
+    );
+  });
+
+  it("maps a strict user-input request and its answer continuation", async () => {
+    const requests: OpenAiResponsesRequest[] = [];
+    const model = createOpenAiResponsesAgentModel({
+      model: "gpt-test",
+      client: {
+        async create(request) {
+          requests.push(request);
+          return requests.length === 1
+            ? {
+                id: "resp-question",
+                status: "completed",
+                output: [
+                  {
+                    type: "function_call",
+                    call_id: "question-1",
+                    name: "request_user_input",
+                    arguments: '{"question":"Which API version?"}'
+                  }
+                ]
+              }
+            : {
+                id: "resp-done",
+                status: "completed",
+                output: [],
+                output_text: "Done"
+              };
+        }
+      }
+    });
+
+    await expect(model.next(baseInput([]))).resolves.toEqual({
+      type: "user_request",
+      requestId: "question-1",
+      continuationId: "resp-question",
+      prompt: "Which API version?"
+    });
+    await model.next(
+      baseInput([
+        {
+          callId: "question-1",
+          continuationId: "resp-question",
+          status: "answered",
+          value: "Keep v1"
+        }
+      ])
+    );
+    expect(requests[1]).toMatchObject({
+      previous_response_id: "resp-question",
+      input: [
+        {
+          type: "function_call_output",
+          call_id: "question-1",
+          output: '{"status":"answered","value":"Keep v1"}'
         }
       ]
+    });
+  });
+
+  it("maps Chat Completions request_user_input calls", async () => {
+    const model = createOpenAiChatCompletionsAgentModel({
+      model: "chat-test",
+      client: {
+        async create() {
+          return {
+            choices: [
+              {
+                message: {
+                  content: null,
+                  tool_calls: [
+                    {
+                      id: "question-chat",
+                      type: "function",
+                      function: {
+                        name: "request_user_input",
+                        arguments: '{"question":"Which target?"}'
+                      }
+                    }
+                  ]
+                }
+              }
+            ]
+          };
+        }
+      }
+    });
+
+    await expect(model.next(baseInput([]))).resolves.toMatchObject({
+      type: "user_request",
+      requestId: "question-chat",
+      prompt: "Which target?"
+    });
+  });
+
+  it("forwards staged steering to Responses continuation input", async () => {
+    const requests: OpenAiResponsesRequest[] = [];
+    const model = createOpenAiResponsesAgentModel({
+      model: "gpt-test",
+      client: {
+        async create(request) {
+          requests.push(request);
+          return {
+            id: "resp-after-steer",
+            status: "completed",
+            output: [],
+            output_text: "Done"
+          };
+        }
+      }
+    });
+
+    await model.next({
+      ...baseInput([
+        {
+          callId: "call-1",
+          continuationId: "resp-before-steer",
+          status: "executed",
+          exitCode: 0,
+          stdout: "ok",
+          stderr: ""
+        }
+      ]),
+      steeringMessages: ["Keep the legacy error payload"]
+    });
+
+    expect(requests[0]).toMatchObject({
+      previous_response_id: "resp-before-steer",
+      input: [
+        expect.objectContaining({ type: "function_call_output", call_id: "call-1" }),
+        {
+          role: "user",
+          content: "Additional user instructions:\n- Keep the legacy error payload"
+        }
+      ]
+    });
+  });
+
+  it("appends staged steering to the Chat Completions user message", async () => {
+    const requests: OpenAiChatCompletionsRequest[] = [];
+    const model = createOpenAiChatCompletionsAgentModel({
+      model: "chat-test",
+      client: {
+        async create(request) {
+          requests.push(request);
+          return {
+            choices: [{ message: { content: "Done" } }]
+          };
+        }
+      }
+    });
+
+    await model.next({
+      ...baseInput([]),
+      steeringMessages: ["Preserve response error codes"]
+    });
+
+    expect(requests[0]?.messages).toContainEqual({
+      role: "user",
+      content: expect.stringContaining(
+        "Additional user instructions:\n- Preserve response error codes"
+      )
     });
   });
 
@@ -164,3 +345,18 @@ describe("createOpenAiResponsesAgentModel", () => {
     );
   });
 });
+
+function baseInput(toolResults: ModelToolResult[]): AgentModelInput {
+  return {
+    runId: "run-1",
+    run: {
+      projectId: "project-1",
+      environmentId: "environment-1",
+      task: "Fix the API",
+      acceptanceCriteria: ["Tests pass"],
+      approvalMode: "manual" as const,
+      fileAccessScope: "workspace_only" as const
+    },
+    toolResults
+  };
+}

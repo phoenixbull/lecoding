@@ -3,6 +3,7 @@ import type {
   EnvironmentResult,
   LeaseHeartbeat,
   PendingApproval,
+  PendingUserRequest,
   RetryPolicy,
   RunCommand,
   RunEngine,
@@ -14,6 +15,7 @@ import type {
   RunLeaseRenew,
   RunLeaseToken,
   RunResumer,
+  RunSummary,
   RunStatus,
   RunView,
   StartRun,
@@ -27,7 +29,15 @@ import {
   createInMemoryToolCallLedger,
   type ToolCallLedger
 } from "./postgres-tool-call-ledger.js";
-import type { RunTransitionWriter } from "./postgres-run-transition.js";
+import type {
+  PersistRunEvent,
+  RunTransitionWriter
+} from "./postgres-run-transition.js";
+import {
+  createInMemoryRunSteerMailbox,
+  type RunSteerMailbox,
+  type RunSteerMessage
+} from "./run-steer-mailbox.js";
 
 export type { RetryPolicy, LeaseHeartbeat } from "@lecoding/contracts";
 export {
@@ -36,6 +46,7 @@ export {
 } from "./postgres-run-store.js";
 export { createPostgresRunTransitionWriter } from "./postgres-run-transition.js";
 export type {
+  PersistRunEvent,
   PostgresRunTransitionWriterOptions,
   RunTransitionWriter
 } from "./postgres-run-transition.js";
@@ -44,6 +55,17 @@ export {
   createPostgresToolCallLedger,
   TOOL_CALL_LEDGER_SCHEMA_SQL
 } from "./postgres-tool-call-ledger.js";
+export {
+  createInMemoryRunSteerMailbox,
+  createPostgresRunSteerMailbox,
+  RUN_STEER_MAILBOX_SCHEMA_SQL
+} from "./run-steer-mailbox.js";
+export type {
+  EnqueueRunSteer,
+  EnqueueRunSteerResult,
+  RunSteerMailbox,
+  RunSteerMessage
+} from "./run-steer-mailbox.js";
 export type {
   ToolCallClaim,
   ToolCallClaimInput,
@@ -85,11 +107,26 @@ interface StoredRun {
   version: number;
   toolResults: ModelToolResult[];
   pendingApproval?: PendingApproval;
+  pendingUserRequest?: PendingUserRequest & { continuationId?: string };
+  /** Last mailbox position staged into this durable Run snapshot. */
+  steeringCursor?: number;
+  /** Messages staged for the next provider call and retained across Worker failure. */
+  pendingSteering?: RunSteerMessage[];
+  /** Durable receipts let uncertain user-command retries succeed after state advances. */
+  userCommandReceipts?: Record<string, UserCommandReceipt>;
+  /** Durable markers prevent duplicate tool-start events when another Worker takes over. */
+  startedToolCallIds?: string[];
   pendingToolCall?: Extract<AgentModelTurn, { type: "tool_call" }>;
   failure?: RunFailure;
   verification?: VerificationReport;
 }
 export type { StoredRun };
+
+interface UserCommandReceipt {
+  type: "answer" | "steer";
+  requestId: string;
+  value: string;
+}
 
 /**
  * 乐观并发冲突:调用方持有的 Run 快照版本已落后于持久化版本。
@@ -118,6 +155,8 @@ export { InMemoryRunCancelBus } from "./run-cancel-bus.js";
 export type { RunCancelBus } from "./run-cancel-bus.js";
 export { createPostgresRunCancelBus } from "./postgres-run-cancel-bus.js";
 export type { PostgresNotifiable } from "./postgres-run-cancel-bus.js";
+export { wrapPgClient } from "./pg-client-adapter.js";
+export type { PgClientLike } from "./pg-client-adapter.js";
 
 /**
  * 因 AbortSignal 触发而 reject 的 perform 错误:
@@ -144,6 +183,11 @@ export interface RunStore {
   get(runId: RunId): Promise<StoredRun | undefined>;
 }
 
+/** Read-only projection for bounded newest-first project Run history. */
+export interface RunHistory {
+  list(projectId: string, limit: number): Promise<RunSummary[]>;
+}
+
 export interface RunEngineDependencies {
   store: RunStore;
   environment: RunEnvironment;
@@ -162,6 +206,8 @@ export interface RunEngineDependencies {
   toolCalls?: ToolCallLedger;
   /** 原子保存 Run 状态和 RunEvent/outbox;生产 PostgreSQL 组合必须注入。 */
   transitions?: RunTransitionWriter;
+  /** Cross-Worker mailbox that accepts steer without contending for the driver lease. */
+  steerMailbox?: RunSteerMailbox;
   /**
    * 长 await 心跳守护器:prepare 等真实 I/O 期间按 leaseMilliseconds/2 间隔
    * 持续 renewLease。缺省为 setInterval 实现(详见 createIntervalLeaseHeartbeat)。
@@ -193,6 +239,8 @@ export interface AgentModelInput {
   runId: RunId;
   run: StartRun;
   toolResults: ModelToolResult[];
+  /** User instructions appended after Run creation and delivered at the next safe turn. */
+  steeringMessages?: string[];
 }
 
 export type AgentModelTurn =
@@ -203,6 +251,12 @@ export type AgentModelTurn =
       continuationId?: string;
       tool: "execute_command";
       arguments: { argv: string[] };
+    }
+  | {
+      type: "user_request";
+      requestId: string;
+      continuationId?: string;
+      prompt: string;
     }
   | { type: "completed"; summary: string };
 
@@ -221,6 +275,12 @@ export type ModelToolResult =
       continuationId?: string;
       status: "denied";
       reason: string;
+    }
+  | {
+      callId: string;
+      continuationId?: string;
+      status: "answered";
+      value: string;
     };
 
 export interface AgentModel {
@@ -253,6 +313,7 @@ export async function createRunEngine(
 class DefaultRunEngine implements RunEngine, RunResumer, DisposableEngine {
   private cancelSubscriptionStop: (() => void | Promise<void>) | undefined;
   private readonly toolCalls: ToolCallLedger;
+  private readonly steerMailbox: RunSteerMailbox;
 
   constructor(private readonly dependencies: RunEngineDependencies) {
     /*
@@ -261,6 +322,9 @@ class DefaultRunEngine implements RunEngine, RunResumer, DisposableEngine {
      * resolve 后订阅一定生效,worker 可以立即 publish。
      */
     this.toolCalls = dependencies.toolCalls ?? createInMemoryToolCallLedger();
+    this.steerMailbox =
+      dependencies.steerMailbox ??
+      createInMemoryRunSteerMailbox({ events: dependencies.events });
   }
 
   /*
@@ -333,6 +397,10 @@ class DefaultRunEngine implements RunEngine, RunResumer, DisposableEngine {
        * 直接返回,允许调度器无副作用地轮询,且不破坏现有终态。
        */
       if (!isDriverStartable(stored.status)) {
+        return;
+      }
+      // Durable waits must remain paused across Worker replacement until a command resolves them.
+      if (stored.status === "waiting_approval" || stored.status === "waiting_user") {
         return;
       }
       const borrowed = this.dependencies.handles.borrow(runId);
@@ -423,6 +491,42 @@ class DefaultRunEngine implements RunEngine, RunResumer, DisposableEngine {
   }
 
   async command(runId: RunId, command: RunCommand): Promise<void> {
+    if (command.type === "steer" || command.type === "answer") {
+      const current = await this.requireRun(runId);
+      validateSteeringCommandId(command.commandId);
+      const value = command.type === "answer" ? command.value : command.message;
+      validateSteeringMessage(value);
+      const receipt = current.userCommandReceipts?.[command.commandId];
+      if (receipt) {
+        assertMatchingUserCommandReceipt(receipt, command);
+        return;
+      }
+      if (command.type === "steer" && current.status !== "waiting_user") {
+        if (!isLiveSteerableStatus(current.status)) {
+          const existing = await this.steerMailbox.getByCommandId(
+            runId,
+            command.commandId
+          );
+          if (existing) {
+            if (existing.message !== command.message) {
+              throw new Error(
+                "Steering commandId was reused with a different message"
+              );
+            }
+            return;
+          }
+          throw new Error(`Run cannot accept steering in status: ${current.status}`);
+        }
+        // Enqueue bypasses the active driver's lease; consumption happens only at
+        // a subsequent model boundary and never interrupts an in-flight tool action.
+        await this.steerMailbox.enqueue({
+          runId,
+          commandId: command.commandId,
+          message: command.message
+        });
+        return;
+      }
+    }
     /*
      * 命令也要求 lease:防止用户取消/批准落入其他 Worker 正在驱动的循环,
      * 与已存在的乐观版本共同把并发写收敛到唯一 owner。
@@ -503,12 +607,91 @@ class DefaultRunEngine implements RunEngine, RunResumer, DisposableEngine {
       }
       delete stored.pendingApproval;
       delete stored.pendingToolCall;
+      delete stored.pendingUserRequest;
       // dispose 期间租约可能被抢占,终态写入前由 token 校验兜底
       await this.transition(stored, "cancelled", token);
       return;
     }
     if (command.type === "steer" || command.type === "answer") {
-      throw new Error(`Run command is not implemented: ${command.type}`);
+      const existingReceipt = stored.userCommandReceipts?.[command.commandId];
+      if (existingReceipt) {
+        assertMatchingUserCommandReceipt(existingReceipt, command);
+        return;
+      }
+      const request = stored.pendingUserRequest;
+      if (
+        stored.status !== "waiting_user" ||
+        !request ||
+        (command.type === "answer" && request.id !== command.requestId)
+      ) {
+        throw new Error("Run is not waiting for matching user input");
+      }
+      const value = command.type === "answer" ? command.value : command.message;
+      validateSteeringMessage(value);
+      validateSteeringCommandId(command.commandId);
+      if (Object.keys(stored.userCommandReceipts ?? {}).length >= 100) {
+        throw new Error("Run user-command receipt limit exceeded");
+      }
+      stored.toolResults.push({
+        callId: request.id,
+        ...(request.continuationId
+          ? { continuationId: request.continuationId }
+          : {}),
+        status: "answered",
+        value
+      });
+      delete stored.pendingUserRequest;
+      stored.userCommandReceipts = {
+        ...(stored.userCommandReceipts ?? {}),
+        [command.commandId]: {
+          type: command.type,
+          requestId: request.id,
+          value
+        }
+      };
+      const messageId = `${command.type}:${command.commandId}`;
+      const conversationEvents: PersistRunEvent[] = [
+        {
+          type: "user_message_submitted",
+          data: {
+            messageId,
+            commandId: command.commandId,
+            mode: command.type,
+            message: value
+          }
+        },
+        {
+          type: "user_message_delivered",
+          data: { messageIds: [messageId] }
+        }
+      ];
+      const borrowed = this.dependencies.handles.borrow(stored.id);
+      if (borrowed) {
+        this.dependencies.handles.restore(stored.id, borrowed);
+        stored.status = "running";
+        await this.persistEvents(
+          stored,
+          [
+            { type: "status_changed", data: { status: "running" } },
+            ...conversationEvents
+          ],
+          token
+        );
+      } else {
+        // A replacement Worker recreates the environment only after input arrives.
+        stored.status = "preparing";
+        await this.persistEvents(
+          stored,
+          [
+            { type: "status_changed", data: { status: "preparing" } },
+            ...conversationEvents
+          ],
+          token
+        );
+        await this.prepareAndRun(stored, token, true);
+      }
+      await this.drive(stored, token);
+      return;
     }
     if (
       stored.status !== "waiting_approval" ||
@@ -538,7 +721,16 @@ class DefaultRunEngine implements RunEngine, RunResumer, DisposableEngine {
         });
         // The denied result is now the durable continuation; the pending call is consumed.
         delete stored.pendingToolCall;
-        stored.version = await this.dependencies.store.save(stored);
+        await this.persistEvents(
+          stored,
+          [
+            {
+              type: "tool_completed",
+              data: { callId: toolCall.callId, outcome: "denied" }
+            }
+          ],
+          token
+        );
       } else {
         await this.performWith(stored, toolCall, borrowed, token);
       }
@@ -573,6 +765,14 @@ class DefaultRunEngine implements RunEngine, RunResumer, DisposableEngine {
       status: run.status,
       ...(run.pendingApproval
         ? { pendingApproval: run.pendingApproval }
+        : {}),
+      ...(run.pendingUserRequest
+        ? {
+            pendingUserRequest: {
+              id: run.pendingUserRequest.id,
+              prompt: run.pendingUserRequest.prompt
+            }
+          }
         : {}),
       ...(run.failure ? { failure: run.failure } : {}),
       ...(run.verification ? { verification: run.verification } : {})
@@ -675,9 +875,12 @@ class DefaultRunEngine implements RunEngine, RunResumer, DisposableEngine {
 
   private async prepareAndRun(
     stored: StoredRun,
-    token: RunLeaseToken
+    token: RunLeaseToken,
+    alreadyPreparing = false
   ): Promise<void> {
-    await this.transition(stored, "preparing", token);
+    if (!alreadyPreparing) {
+      await this.transition(stored, "preparing", token);
+    }
     /*
      * prepare 是真实环境的长 await(镜像拉取可达数分钟),
      * 必须用 heartbeat 在 leaseMilliseconds/2 间隔持续 renewLease,
@@ -744,14 +947,42 @@ class DefaultRunEngine implements RunEngine, RunResumer, DisposableEngine {
         // A replacement Worker resumes the exact provider call instead of minting a new callId.
         turn = stored.pendingToolCall;
       } else {
+        stored = await this.stageSteering(stored, token);
         const modelTurn = await this.dependencies.model.next({
           runId: stored.id,
           run: stored.input,
-          toolResults: stored.toolResults
+          toolResults: stored.toolResults,
+          steeringMessages: (stored.pendingSteering ?? []).map(
+            (entry) => entry.message
+          )
         });
 
         if (modelTurn.type === "completed") {
+          if (stored.pendingSteering?.length) {
+            delete stored.pendingSteering;
+            stored.version = await this.dependencies.store.save(stored);
+          }
           break;
+        }
+        if (modelTurn.type === "user_request") {
+          delete stored.pendingSteering;
+          stored.pendingUserRequest = {
+            id: modelTurn.requestId,
+            prompt: modelTurn.prompt,
+            ...(modelTurn.continuationId
+              ? { continuationId: modelTurn.continuationId }
+              : {})
+          };
+          await this.transition(stored, "waiting_user", token, [
+            {
+              type: "agent_question",
+              data: {
+                requestId: modelTurn.requestId,
+                prompt: modelTurn.prompt
+              }
+            }
+          ]);
+          return;
         }
         turn = modelTurn;
         /*
@@ -760,6 +991,7 @@ class DefaultRunEngine implements RunEngine, RunResumer, DisposableEngine {
          * tool ledger can recover the same claim without invoking the model again.
          */
         stored.pendingToolCall = turn;
+        delete stored.pendingSteering;
         stored.version = await this.dependencies.store.save(stored);
       }
 
@@ -782,7 +1014,16 @@ class DefaultRunEngine implements RunEngine, RunResumer, DisposableEngine {
           callId: turn.callId,
           summary: `Run ${turn.arguments.argv.join(" ")}`
         };
-        await this.transition(stored, "waiting_approval", token);
+        await this.transition(stored, "waiting_approval", token, [
+          {
+            type: "approval_requested",
+            data: {
+              approvalId: stored.pendingApproval.id,
+              callId: stored.pendingApproval.callId,
+              summary: stored.pendingApproval.summary
+            }
+          }
+        ]);
         return;
       }
       if (decision.decision === "deny") {
@@ -790,7 +1031,9 @@ class DefaultRunEngine implements RunEngine, RunResumer, DisposableEngine {
           code: "policy_denied",
           message: decision.reason
         };
-        await this.transition(stored, "failed", token);
+        await this.transition(stored, "failed", token, [
+          this.runFailureEvent(stored.failure)
+        ]);
         return;
       }
 
@@ -854,7 +1097,7 @@ class DefaultRunEngine implements RunEngine, RunResumer, DisposableEngine {
      * verify 是最长的远端 await 边界(可达数十秒),
      * 必须用 heartbeat 守护,verify 期间持续持有 lease。
      */
-    const verification = await this.dependencies.heartbeat.withHeartbeat(
+    let verification = await this.dependencies.heartbeat.withHeartbeat(
       token,
       this.heartbeatIntervalMs(),
       () =>
@@ -862,15 +1105,87 @@ class DefaultRunEngine implements RunEngine, RunResumer, DisposableEngine {
           runId: stored.id,
           run: stored.input,
           environment: reportEnvironment
-        })
+        }, borrowed.abort?.signal)
     );
+
+    /*
+     * Terminal evidence lives in the managed worktree, not the runtime container.
+     * Dispose with "keep" removes the container and dependency volume while the
+     * Git workspace adapter retains the patch for API inspection.
+    */
+    try {
+      await this.dependencies.heartbeat.withHeartbeat(
+        token,
+        this.heartbeatIntervalMs(),
+        () => this.dependencies.environment.dispose(borrowed.handle, "keep")
+      );
+    } catch {
+      verification = {
+        outcome: verification.outcome === "failed" ? "failed" : "inconclusive",
+        checks: [
+          ...verification.checks,
+          {
+            name: "runtime cleanup",
+            outcome: "inconclusive",
+            detail: "Run environment could not be disposed"
+          }
+        ]
+      };
+    } finally {
+      this.dependencies.handles.release(stored.id);
+    }
 
     stored.verification = verification;
     await this.transition(
       stored,
       verification.outcome === "passed" ? "succeeded" : "failed",
+      token,
+      [
+        {
+          type: "verification_completed",
+          data: {
+            outcome: verification.outcome,
+            checkCount: verification.checks.length
+          }
+        }
+      ]
+    );
+  }
+
+  /** Stages ordered mailbox rows into the Run snapshot before a provider call. */
+  private async stageSteering(
+    stored: StoredRun,
+    token: RunLeaseToken
+  ): Promise<StoredRun> {
+    const messages = await this.steerMailbox.readAfter(
+      stored.id,
+      stored.steeringCursor ?? 0,
+      20
+    );
+    if (messages.length === 0) {
+      return stored;
+    }
+    if (!(await this.renewLease(token))) {
+      throw new LeaseLostError(stored.id);
+    }
+    stored.pendingSteering = [
+      ...(stored.pendingSteering ?? []),
+      ...messages
+    ];
+    stored.steeringCursor = messages.at(-1)!.sequence;
+    await this.persistEvents(
+      stored,
+      [
+        {
+          type: "user_message_delivered",
+          data: {
+            messageIds: messages.map((message) => `steer:${message.sequence}`)
+          }
+        }
+      ],
       token
     );
+    return stored;
   }
 
   private async performWith(
@@ -884,6 +1199,28 @@ class DefaultRunEngine implements RunEngine, RunResumer, DisposableEngine {
       type: "execute" as const,
       command: turn.arguments.argv
     };
+    if (!(stored.startedToolCallIds ?? []).includes(turn.callId)) {
+      stored.startedToolCallIds = [
+        ...(stored.startedToolCallIds ?? []),
+        turn.callId
+      ];
+      /* Only the executable name and argument count enter the event stream; raw
+       * arguments may contain credentials and remain inside the protected action. */
+      await this.persistEvents(
+        stored,
+        [
+          {
+            type: "tool_started",
+            data: {
+              callId: turn.callId,
+              command: turn.arguments.argv[0] ?? "unknown",
+              argumentCount: turn.arguments.argv.length
+            }
+          }
+        ],
+        token
+      );
+    }
     /*
      * claim 必须先于环境调用落库。若已有未完成 claim,说明前任 Worker
      * 可能已经产生副作用,此时宁可停止并要求核对,也不能自动重放。
@@ -898,7 +1235,9 @@ class DefaultRunEngine implements RunEngine, RunResumer, DisposableEngine {
         code: "tool_call_outcome_unknown",
         message: `Tool call outcome requires reconciliation: ${turn.callId}`
       };
-      await this.transition(stored, "failed", token);
+      await this.transition(stored, "failed", token, [
+        this.runFailureEvent(stored.failure)
+      ]);
       return;
     }
     if (claim.status === "completed") {
@@ -971,8 +1310,29 @@ class DefaultRunEngine implements RunEngine, RunResumer, DisposableEngine {
     });
     // Result and pending-call consumption land in the same optimistic snapshot save.
     delete stored.pendingToolCall;
-    // 回填新版本,使下一次保存仍基于最新观察到的版本
-    stored.version = await this.dependencies.store.save(stored);
+    // Completed calls no longer need a takeover marker; unresolved calls retain it.
+    stored.startedToolCallIds = (stored.startedToolCallIds ?? []).filter(
+      (callId) => callId !== turn.callId
+    );
+    if (stored.startedToolCallIds.length === 0) {
+      delete stored.startedToolCallIds;
+    }
+    // Result consumption and completion evidence share one optimistic write.
+    await this.persistEvents(
+      stored,
+      [
+        {
+          type: "tool_completed",
+          data: {
+            callId: turn.callId,
+            outcome: "executed",
+            exitCode: result.exitCode,
+            recovered: claim.status === "completed"
+          }
+        }
+      ],
+      token
+    );
   }
 
   private async requireRun(runId: RunId): Promise<StoredRun> {
@@ -1013,12 +1373,33 @@ class DefaultRunEngine implements RunEngine, RunResumer, DisposableEngine {
   private async transition(
     stored: StoredRun,
     status: RunStatus,
-    token?: RunLeaseToken
+    token?: RunLeaseToken,
+    beforeStatusEvents: PersistRunEvent[] = []
   ): Promise<void> {
     if (token && !(await this.renewLease(token))) {
       throw new LeaseLostError(stored.id);
     }
     stored.status = status;
+    if (beforeStatusEvents.length > 0) {
+      /* Detail events precede the status delimiter so terminal SSE replay includes
+       * the evidence before clients intentionally stop at the terminal status. */
+      const events = [
+        ...beforeStatusEvents,
+        { type: "status_changed" as const, data: { status } }
+      ];
+      if (this.dependencies.transitions) {
+        stored.version = await this.dependencies.transitions.persistEvents(
+          stored,
+          events
+        );
+      } else {
+        stored.version = await this.dependencies.store.save(stored);
+        for (const event of events) {
+          await this.dependencies.events.publish({ runId: stored.id, ...event });
+        }
+      }
+      return;
+    }
     if (this.dependencies.transitions) {
       // PostgreSQL writer owns both writes, preventing a crash between state and event.
       stored.version = await this.dependencies.transitions.persist(stored, status);
@@ -1033,6 +1414,29 @@ class DefaultRunEngine implements RunEngine, RunResumer, DisposableEngine {
     }
   }
 
+  /** Persists snapshot mutations with one or more non-derived events atomically in production. */
+  private async persistEvents(
+    stored: StoredRun,
+    events: PersistRunEvent[],
+    token: RunLeaseToken
+  ): Promise<void> {
+    if (!(await this.renewLease(token))) {
+      throw new LeaseLostError(stored.id);
+    }
+    if (this.dependencies.transitions) {
+      stored.version = await this.dependencies.transitions.persistEvents(
+        stored,
+        events
+      );
+      return;
+    }
+    // Compatibility path is atomic within deterministic in-memory adapters.
+    stored.version = await this.dependencies.store.save(stored);
+    for (const event of events) {
+      await this.dependencies.events.publish({ runId: stored.id, ...event });
+    }
+  }
+
   private async recordAgentLoopFailure(
     stored: StoredRun,
     error: unknown,
@@ -1043,7 +1447,9 @@ class DefaultRunEngine implements RunEngine, RunResumer, DisposableEngine {
       message: error instanceof Error ? error.message : "Agent loop failed"
     };
     try {
-      await this.transition(stored, "failed", token);
+      await this.transition(stored, "failed", token, [
+        this.runFailureEvent(stored.failure)
+      ]);
     } catch (transitionError) {
       /*
        * 冲突说明并发命令已写入终态(如 cancelled),失租说明新 owner 已接管:
@@ -1057,6 +1463,14 @@ class DefaultRunEngine implements RunEngine, RunResumer, DisposableEngine {
       }
       throw transitionError;
     }
+  }
+
+  /** Converts a durable failure into the bounded public timeline payload. */
+  private runFailureEvent(failure: RunFailure): PersistRunEvent {
+    return {
+      type: "run_failed",
+      data: { code: failure.code, message: failure.message }
+    };
   }
 
   private async acquireLease(
@@ -1339,5 +1753,47 @@ function isDriverStartable(status: RunStatus): boolean {
       const exhaustive: never = status;
       return exhaustive;
     }
+  }
+}
+
+/** Statuses where a mailbox instruction can still reach a future model boundary. */
+function isLiveSteerableStatus(status: RunStatus): boolean {
+  return (
+    status === "queued" ||
+    status === "preparing" ||
+    status === "running" ||
+    status === "environment_offline"
+  );
+}
+
+/** Bounds durable user-authored mailbox content before any adapter persists it. */
+function validateSteeringMessage(message: string): void {
+  const length = message.trim().length;
+  if (length < 1 || length > 4_000) {
+    throw new Error("User input must contain between 1 and 4000 characters");
+  }
+}
+
+/** Bounds the client-generated idempotency identity before persistence. */
+function validateSteeringCommandId(commandId: string): void {
+  if (commandId.trim() === "" || commandId.length > 128) {
+    throw new Error("Steering commandId must contain between 1 and 128 characters");
+  }
+}
+
+/** Exact command retries succeed; an idempotency-key payload change fails closed. */
+function assertMatchingUserCommandReceipt(
+  receipt: UserCommandReceipt,
+  command: Extract<RunCommand, { type: "answer" | "steer" }>
+): void {
+  const value = command.type === "answer" ? command.value : command.message;
+  const requestMatches =
+    command.type === "steer" || receipt.requestId === command.requestId;
+  if (
+    receipt.type !== command.type ||
+    receipt.value !== value ||
+    !requestMatches
+  ) {
+    throw new Error("User commandId was reused with a different payload");
   }
 }

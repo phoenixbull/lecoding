@@ -8,7 +8,7 @@ Phase 0 implementation of the v3.2 design: a recoverable, policy-enforced coding
 - A structured FakeModel command call flows through PolicyEngine and RunEnvironment before verification.
 - Manual Runs can pause for one-time approval, resume, reject a tool call without execution, or cancel.
 - Agent-loop errors are persisted as queryable Run failures.
-- Strict RunEvent V1 envelopes support ordered status events and `Last-Event-ID` resume.
+- Strict RunEvent V1 envelopes support ordered lifecycle/status evidence and `Last-Event-ID` resume. Approval requests, bounded tool start/completion metadata, verification summaries, and stable Run failures are committed with their matching durable Run state; terminal evidence precedes the terminal status delimiter so complete replay cannot omit it.
 - Client SDK exposes a fetch-based event stream usable by Web and Electron clients.
 - PostgreSQL event persistence writes its leased delivery outbox atomically.
 - PostgreSQL Run snapshots survive Worker replacement with optimistic version checks.
@@ -16,14 +16,18 @@ Phase 0 implementation of the v3.2 design: a recoverable, policy-enforced coding
 - An atomic transition writer commits Run state, RunEvent, and delivery outbox together.
 - The event dispatcher delivers outbox batches with documented at-least-once semantics.
 - The SSE handler combines durable replay with race-safe, deduplicated live delivery.
+- RunEvent V1 now records user-message submission, safe-boundary delivery, and Agent questions, so the conversation timeline survives refresh and Worker replacement. Answer and steer commands use client-stable `commandId` values. PostgreSQL atomically persists mailbox submission or waiting-question resolution together with the matching Run snapshot, conversation events, and SSE outbox records; exact retries reuse their durable receipt.
 - PolicyEngine hard-denies Docker socket reads even in full-access mode.
-- GitWorkspace creates an isolated worktree and leaves the source checkout unchanged.
+- GitWorkspace creates or safely reopens one isolated worktree per Run and leaves the source checkout unchanged.
 - Docker creation uses an auditable fixed-security plan; the macOS Docker Desktop PoC verifies non-root/read-only execution, bounded resources, scoped writable mounts, and cancellation.
 - A fail-closed Linux-only evidence command builds the project sandbox image, rejects skipped isolation cases, and records target host/Docker/image metadata without accepting Docker Desktop as production evidence.
 - A 20-task deterministic golden catalog covers Node and Python changes; five stable cross-category representatives can run through an isolated, cost-accounted Codex CLI executor.
-- A provider-neutral OpenAI-compatible gateway maps strict `execute_command` function calls into RunEngine turns and durably carries Responses IDs or validated Chat Completions history through tool results.
+- A provider-neutral OpenAI-compatible gateway maps strict `execute_command` and `request_user_input` function calls into RunEngine turns and durably carries Responses IDs or validated Chat Completions history through tool results.
 - `apps/worker` composes the durable PostgreSQL adapters, Docker environment, model gateway, policy, production Verifier, cancellation listener, lease heartbeat, and recovery scanner behind one idempotent process lifecycle.
-- The production Verifier executes every reviewed required argv command plus a system-owned `git diff --check` in a separate restricted container; uncovered acceptance criteria and infrastructure uncertainty fail closed as `inconclusive`.
+- The executable Worker host creates a bounded node-postgres Pool plus a rotating dedicated LISTEN session, proves both paths ready before startup, and drains them on SIGINT/SIGTERM without logging the database URI.
+- The production Verifier executes every reviewed required argv command in a separate restricted container, while a system-owned host checker revalidates the managed worktree and applies Diff Safety without exposing Git metadata to either container. Uncovered acceptance criteria and infrastructure uncertainty fail closed as `inconclusive`, and Run cancellation aborts an in-flight verification command immediately.
+- A loopback-only versioned HTTP control plane creates, inspects, streams, cancels, resolves single-call approvals, resumes persisted user questions, and queues live steering without competing for the active driver's lease while keeping the trusted project identity server-owned.
+- The Phase 1 Web console creates Runs through the shared Client SDK, restores the newest Run after refresh, switches among a bounded project history, renders managed-worktree file changes and unified Diff, automatically resumes strict SSE streams from `Last-Event-ID`, suppresses at-least-once duplicates, replays the complete conversation and execution timeline through its terminal status event, renders bounded approval/tool/verification/failure detail plus current verification evidence, exposes cancellation, resolves only the displayed pending approval, answers a displayed `waiting_user` turn, and appends constraints while a Run is queued, preparing, running, or awaiting environment recovery.
 
 ## Commands
 
@@ -48,7 +52,21 @@ Set `LECODING_MODEL_PROTOCOL` to `openai_responses` for `POST /responses`, or to
 
 Before starting a local Worker, export the ignored file into its process environment with `set -a; source .env.local; set +a`. Worker composition then applies `loadOpenAiCompatibleModelConfig(process.env)` and `createOpenAiCompatibleAgentModel(...)`. The repository does not implicitly parse dotenv files, and a production Worker should receive the same variables from its secret manager.
 
-The Worker also requires `LECODING_WORKER_ID`, canonical `LECODING_WORKTREE_ROOT` and `LECODING_WORKSPACE_PATH` values, plus an immutable `LECODING_DOCKER_IMAGE` digest; see `.env.example`. The workspace must be a dedicated strict child of the registered root. `composeProductionWorker(...)` takes ownership of an injected PostgreSQL query pool and a separate LISTEN connection, initializes every durable adapter before accepting work, and closes them after recovery and engine subscriptions stop.
+The Worker also requires `LECODING_DATABASE_URL`, `LECODING_WORKER_ID`, and a canonical `LECODING_WORKTREE_ROOT`, plus immutable `LECODING_DOCKER_IMAGE` and project-specific `LECODING_VERIFICATION_IMAGE` references; see `.env.example`. Deployment uses repository digests, while a development host may use an exact local `sha256:<image-id>`. The reviewed project config path determines the source repository root, and every Run gets `<worktreeRoot>/<runId>` instead of a process-wide workspace. Build the verification image from `docker/verification.Dockerfile` whenever the reviewed lockfile or workspace manifests change. It restores image-prepared dependencies through a disposable nested volume while the Run worktree remains the source of truth and network stays disabled. The executable host uses a bounded PostgreSQL Pool for normal queries and a replaceable dedicated Client for LISTEN/NOTIFY, initializes every durable adapter before accepting work, and closes them after recovery and engine subscriptions stop.
+
+After exporting the reviewed environment, start the process with:
+
+```bash
+pnpm build
+pnpm --filter @lecoding/worker start
+```
+
+Open `http://127.0.0.1:8787` after startup. The executable serves the prebuilt
+Web console and `/api/v1` from the same origin. Until authentication is added,
+`LECODING_HTTP_HOST` is intentionally restricted to a loopback host; the port
+defaults to `8787` and can be changed with `LECODING_HTTP_PORT`.
+
+The host registers exactly one trusted project per process. `SIGINT` and `SIGTERM` trigger the same idempotent shutdown path; database startup and lifecycle errors are reported without echoing the connection URI. See [`docs/worker-deployment.md`](docs/worker-deployment.md) for the deployment contract.
 
 ## Project verification configuration
 
@@ -71,8 +89,9 @@ Commands are structured argv arrays and are executed without an implicit shell. 
 ## Workspace
 
 ```text
-apps/worker           production Worker composition and lifecycle root
-apps/                 future Web, Desktop, and Local Runner processes
+apps/worker           production Worker, HTTP API, and process lifecycle root
+apps/web              Phase 1 single-user Run console
+apps/                 future Desktop and Local Runner processes
 packages/contracts    versioned shared Run and environment contracts
 packages/run-engine   orchestration through the RunEngine interface
 packages/run-environment portable execution environment interface
@@ -87,4 +106,4 @@ docker/               sandbox image and runtime notes
 docs/                 threat model and Phase 0 evidence
 ```
 
-The current implementation has PostgreSQL adapters for Run snapshots, tool-call idempotency, leases, cancellation, and events, while tests can still use in-memory adapters. The Worker, production Verifier, and trusted project-YAML plan loader are implemented; the deployment host must still supply concrete PostgreSQL connections, while pg-boss remains a later replacement for interval recovery. The golden-task catalog, Codex CLI and provider-native evaluation adapters, and RunEngine-native OpenAI-compatible model gateway are implemented. The configured third-party model passed the five-task Phase 0 development baseline; see [`docs/evidence/golden-baseline-2026-08-25.md`](docs/evidence/golden-baseline-2026-08-25.md). A pg-boss adapter, executable Web/deployment hosts, dependency-prepared verification image, immediate verification cancellation, and target-Linux isolation evidence remain pending Phase 0/1 work.
+The current implementation has PostgreSQL adapters for Run snapshots, tool-call idempotency, leases, cancellation, ordered steering mailboxes, and events, while tests can still use in-memory adapters. The executable Worker, single-project registration boundary, per-Run worktree/environment factory, production Verifier, trusted project-YAML plan loader, dependency-prepared offline verification image, immediate verification cancellation, loopback API, and minimum Web console are implemented; pg-boss remains a later replacement for interval recovery. The configured local PostgreSQL service has passed Worker composition/start/stop and schema-initialization smoke testing. The configured third-party model passed the five-task Phase 0 development baseline; see [`docs/evidence/golden-baseline-2026-08-25.md`](docs/evidence/golden-baseline-2026-08-25.md). A real browser-driven Run also covered create, manual approval, SSE lifecycle, managed Diff, verification evidence, cancellation, host Diff Safety, and terminal container cleanup; see [`docs/evidence/browser-e2e-2026-08-26.md`](docs/evidence/browser-e2e-2026-08-26.md). The project owner accepted target-Linux isolation as tracked environmental evidence debt on 2026-08-26 so it does not block subsequent Phase 1 work. The 12/20 golden acceptance run, authenticated non-loopback hosting, multi-project registry, a committed clean baseline E2E success, and a later pg-boss adapter remain pending.

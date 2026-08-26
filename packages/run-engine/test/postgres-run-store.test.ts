@@ -4,11 +4,14 @@ import { RunConflictError, type StoredRun } from "../src/index.js";
 import { createPostgresRunStore } from "../src/postgres-run-store.js";
 
 /** Builds a complete persisted Run snapshot through the public RunStore seam. */
-function createStoredRun(): StoredRun {
+function createStoredRun(
+  id = "run-1",
+  projectId = "project-1"
+): StoredRun {
   return {
-    id: "run-1",
+    id,
     input: {
-      projectId: "project-1",
+      projectId,
       environmentId: "environment-1",
       task: "Persist this run",
       acceptanceCriteria: ["Run survives a worker restart"],
@@ -50,6 +53,30 @@ describe("PostgreSQL RunStore", () => {
     await expect(store.save(stale)).rejects.toBeInstanceOf(RunConflictError);
     await expect(store.get(original.id)).resolves.toEqual(original);
 
+    await database.close();
+  });
+
+  it("lists only the requested project's most recently updated Runs", async () => {
+    const database = new PGlite();
+    const store = await createPostgresRunStore(database);
+    const older = createStoredRun("run-1");
+    const otherProject = createStoredRun("run-2", "project-2");
+    const newer = createStoredRun("run-3");
+    await store.save(older);
+    await store.save(otherProject);
+    await store.save(newer);
+
+    const history = await store.list("project-1", 1);
+
+    expect(history).toEqual([
+      expect.objectContaining({
+        id: "run-3",
+        projectId: "project-1",
+        status: "queued",
+        task: "Persist this run",
+        updatedAt: expect.stringMatching(/Z$/)
+      })
+    ]);
     await database.close();
   });
 });

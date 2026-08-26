@@ -17,6 +17,7 @@ import {
   createIntervalLeaseHeartbeat,
   createInMemoryRunLease,
   type RunStore,
+  type LeaseHeartbeat,
   type AgentModelTurn,
   type AgentModelInput
 } from "@lecoding/run-engine";
@@ -236,6 +237,18 @@ describe("heartbeat cancellation fallback (NOTIFY-independent)", () => {
       }
     };
     const lease = createInMemoryRunLease();
+    const deterministicHeartbeat: LeaseHeartbeat = {
+      async withHeartbeat(_token, _intervalMs, operation, onTick) {
+        /*
+         * Start the guarded operation first, then force one cancellation-fallback
+         * observation while it is pending. A 40 ms wall-clock lease made this guard
+         * test depend on host scheduling under the production 2-CPU container.
+         */
+        const result = operation();
+        await onTick?.();
+        return result;
+      }
+    };
     let modelCalls = 0;
     const model = {
       async next(_input: AgentModelInput): Promise<AgentModelTurn> {
@@ -267,10 +280,11 @@ describe("heartbeat cancellation fallback (NOTIFY-independent)", () => {
       },
       handles: wrappedRegistry,
       lease,
-      heartbeat: createIntervalLeaseHeartbeat(lease),
+      heartbeat: deterministicHeartbeat,
       workerId: "worker-A",
       now: () => new Date().toISOString(),
-      leaseMilliseconds: 40, // 40ms lease → heartbeatIntervalMs=20ms,tick 快速触发候选检测
+      // The injected heartbeat forces the observation; keep lease timing out of this guard.
+      leaseMilliseconds: 30_000,
       createId: () => "run-2" as RunId
     });
 

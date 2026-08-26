@@ -1,4 +1,4 @@
-import type { RunStatus } from "@lecoding/contracts";
+import type { JsonValue, RunEventType, RunStatus } from "@lecoding/contracts";
 import { RUN_EVENT_SCHEMA_SQL } from "@lecoding/run-events";
 import {
   RunConflictError,
@@ -10,6 +10,14 @@ import { RUN_STORE_SCHEMA_SQL } from "./postgres-run-store.js";
 /** Atomic persistence seam for one Run status transition and its durable event. */
 export interface RunTransitionWriter {
   persist(run: StoredRun, status: RunStatus): Promise<number>;
+  /** Atomically persists a non-status snapshot mutation with durable events/outbox. */
+  persistEvents(run: StoredRun, events: PersistRunEvent[]): Promise<number>;
+}
+
+/** Event payload whose sequence and timestamp are assigned inside the transaction. */
+export interface PersistRunEvent {
+  type: RunEventType;
+  data: JsonValue;
 }
 
 /** Construction inputs for deterministic status-event timestamps. */
@@ -104,6 +112,87 @@ class PostgresRunTransitionWriter implements RunTransitionWriter {
       sequence < 1
     ) {
       // No returned row means the snapshot CAS failed, so no event was allocated.
+      throw new RunConflictError(run.id);
+    }
+    return version;
+  }
+
+  async persistEvents(
+    run: StoredRun,
+    events: PersistRunEvent[]
+  ): Promise<number> {
+    if (events.length === 0) {
+      throw new Error("Atomic Run event persistence requires at least one event");
+    }
+    const { version: expectedVersion, ...snapshot } = run;
+    const occurredAt = this.options.now();
+    const result = await this.options.database.query<{
+      version: string | number;
+      event_count: string | number;
+      outbox_count: string | number;
+    }>(
+      `
+      WITH updated_run AS (
+        UPDATE run_engine_runs
+        SET version = version + 1,
+            snapshot = $3::jsonb,
+            updated_at = CURRENT_TIMESTAMP
+        WHERE run_id = $1::text AND version = $2::bigint
+        RETURNING version
+      ), allocated AS (
+        INSERT INTO run_event_counters (run_id, next_sequence)
+        SELECT $1::text, $4::bigint + 1 FROM updated_run
+        ON CONFLICT (run_id) DO UPDATE
+          SET next_sequence = run_event_counters.next_sequence + $4::bigint
+        RETURNING next_sequence - $4::bigint AS first_sequence
+      ), event_input AS (
+        SELECT
+          value->>'type' AS event_type,
+          value->'data' AS data,
+          ordinality
+        FROM jsonb_array_elements($5::jsonb) WITH ORDINALITY AS item(value, ordinality)
+      ), inserted_event AS (
+        INSERT INTO run_events (
+          run_id, sequence, version, event_type, occurred_at, data
+        )
+        SELECT
+          $1::text,
+          allocated.first_sequence + event_input.ordinality - 1,
+          1,
+          event_input.event_type,
+          $6::timestamptz,
+          event_input.data
+        FROM allocated
+        INNER JOIN event_input ON true
+        RETURNING sequence
+      ), queued AS (
+        INSERT INTO run_event_outbox (run_id, event_sequence)
+        SELECT $1::text, sequence FROM inserted_event
+        RETURNING event_sequence
+      )
+      SELECT
+        updated_run.version,
+        (SELECT count(*) FROM inserted_event) AS event_count,
+        (SELECT count(*) FROM queued) AS outbox_count
+      FROM updated_run;
+      `,
+      [
+        run.id,
+        expectedVersion,
+        JSON.stringify(snapshot),
+        events.length,
+        JSON.stringify(events),
+        occurredAt
+      ]
+    );
+    const row = result.rows[0];
+    const version = Number(row?.version);
+    if (
+      !Number.isSafeInteger(version) ||
+      version < 1 ||
+      Number(row?.event_count) !== events.length ||
+      Number(row?.outbox_count) !== events.length
+    ) {
       throw new RunConflictError(run.id);
     }
     return version;

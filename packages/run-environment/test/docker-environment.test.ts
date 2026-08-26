@@ -105,6 +105,33 @@ describe("createDockerRunEnvironment (PoC)", () => {
     ).toThrow("bounded Docker memory value");
   });
 
+  it("mounts image-prepared dependencies into a nested verification workspace", () => {
+    const plan = createDockerRunPlan({
+      containerId: "lecoding-verify-1",
+      spec: {
+        runId: "run-1",
+        projectId: "project-1",
+        environmentId: "verification-v1",
+        fileAccessScope: "workspace_only"
+      },
+      limits: {
+        image: "registry.example/verify@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        worktreeRoot: "/srv/lecoding/runs",
+        workspacePath: "/srv/lecoding/runs/run-1",
+        containerWorkspacePath: "/workspace/project",
+        dependencyVolumePath: "/workspace/project/node_modules"
+      }
+    });
+
+    expect(plan.args).toContain(
+      "type=bind,source=/srv/lecoding/runs/run-1,target=/workspace/project"
+    );
+    expect(plan.args).toContain(
+      "type=volume,target=/workspace/project/node_modules"
+    );
+    expect(plan.args).toContain("/workspace/project");
+  });
+
   it("rejects a bind mount outside the registered worktree root", () => {
     expect(() =>
       createDockerRunPlan({

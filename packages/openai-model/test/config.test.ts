@@ -153,19 +153,26 @@ describe("loadOpenAiCompatibleModelConfig", () => {
     expect(observed[0]?.url).toBe(
       "https://model.vendor.example/v2/chat/completions"
     );
-    expect(JSON.parse(observed[0]!.init.body)).toMatchObject({
+    const requestBody = JSON.parse(observed[0]!.init.body);
+    expect(requestBody).toMatchObject({
       model: "vendor-coder-v3",
       messages: [
         { role: "system" },
         { role: "user", content: expect.stringContaining("Task: Fix tests") }
-      ],
-      tools: [
-        {
-          type: "function",
-          function: { name: "execute_command" }
-        }
       ]
     });
+    expect(requestBody.tools).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          type: "function",
+          function: expect.objectContaining({ name: "execute_command" })
+        }),
+        expect.objectContaining({
+          type: "function",
+          function: expect.objectContaining({ name: "request_user_input" })
+        })
+      ])
+    );
   });
 
   it("observes validated Chat Completions token usage without changing the model turn", async () => {

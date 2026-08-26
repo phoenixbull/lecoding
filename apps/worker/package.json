@@ -5,14 +5,23 @@
   "type": "module",
   "exports": "./src/index.ts",
   "scripts": {
+    "start": "tsx src/main.ts",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@lecoding/contracts": "workspace:*",
     "@lecoding/openai-model": "workspace:*",
     "@lecoding/policy": "workspace:*",
     "@lecoding/run-engine": "workspace:*",
     "@lecoding/run-environment": "workspace:*",
     "@lecoding/run-events": "workspace:*",
-    "@lecoding/verifier": "workspace:*"
+    "@lecoding/verifier": "workspace:*",
+    "@lecoding/workspace": "workspace:*",
+    "pg": "^8.23.0",
+    "tsx": "^4.23.12"
+  },
+  "devDependencies": {
+    "@lecoding/client-sdk": "workspace:*",
+    "@types/pg": "^8.23.1"
   }
 }

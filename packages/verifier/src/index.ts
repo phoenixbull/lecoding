@@ -16,7 +16,11 @@ export interface VerificationInput {
 
 /** Independent authority that alone may produce a successful Run conclusion. */
 export interface Verifier {
-  verify(input: VerificationInput): Promise<VerificationReport>;
+  /** The caller aborts this signal when the Run is cancelled during verification. */
+  verify(
+    input: VerificationInput,
+    signal?: AbortSignal
+  ): Promise<VerificationReport>;
 }
 
 /** One administrator-owned command that contributes independent evidence. */
@@ -42,11 +46,18 @@ export interface VerificationPlanProvider {
   load(input: VerificationInput): Promise<VerificationPlan | undefined>;
 }
 
+/** Trusted host authority for validating the patch without exposing Git metadata. */
+export interface DiffSafetyChecker {
+  check(runId: RunId): Promise<boolean>;
+}
+
 /** Dependencies for the fail-closed production Verifier. */
 export interface ProductionVerifierOptions {
   plans: VerificationPlanProvider;
   /** Independent restricted environment used only for required checks. */
   environment: RunEnvironment;
+  /** Revalidates and checks the managed worktree through the host Git boundary. */
+  diffSafety: DiffSafetyChecker;
 }
 
 /**
@@ -57,7 +68,10 @@ export function createProductionVerifier(
   options: ProductionVerifierOptions
 ): Verifier {
   return {
-    async verify(input) {
+    async verify(input, signal) {
+      if (signal?.aborted) {
+        return cancelledVerificationReport();
+      }
       let plan: VerificationPlan | undefined;
       try {
         plan = await options.plans.load(input);
@@ -125,12 +139,21 @@ export function createProductionVerifier(
       >();
       const checks: VerificationReport["checks"] = [];
       try {
+        if (signal?.aborted) {
+          checks.push(cancelledVerificationCheck());
+        }
         for (const command of plan.required) {
+          if (signal?.aborted) {
+            if (!checks.some((check) => check.name === "verification cancellation")) {
+              checks.push(cancelledVerificationCheck());
+            }
+            break;
+          }
           try {
             const result = await options.environment.perform(handle, {
               type: "execute",
               command: command.argv
-            });
+            }, signal);
             const outcome = result.exitCode === 0 ? "passed" : "failed";
             commandOutcomes.set(command.name, outcome);
             checks.push({
@@ -139,6 +162,11 @@ export function createProductionVerifier(
               detail: `Exited with code ${result.exitCode}`
             });
           } catch {
+            if (signal?.aborted) {
+              commandOutcomes.set(command.name, "inconclusive");
+              checks.push(cancelledVerificationCheck());
+              break;
+            }
             // Infrastructure detail may contain credentials; keep only stable evidence.
             commandOutcomes.set(command.name, "inconclusive");
             checks.push({
@@ -148,27 +176,26 @@ export function createProductionVerifier(
             });
           }
         }
-        /*
-         * This system-owned check cannot be removed by project configuration.
-         * argv execution avoids a shell and HEAD makes staged plus unstaged patch
-         * whitespace/conflict-marker errors part of the independent evidence.
-         */
-        try {
-          const diffResult = await options.environment.perform(handle, {
-            type: "execute",
-            command: ["git", "diff", "--check", "HEAD", "--"]
-          });
-          checks.push({
-            name: "diff safety",
-            outcome: diffResult.exitCode === 0 ? "passed" : "failed",
-            detail: `git diff --check exited with code ${diffResult.exitCode}`
-          });
-        } catch {
-          checks.push({
-            name: "diff safety",
-            outcome: "inconclusive",
-            detail: "Diff safety check could not complete"
-          });
+        /* This mandatory host check keeps repository metadata out of containers. */
+        if (!signal?.aborted) {
+          try {
+            const safe = await options.diffSafety.check(input.runId);
+            checks.push({
+              name: "diff safety",
+              outcome: safe ? "passed" : "failed",
+              detail: safe
+                ? "Managed worktree diff check passed"
+                : "Managed worktree diff check failed"
+            });
+          } catch {
+            checks.push({
+              name: "diff safety",
+              outcome: "inconclusive",
+              detail: signal?.aborted
+                ? "Verification was cancelled"
+                : "Diff safety check could not complete"
+            });
+          }
         }
       } finally {
         // Verification containers never own the worktree and are always disposable.
@@ -184,6 +211,14 @@ export function createProductionVerifier(
       }
 
       for (const criterion of input.run.acceptanceCriteria) {
+        if (signal?.aborted) {
+          checks.push({
+            name: `acceptance: ${criterion}`,
+            outcome: "inconclusive",
+            detail: "Verification was cancelled before this criterion was established"
+          });
+          continue;
+        }
         const covering = plan.required.filter((command) =>
           command.covers.includes("*") || command.covers.includes(criterion)
         );
@@ -222,6 +257,23 @@ export function createProductionVerifier(
         checks
       };
     }
+  };
+}
+
+/** Stable redacted evidence emitted whenever the caller cancels verification. */
+function cancelledVerificationCheck(): VerificationReport["checks"][number] {
+  return {
+    name: "verification cancellation",
+    outcome: "inconclusive",
+    detail: "Verification was cancelled"
+  };
+}
+
+/** A cancelled verification can never authorize a successful Run. */
+function cancelledVerificationReport(): VerificationReport {
+  return {
+    outcome: "inconclusive",
+    checks: [cancelledVerificationCheck()]
   };
 }
 

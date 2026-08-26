@@ -37,6 +37,20 @@ export interface StartRun {
   deniedCommands?: string[];
 }
 
+/** Public create body; project identity is bound by the versioned URL path. */
+export type CreateRunInput = Omit<StartRun, "projectId">;
+
+/** Accepted Run identity returned before background execution begins. */
+export interface CreateRunResult {
+  runId: RunId;
+}
+
+/** Non-secret bootstrap values required by the single-project Web client. */
+export interface ControlPlaneConfig {
+  projectId: ProjectId;
+  defaultEnvironmentId: EnvironmentId;
+}
+
 export type VerificationOutcome = "passed" | "failed" | "inconclusive";
 
 export interface VerificationCheck {
@@ -57,8 +71,37 @@ export interface RunView {
   task: string;
   status: RunStatus;
   pendingApproval?: PendingApproval;
+  pendingUserRequest?: PendingUserRequest;
   failure?: RunFailure;
   verification?: VerificationReport;
+}
+
+/** Durable model question that must be answered before the Run can continue. */
+export interface PendingUserRequest {
+  id: string;
+  prompt: string;
+}
+
+/** Lightweight durable Run row used by project history and refresh recovery. */
+export interface RunSummary {
+  id: RunId;
+  projectId: ProjectId;
+  environmentId: EnvironmentId;
+  task: string;
+  status: RunStatus;
+  updatedAt: string;
+}
+
+/** Bounded newest-first history response for one trusted project. */
+export interface RunHistoryResult {
+  runs: RunSummary[];
+}
+
+/** Bounded, text-only Git change projection for one managed Run worktree. */
+export interface RunChanges {
+  changedFiles: string[];
+  unifiedDiff: string;
+  truncated: boolean;
 }
 
 export interface RunFailure {
@@ -74,8 +117,8 @@ export interface PendingApproval {
 
 export type RunCommand =
   | { type: "cancel" }
-  | { type: "steer"; message: string }
-  | { type: "answer"; requestId: string; value: unknown }
+  | { type: "steer"; commandId: string; message: string }
+  | { type: "answer"; commandId: string; requestId: string; value: string }
   | {
       type: "reject";
       approvalId: string;
@@ -239,6 +282,9 @@ export type RunEventType =
   | "approval_requested"
   | "tool_started"
   | "tool_completed"
+  | "user_message_submitted"
+  | "user_message_delivered"
+  | "agent_question"
   | "verification_completed"
   | "run_failed";
 
@@ -275,6 +321,9 @@ const RUN_EVENT_TYPES = new Set<RunEventType>([
   "approval_requested",
   "tool_started",
   "tool_completed",
+  "user_message_submitted",
+  "user_message_delivered",
+  "agent_question",
   "verification_completed",
   "run_failed"
 ]);

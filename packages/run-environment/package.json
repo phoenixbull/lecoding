@@ -8,6 +8,7 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@lecoding/contracts": "workspace:*"
+    "@lecoding/contracts": "workspace:*",
+    "@lecoding/workspace": "workspace:*"
   }
 }

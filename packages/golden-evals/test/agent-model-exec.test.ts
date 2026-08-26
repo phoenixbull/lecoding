@@ -86,4 +86,55 @@ describe("createAgentModelGoldenTaskExecutor", () => {
       await rm(workingRoot, { recursive: true, force: true });
     }
   });
+
+  it("fails closed when an unattended golden task asks for user input", async () => {
+    const workingRoot = await mkdtemp(join(tmpdir(), "lecoding-model-eval-"));
+    let performed = false;
+    try {
+      const executor = createAgentModelGoldenTaskExecutor({
+        workingRoot,
+        modelId: "vendor-coder-v3",
+        pricing: { inputUsdPerMillion: 2, outputUsdPerMillion: 8 },
+        createModel() {
+          return {
+            async next() {
+              return {
+                type: "user_request" as const,
+                requestId: "question-1",
+                prompt: "Which behavior should I preserve?"
+              };
+            }
+          };
+        },
+        createEnvironment() {
+          return {
+            async prepare(spec) {
+              return { id: `handle-${spec.runId}`, environmentId: spec.environmentId };
+            },
+            async perform() {
+              performed = true;
+              return { exitCode: 0, stdout: "", stderr: "" };
+            },
+            async inspect() {
+              return { changedFiles: [] };
+            },
+            async dispose() {}
+          };
+        }
+      });
+      const task = loadGoldenTaskCatalog().find(
+        (candidate) => candidate.id === "ts-fix-boundary"
+      );
+
+      const result = await executor.execute(task!);
+
+      expect(result).toMatchObject({
+        outcome: "failed",
+        failure: "AgentModel requested user input during unattended golden evaluation"
+      });
+      expect(performed).toBe(false);
+    } finally {
+      await rm(workingRoot, { recursive: true, force: true });
+    }
+  });
 });

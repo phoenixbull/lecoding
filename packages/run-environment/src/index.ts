@@ -38,3 +38,10 @@ export {
   type DockerRunPlan,
   type DockerRunPlanInput
 } from "./docker-environment.js";
+
+export {
+  createGitWorktreeRunEnvironmentFactory,
+  createRoutedRunEnvironment,
+  type GitWorktreeRunEnvironmentFactoryOptions,
+  type RunEnvironmentFactory
+} from "./run-environment-factory.js";

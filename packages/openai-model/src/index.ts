@@ -8,13 +8,19 @@ import type {
 export interface OpenAiResponsesRequest {
   model: string;
   instructions: string;
-  input: string | OpenAiFunctionCallOutput[];
+  input: string | Array<OpenAiFunctionCallOutput | OpenAiResponsesInputMessage>;
   tools: OpenAiFunctionTool[];
   tool_choice: "auto";
   parallel_tool_calls: false;
   /** Phase 0 persists provider responses so a replacement Worker can continue by id. */
   store: true;
   previous_response_id?: string;
+}
+
+/** User-authored continuation content accepted by the Responses API input array. */
+export interface OpenAiResponsesInputMessage {
+  role: "user";
+  content: string;
 }
 
 /** Minimal Chat Completions request used by providers without the Responses API. */
@@ -40,7 +46,10 @@ export type OpenAiChatMessage =
 export interface OpenAiChatToolCall {
   id: string;
   type: "function";
-  function: { name: "execute_command"; arguments: string };
+  function: {
+    name: "execute_command" | "request_user_input";
+    arguments: string;
+  };
 }
 
 interface PersistedChatContinuation {
@@ -66,15 +75,13 @@ export interface OpenAiFunctionCallOutput {
 /** Strict command tool advertised to the model. */
 export interface OpenAiFunctionTool {
   type: "function";
-  name: "execute_command";
+  name: "execute_command" | "request_user_input";
   description: string;
   strict: true;
   parameters: {
     type: "object";
-    properties: {
-      argv: { type: "array"; items: { type: "string" }; minItems: 1 };
-    };
-    required: ["argv"];
+    properties: Record<string, unknown>;
+    required: string[];
     additionalProperties: false;
   };
 }
@@ -169,7 +176,8 @@ export interface OpenAiChatCompletionsAgentModelOptions {
 const EXECUTE_COMMAND_TOOL: OpenAiFunctionTool = {
   type: "function",
   name: "execute_command",
-  description: "Execute one command in the isolated repository workspace.",
+  description:
+    "Execute exactly one process in the isolated /workspace repository. argv[0] is the executable and later items are only its arguments.",
   strict: true,
   parameters: {
     type: "object",
@@ -185,8 +193,29 @@ const EXECUTE_COMMAND_TOOL: OpenAiFunctionTool = {
   }
 };
 
-const DEFAULT_INSTRUCTIONS =
-  "Act as a coding agent. Use execute_command when repository inspection or modification is required. Finish only when the acceptance criteria are satisfied.";
+const REQUEST_USER_INPUT_TOOL: OpenAiFunctionTool = {
+  type: "function",
+  name: "request_user_input",
+  description: "Pause the Run and ask the user one necessary clarifying question.",
+  strict: true,
+  parameters: {
+    type: "object",
+    properties: { question: { type: "string", minLength: 1 } },
+    required: ["question"],
+    additionalProperties: false
+  }
+};
+
+const DEFAULT_INSTRUCTIONS = [
+  "Act as a coding agent in an isolated repository workspace.",
+  "Use execute_command when repository inspection or modification is required.",
+  "Each call runs exactly one process: argv[0] is exactly one executable and remaining argv items are arguments to that executable; never concatenate separate commands into one argv.",
+  "The working directory is already /workspace. Git metadata is intentionally unavailable inside the container, so do not run git commands; host-side services report changes and verification evidence.",
+  "In manual approval mode, minimize exploratory commands and read only files necessary for the requested change.",
+  "After finishing the requested edits, do not execute acceptance verification commands such as pnpm test or pnpm typecheck; return completed and the host Verifier will run administrator-reviewed checks in a separate dependency-prepared image.",
+  "Use request_user_input only when a necessary ambiguity cannot be resolved from repository files.",
+  "Finish the editing turn only when the requested change is ready for host verification."
+].join(" ");
 
 /** Loads one OpenAI-compatible provider without assuming vendor names. */
 export function loadOpenAiCompatibleModelConfig(
@@ -423,17 +452,15 @@ export function createOpenAiChatCompletionsAgentModel(
       const response = await options.client.create({
         model: options.model,
         messages: [...initialMessages, ...continuationMessages],
-        tools: [
-          {
+        tools: [EXECUTE_COMMAND_TOOL, REQUEST_USER_INPUT_TOOL].map((tool) => ({
             type: "function",
             function: {
-              name: EXECUTE_COMMAND_TOOL.name,
-              description: EXECUTE_COMMAND_TOOL.description,
-              strict: EXECUTE_COMMAND_TOOL.strict,
-              parameters: structuredClone(EXECUTE_COMMAND_TOOL.parameters)
+              name: tool.name,
+              description: tool.description,
+              strict: tool.strict,
+              parameters: structuredClone(tool.parameters)
             }
-          }
-        ],
+          })),
         tool_choice: "auto",
         parallel_tool_calls: false
       });
@@ -482,7 +509,8 @@ function buildInitialChatMessages(
         `Task: ${input.run.task}`,
         "",
         "Acceptance criteria:",
-        ...input.run.acceptanceCriteria.map((criterion) => `- ${criterion}`)
+        ...input.run.acceptanceCriteria.map((criterion) => `- ${criterion}`),
+        ...formatSteeringSection(input.steeringMessages)
       ].join("\n")
     }
   ];
@@ -533,7 +561,10 @@ function parseChatToolCall(rawCall: unknown): OpenAiChatToolCall {
   if (!isRecord(rawCall) || rawCall.type !== "function" || !isRecord(rawCall.function)) {
     throw new Error("OpenAI chat completion returned a malformed function call");
   }
-  if (rawCall.function.name !== "execute_command") {
+  if (
+    rawCall.function.name !== "execute_command" &&
+    rawCall.function.name !== "request_user_input"
+  ) {
     throw new Error(
       `OpenAI response requested unsupported tool: ${String(rawCall.function.name)}`
     );
@@ -548,7 +579,7 @@ function parseChatToolCall(rawCall: unknown): OpenAiChatToolCall {
     id: rawCall.id,
     type: "function",
     function: {
-      name: "execute_command",
+      name: rawCall.function.name,
       arguments: rawCall.function.arguments
     }
   };
@@ -557,7 +588,15 @@ function parseChatToolCall(rawCall: unknown): OpenAiChatToolCall {
 function toChatToolTurn(
   toolCall: OpenAiChatToolCall,
   continuation: PersistedChatContinuation
-): Extract<AgentModelTurn, { type: "tool_call" }> {
+): AgentModelTurn {
+  if (toolCall.function.name === "request_user_input") {
+    return {
+      type: "user_request",
+      requestId: toolCall.id,
+      continuationId: JSON.stringify(continuation),
+      prompt: parseUserQuestion(toolCall.function.arguments)
+    };
+  }
   return {
     type: "tool_call",
     callId: toolCall.id,
@@ -701,19 +740,27 @@ function buildRequest(
   instructions: string
 ): OpenAiResponsesRequest {
   const latestResult = input.toolResults.at(-1);
+  const steering = formatSteeringMessage(input.steeringMessages);
   // previous_response_id already owns older history; resend only the newest tool output.
   const request: OpenAiResponsesRequest = {
     model,
     instructions,
     input: latestResult
-      ? [toFunctionCallOutput(latestResult)]
+      ? [
+          toFunctionCallOutput(latestResult),
+          ...(steering ? [{ role: "user" as const, content: steering }] : [])
+        ]
       : [
           `Task: ${input.run.task}`,
           "",
           "Acceptance criteria:",
-          ...input.run.acceptanceCriteria.map((criterion) => `- ${criterion}`)
+          ...input.run.acceptanceCriteria.map((criterion) => `- ${criterion}`),
+          ...formatSteeringSection(input.steeringMessages)
         ].join("\n"),
-    tools: [structuredClone(EXECUTE_COMMAND_TOOL)],
+    tools: [
+      structuredClone(EXECUTE_COMMAND_TOOL),
+      structuredClone(REQUEST_USER_INPUT_TOOL)
+    ],
     tool_choice: "auto",
     parallel_tool_calls: false,
     store: true
@@ -725,6 +772,22 @@ function buildRequest(
     request.previous_response_id = latestResult.continuationId;
   }
   return request;
+}
+
+function formatSteeringSection(messages: string[] | undefined): string[] {
+  const content = formatSteeringMessage(messages);
+  return content ? ["", content] : [];
+}
+
+function formatSteeringMessage(messages: string[] | undefined): string {
+  if (!messages?.length) {
+    return "";
+  }
+  // The heading distinguishes later operator constraints from the original task.
+  return [
+    "Additional user instructions:",
+    ...messages.map((message) => `- ${message}`)
+  ].join("\n");
 }
 
 function toFunctionCallOutput(
@@ -739,7 +802,9 @@ function toFunctionCallOutput(
           stdout: result.stdout,
           stderr: result.stderr
         }
-      : { status: result.status, reason: result.reason };
+      : result.status === "denied"
+        ? { status: result.status, reason: result.reason }
+        : { status: result.status, value: result.value };
   return {
     type: "function_call_output",
     call_id: result.callId,
@@ -772,7 +837,7 @@ function parseResponse(value: unknown): AgentModelTurn {
     throw new Error(`OpenAI response returned multiple function calls: ${calls.length}`);
   }
   const call = calls[0]!;
-  if (call.name !== "execute_command") {
+  if (call.name !== "execute_command" && call.name !== "request_user_input") {
     throw new Error(`OpenAI response requested unsupported tool: ${String(call.name)}`);
   }
   if (typeof call.call_id !== "string" || call.call_id.trim() === "") {
@@ -780,6 +845,14 @@ function parseResponse(value: unknown): AgentModelTurn {
   }
   if (typeof call.arguments !== "string") {
     throw new Error("OpenAI function call arguments must be JSON text");
+  }
+  if (call.name === "request_user_input") {
+    return {
+      type: "user_request",
+      requestId: call.call_id,
+      continuationId: value.id,
+      prompt: parseUserQuestion(call.arguments)
+    };
   }
   const args = parseCommandArguments(call.arguments);
   return {
@@ -789,6 +862,24 @@ function parseResponse(value: unknown): AgentModelTurn {
     tool: "execute_command",
     arguments: args
   };
+}
+
+function parseUserQuestion(value: string): string {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(value);
+  } catch {
+    throw new Error("OpenAI request_user_input arguments are invalid JSON");
+  }
+  if (
+    !isRecord(parsed) ||
+    Object.keys(parsed).some((key) => key !== "question") ||
+    typeof parsed.question !== "string" ||
+    parsed.question.trim() === ""
+  ) {
+    throw new Error("OpenAI request_user_input arguments must contain one question");
+  }
+  return parsed.question;
 }
 
 function parseCommandArguments(value: string): { argv: string[] } {

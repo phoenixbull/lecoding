@@ -46,4 +46,25 @@ describe("RunEvent contract", () => {
 
     expect(accepted).toEqual([false, false, false, false, false, false]);
   });
+
+  it("accepts version-one conversation lifecycle events", () => {
+    const types = [
+      "user_message_submitted",
+      "user_message_delivered",
+      "agent_question"
+    ] as const;
+
+    expect(
+      types.map((type, index) =>
+        parseRunEvent({
+          version: 1,
+          sequence: index + 1,
+          runId: "run-1",
+          type,
+          occurredAt: "2026-08-26T00:00:00.000Z",
+          data: { message: "Preserve v1" }
+        }).type
+      )
+    ).toEqual(types);
+  });
 });

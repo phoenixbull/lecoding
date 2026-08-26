@@ -109,14 +109,15 @@ describe("cancel path releases the handle even when transition fails", () => {
     const handleRegistry = createInMemoryRunHandleRegistry();
     const innerStore = new InMemoryRunStore();
     /*
-     * 让 save#6(drive 的 markRunCancelled 的 transition("cancelled"))抛 LeaseLostError,
+     * 让 save#7(drive 的 markRunCancelled 的 transition("cancelled"))抛 LeaseLostError,
      * 模拟该时刻 lease 已被抢占:
      * - save#1-3: start + preparing + running(全部成功)
      * - save#4:模型工具调用在副作用前持久化(成功)
-     * - save#5: cancel 命令的 transition("cancelling") 抛冲突
-     * - save#6: drive 的 markRunCancelled transition 抛失租
+     * - save#5:工具开始标记与事件持久化(成功)
+     * - save#6: cancel 命令的 transition("cancelling") 抛冲突
+     * - save#7: drive 的 markRunCancelled transition 抛失租
      *   → cancel 命令 dispose + release(handle 已 release)
-     * - drive 的 markRunCancelled 调 transition("cancelled"),save#6 抛 LeaseLostError
+     * - drive 的 markRunCancelled 调 transition("cancelled"),save#7 抛 LeaseLostError
      *   → markRunCancelled catch 守卫吞
      * - risk3:旧实现直接 return,不调 dispose + release;
      *   新实现仍 dispose + release(borrowed.handle 引用仍有效,
@@ -128,8 +129,8 @@ describe("cancel path releases the handle even when transition fails", () => {
      */
     const store = new FailingStore(
       [
-        { on: 5, error: "RunConflictError" }, // cancel 命令 cancelling 抛错
-        { on: 6, error: "LeaseLostError" } // markRunCancelled cancelled 抛错
+        { on: 6, error: "RunConflictError" }, // cancel 命令 cancelling 抛错
+        { on: 7, error: "LeaseLostError" } // markRunCancelled cancelled 抛错
       ],
       innerStore
     );
@@ -225,7 +226,7 @@ describe("cancel path releases the handle even when transition fails", () => {
     });
 
     // drive 期间 perform reject(由 cancel 命令触发)→ drive catch → markRunCancelled
-    // markRunCancelled 调 transition("cancelled"),store 第 4 次 save 抛 RunConflictError
+    // markRunCancelled 调 transition("cancelled"),store 第 7 次 save 抛 LeaseLostError
     // 旧实现直接 return;新实现应 dispose + release
     const resumePromise = engine.resume(runId);
     for (let i = 0; i < 6; i++) {

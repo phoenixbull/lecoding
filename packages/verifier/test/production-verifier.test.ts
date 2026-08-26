@@ -7,9 +7,27 @@ import type {
 } from "@lecoding/contracts";
 import type { RunEnvironment } from "@lecoding/run-environment";
 import {
-  createProductionVerifier,
+  createProductionVerifier as createProductionVerifierImpl,
+  type DiffSafetyChecker,
+  type ProductionVerifierOptions,
   type VerificationPlanProvider
 } from "../src/index.js";
+
+const passingDiffSafety: DiffSafetyChecker = {
+  check: vi.fn(async () => true)
+};
+
+/** Supplies the trusted host checker unless a scenario needs a specific outcome. */
+function createProductionVerifier(
+  options: Omit<ProductionVerifierOptions, "diffSafety"> & {
+    diffSafety?: DiffSafetyChecker;
+  }
+) {
+  return createProductionVerifierImpl({
+    ...options,
+    diffSafety: options.diffSafety ?? passingDiffSafety
+  });
+}
 
 describe("createProductionVerifier", () => {
   it("passes only after every required command and acceptance criterion pass", async () => {
@@ -63,16 +81,50 @@ describe("createProductionVerifier", () => {
         {
           name: "diff safety",
           outcome: "passed",
-          detail: "git diff --check exited with code 0"
+          detail: "Managed worktree diff check passed"
         }
       ])
     );
     expect(calls).toEqual([
       "prepare:run-1",
       "perform:node --test",
-      "perform:git diff --check HEAD --",
       "dispose:discard"
     ]);
+  });
+
+  it("fails when the trusted host rejects the managed worktree diff", async () => {
+    const verifier = createProductionVerifier({
+      plans: {
+        load: vi.fn(async () => ({
+          required: [{ name: "tests", argv: ["pnpm", "test"], covers: ["*"] }]
+        }))
+      },
+      environment: createVerificationEnvironment({
+        calls: [],
+        results: [{ exitCode: 0, stdout: "", stderr: "" }]
+      }),
+      diffSafety: { check: vi.fn(async () => false) }
+    });
+
+    const report = await verifier.verify({
+      runId: "run-unsafe-diff",
+      run: {
+        projectId: "project-1",
+        environmentId: "environment-1",
+        task: "Create a file",
+        acceptanceCriteria: ["File is valid"],
+        approvalMode: "manual",
+        fileAccessScope: "workspace_only"
+      },
+      environment: { changedFiles: ["new.txt"] }
+    });
+
+    expect(report.outcome).toBe("failed");
+    expect(report.checks).toContainEqual({
+      name: "diff safety",
+      outcome: "failed",
+      detail: "Managed worktree diff check failed"
+    });
   });
 
   it("is inconclusive when reviewed commands do not cover an acceptance criterion", async () => {
@@ -209,7 +261,6 @@ describe("createProductionVerifier", () => {
       "prepare:run-3",
       "perform:pnpm test",
       "perform:pnpm typecheck",
-      "perform:git diff --check HEAD --",
       "dispose:discard"
     ]);
     expect(JSON.stringify(report)).not.toContain("SECRET");
@@ -424,6 +475,80 @@ describe("createProductionVerifier", () => {
       detail: "Verification environment could not be disposed"
     });
     expect(JSON.stringify(report)).not.toContain("SECRET");
+  });
+
+  it("forwards cancellation to an in-flight required command and still disposes", async () => {
+    const calls: string[] = [];
+    let observedSignal: AbortSignal | undefined;
+    const verifier = createProductionVerifier({
+      plans: {
+        load: vi.fn(async () => ({
+          required: [
+            { name: "setup", argv: ["node", "prepare.mjs"], covers: ["Setup completes"] },
+            { name: "tests", argv: ["pnpm", "test"], covers: ["Checks pass"] }
+          ]
+        }))
+      },
+      environment: {
+        async prepare() {
+          calls.push("prepare");
+          return {
+            id: "verification-container",
+            environmentId: "environment-1"
+          };
+        },
+        async perform(_handle, _action, signal) {
+          calls.push("perform");
+          observedSignal = signal;
+          await new Promise<void>((_resolve, reject) => {
+            signal?.addEventListener(
+              "abort",
+              () => reject(new Error("verification aborted")),
+              { once: true }
+            );
+          });
+          return { exitCode: 0, stdout: "", stderr: "" };
+        },
+        async inspect() {
+          return { changedFiles: [] };
+        },
+        async dispose() {
+          calls.push("dispose");
+        }
+      }
+    });
+    const controller = new AbortController();
+    const reportPromise = verifier.verify(
+      {
+        runId: "run-cancel-verification",
+        run: {
+          projectId: "project-1",
+          environmentId: "environment-1",
+          task: "Run checks",
+          acceptanceCriteria: ["Checks pass"],
+          approvalMode: "auto_review",
+          fileAccessScope: "workspace_only"
+        },
+        environment: { changedFiles: [] }
+      },
+      controller.signal
+    );
+
+    await vi.waitFor(() => expect(observedSignal).toBe(controller.signal));
+    controller.abort();
+
+    await expect(reportPromise).resolves.toMatchObject({
+      outcome: "inconclusive",
+      checks: expect.arrayContaining([
+        expect.objectContaining({ name: "verification cancellation" }),
+        {
+          name: "acceptance: Checks pass",
+          outcome: "inconclusive",
+          detail: "Verification was cancelled before this criterion was established"
+        }
+      ])
+    });
+    expect(calls.at(-1)).toBe("dispose");
   });
 });
 

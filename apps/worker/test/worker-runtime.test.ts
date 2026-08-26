@@ -6,7 +6,8 @@ import type { Engine, RunRecoveryWorker } from "@lecoding/run-engine";
 import {
   composeProductionWorker,
   createWorkerRuntime,
-  loadWorkerConfig
+  loadWorkerConfig,
+  loadWorkerProjectRegistration
 } from "../src/index.js";
 
 const validWorkerEnvironment = {
@@ -14,9 +15,10 @@ const validWorkerEnvironment = {
   LECODING_PROJECT_ID: "project-1",
   LECODING_PROJECT_CONFIG_PATH: "/srv/lecoding/source/.ai-agent/project.yaml",
   LECODING_WORKTREE_ROOT: "/srv/lecoding/worktrees",
-  LECODING_WORKSPACE_PATH: "/srv/lecoding/worktrees/run-a",
   LECODING_DOCKER_IMAGE:
     "registry.example/lecoding@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  LECODING_VERIFICATION_IMAGE:
+    "registry.example/lecoding-verification@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
   LECODING_MODEL_PROTOCOL: "openai_chat_completions",
   LECODING_MODEL_BASE_URL: "https://models.example/v1",
   LECODING_MODEL_API_KEY: "secret",
@@ -39,18 +41,32 @@ describe("createWorkerRuntime", () => {
         calls.push("recovery.stop");
       })
     };
+    const eventDispatch = {
+      start: vi.fn(() => calls.push("events.start")),
+      stop: vi.fn(async () => {
+        calls.push("events.stop");
+      })
+    };
     const closeDatabase = vi.fn(async () => {
       calls.push("database.close");
     });
-    const runtime = createWorkerRuntime({ engine, recovery, closeDatabase });
+    const runtime = createWorkerRuntime({
+      engine,
+      recovery,
+      eventDispatch,
+      control: createControlPlane(engine),
+      closeDatabase
+    });
 
     runtime.start();
     await runtime.stop();
 
     expect(calls).toEqual([
+      "events.start",
       "recovery.start",
       "recovery.stop",
       "engine.dispose",
+      "events.stop",
       "database.close"
     ]);
   });
@@ -65,8 +81,18 @@ describe("createWorkerRuntime", () => {
       start: vi.fn(),
       stop: vi.fn(async () => undefined)
     };
+    const eventDispatch = {
+      start: vi.fn(),
+      stop: vi.fn(async () => undefined)
+    };
     const closeDatabase = vi.fn(async () => undefined);
-    const runtime = createWorkerRuntime({ engine, recovery, closeDatabase });
+    const runtime = createWorkerRuntime({
+      engine,
+      recovery,
+      eventDispatch,
+      control: createControlPlane(engine),
+      closeDatabase
+    });
 
     const firstStop = runtime.stop();
     const secondStop = runtime.stop();
@@ -87,6 +113,11 @@ describe("createWorkerRuntime", () => {
     const runtime = createWorkerRuntime({
       engine,
       recovery,
+      eventDispatch: {
+        start: vi.fn(),
+        stop: vi.fn(async () => undefined)
+      },
+      control: createControlPlane(engine),
       closeDatabase: vi.fn(async () => undefined)
     });
 
@@ -97,15 +128,26 @@ describe("createWorkerRuntime", () => {
   });
 });
 
+function createControlPlane(engine: Engine) {
+  return {
+    projectId: "project-1",
+    runs: engine,
+    history: { list: vi.fn(async () => []) },
+    changes: { read: vi.fn(async () => ({ changedFiles: [], unifiedDiff: "", truncated: false })) },
+    eventStream: {
+      handle: vi.fn(async () => new Response("", { status: 200 }))
+    }
+  };
+}
+
 describe("composeProductionWorker", () => {
   it("wires durable adapters and awaits LISTEN cleanup before closing PostgreSQL", async () => {
     const fixtureRoot = await mkdtemp(join(tmpdir(), "lecoding-worker-config-"));
     const worktreeRoot = join(fixtureRoot, "worktrees");
-    const workspacePath = join(worktreeRoot, "run-a");
     const configDirectory = join(fixtureRoot, "source", ".ai-agent");
     const projectConfigPath = join(configDirectory, "project.yaml");
     await Promise.all([
-      mkdir(workspacePath, { recursive: true }),
+      mkdir(worktreeRoot, { recursive: true }),
       mkdir(configDirectory, { recursive: true })
     ]);
     await writeFile(
@@ -140,7 +182,6 @@ describe("composeProductionWorker", () => {
         environment: {
           ...validWorkerEnvironment,
           LECODING_WORKTREE_ROOT: worktreeRoot,
-          LECODING_WORKSPACE_PATH: workspacePath,
           LECODING_PROJECT_CONFIG_PATH: projectConfigPath
         }
       });
@@ -161,13 +202,45 @@ describe("composeProductionWorker", () => {
     }
   });
 
-  it("rejects a workspace outside the registered root during startup", () => {
-    expect(() =>
+  it("derives the reviewed source root without requiring a fixed Run workspace", () => {
+    expect(loadWorkerConfig(validWorkerEnvironment)).toMatchObject({
+      projectSourcePath: "/srv/lecoding/source",
+      worktreeRoot: "/srv/lecoding/worktrees"
+    });
+  });
+
+  it("loads exactly one administrator-controlled project registration", () => {
+    expect(loadWorkerProjectRegistration(validWorkerEnvironment)).toEqual({
+      projectId: "project-1",
+      projectConfigPath: "/srv/lecoding/source/.ai-agent/project.yaml",
+      projectSourcePath: "/srv/lecoding/source",
+      worktreeRoot: "/srv/lecoding/worktrees"
+    });
+  });
+
+  it("requires a separately pinned dependency-prepared verification image", () => {
+    const { LECODING_VERIFICATION_IMAGE: _omitted, ...environment } =
+      validWorkerEnvironment;
+
+    expect(() => loadWorkerConfig(environment)).toThrow(
+      "LECODING_VERIFICATION_IMAGE"
+    );
+    expect(loadWorkerConfig(validWorkerEnvironment).verificationImage).toBe(
+      validWorkerEnvironment.LECODING_VERIFICATION_IMAGE
+    );
+  });
+
+  it("accepts immutable local Docker image IDs for development hosts", () => {
+    const runtimeImage = `sha256:${"c".repeat(64)}`;
+    const verificationImage = `sha256:${"d".repeat(64)}`;
+
+    expect(
       loadWorkerConfig({
         ...validWorkerEnvironment,
-        LECODING_WORKSPACE_PATH: "/srv/other/run-a"
+        LECODING_DOCKER_IMAGE: runtimeImage,
+        LECODING_VERIFICATION_IMAGE: verificationImage
       })
-    ).toThrow("outside LECODING_WORKTREE_ROOT");
+    ).toMatchObject({ dockerImage: runtimeImage, verificationImage });
   });
 
   it("closes transferred database resources when configuration fails", async () => {

@@ -12,6 +12,9 @@ describe("RunEngine transition persistence", () => {
         transitionCount += 1;
         run.status = status;
         return store.save(run);
+      },
+      async persistEvents(run) {
+        return store.save(run);
       }
     };
     const harness = await createTestHarness({ store, transitions });

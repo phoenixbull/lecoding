@@ -16,6 +16,70 @@ export interface RunEventDispatcher {
   dispatchOnce(): Promise<RunEventDispatchReport>;
 }
 
+/** Idempotent lifecycle for continuously draining the durable event outbox. */
+export interface RunEventDispatchWorker {
+  start(): void;
+  stop(): Promise<void>;
+}
+
+/** Inputs for the single-process Phase 1 outbox polling loop. */
+export interface IntervalRunEventDispatchWorkerOptions {
+  dispatcher: RunEventDispatcher;
+  intervalMs: number;
+  onError?: (error: unknown) => void;
+}
+
+/**
+ * Polls immediately and then at a fixed interval without overlapping claims.
+ * pg-boss can replace this lifecycle later without changing dispatcher semantics.
+ */
+export function createIntervalRunEventDispatchWorker(
+  options: IntervalRunEventDispatchWorkerOptions
+): RunEventDispatchWorker {
+  if (!Number.isSafeInteger(options.intervalMs) || options.intervalMs < 1) {
+    throw new Error("Event dispatch interval must be a positive integer");
+  }
+  let timer: ReturnType<typeof setInterval> | undefined;
+  let inFlight: Promise<void> | undefined;
+  let stopped = true;
+
+  const dispatch = (): void => {
+    if (stopped || inFlight) {
+      return;
+    }
+    inFlight = options.dispatcher
+      .dispatchOnce()
+      .then(() => undefined)
+      .catch((error: unknown) => options.onError?.(error))
+      .finally(() => {
+        inFlight = undefined;
+      });
+  };
+
+  return {
+    start() {
+      if (!stopped) {
+        return;
+      }
+      stopped = false;
+      dispatch();
+      timer = setInterval(dispatch, options.intervalMs);
+    },
+    async stop() {
+      if (stopped) {
+        await inFlight;
+        return;
+      }
+      stopped = true;
+      if (timer) {
+        clearInterval(timer);
+        timer = undefined;
+      }
+      await inFlight;
+    }
+  };
+}
+
 export interface RunEventDispatcherOptions {
   outbox: RunEventOutbox;
   target: RunEventDeliveryTarget;

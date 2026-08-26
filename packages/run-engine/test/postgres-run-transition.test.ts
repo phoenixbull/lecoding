@@ -77,4 +77,34 @@ describe("PostgreSQL RunTransitionWriter", () => {
 
     await database.close();
   });
+
+  it("persists a snapshot cursor and delivery event in one transaction", async () => {
+    const database = new PGlite();
+    const store = await createPostgresRunStore(database);
+    const transitions = await createPostgresRunTransitionWriter({
+      database,
+      now: () => "2026-08-25T08:00:00.000Z"
+    });
+    const run = createStoredRun();
+    run.version = await transitions.persist(run, "running");
+    run.steeringCursor = 7;
+    run.pendingSteering = [{ sequence: 7, message: "Keep v1" }];
+
+    run.version = await transitions.persistEvents(run, [
+      {
+        type: "user_message_delivered",
+        data: { messageIds: ["steer:7"] }
+      }
+    ]);
+
+    await expect(store.get(run.id)).resolves.toEqual(run);
+    const events = createRunEventJournal({
+      repository: createPostgresRunEventRepository(database),
+      now: () => "unused"
+    });
+    const replay = await events.resume(run.id);
+    expect(replay).toContain('"type":"user_message_delivered"');
+    expect(replay.match(/^id: /gm)).toHaveLength(2);
+    await database.close();
+  });
 });

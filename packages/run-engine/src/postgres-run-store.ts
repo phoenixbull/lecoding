@@ -1,8 +1,10 @@
 import {
   RunConflictError,
+  type RunHistory,
   type RunStore,
   type StoredRun
 } from "./index.js";
+import type { RunSummary } from "@lecoding/contracts";
 import type { PostgresExecutor } from "./postgres-run-lease.js";
 
 /** PostgreSQL schema for durable Run snapshots. */
@@ -21,12 +23,12 @@ CREATE TABLE IF NOT EXISTS run_engine_runs (
  */
 export async function createPostgresRunStore(
   database: PostgresExecutor
-): Promise<RunStore> {
+): Promise<RunStore & RunHistory> {
   await database.query(RUN_STORE_SCHEMA_SQL);
   return new PostgresRunStore(database);
 }
 
-class PostgresRunStore implements RunStore {
+class PostgresRunStore implements RunStore, RunHistory {
   constructor(private readonly database: PostgresExecutor) {}
 
   async save(run: StoredRun): Promise<number> {
@@ -79,5 +81,37 @@ class PostgresRunStore implements RunStore {
     }
     // The version column remains authoritative so stale JSON cannot bypass CAS.
     return { ...row.snapshot, version };
+  }
+
+  async list(projectId: string, limit: number): Promise<RunSummary[]> {
+    if (!Number.isSafeInteger(limit) || limit < 1 || limit > 50) {
+      throw new Error("Run history limit must be an integer from 1 to 50");
+    }
+    const result = await this.database.query<{
+      run_id: string;
+      snapshot: Omit<StoredRun, "version">;
+      updated_at: string | Date;
+    }>(
+      `
+      SELECT run_id, snapshot, updated_at
+      FROM run_engine_runs
+      WHERE snapshot->'input'->>'projectId' = $1::text
+      ORDER BY updated_at DESC, run_id DESC
+      LIMIT $2::integer;
+      `,
+      [projectId, limit]
+    );
+    return result.rows.map((row) => {
+      const updatedAt = new Date(row.updated_at).toISOString();
+      // History intentionally excludes continuation, approval, and tool-result state.
+      return {
+        id: row.run_id,
+        projectId: row.snapshot.input.projectId,
+        environmentId: row.snapshot.input.environmentId,
+        task: row.snapshot.input.task,
+        status: row.snapshot.status,
+        updatedAt
+      };
+    });
   }
 }

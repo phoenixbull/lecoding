@@ -1,0 +1,168 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="theme-color" content="#090d0c" />
+    <title>LeCoding · Run Console</title>
+  </head>
+  <body>
+    <div class="app-shell">
+      <header class="topbar">
+        <div class="brand">
+          <div class="brand-mark">L</div>
+          <div>
+            <strong>LeCoding</strong>
+            <span>Run Console · Single-user Phase 1</span>
+          </div>
+        </div>
+        <div class="project-chip">
+          <span>项目</span>
+          <strong id="project-value">连接中…</strong>
+        </div>
+      </header>
+
+      <main class="workspace-grid">
+        <div class="left-column">
+          <section class="panel composer">
+          <div class="panel-header">
+            <div>
+              <p class="eyebrow">New run</p>
+              <h1>交给 Agent</h1>
+              <p class="muted">描述目标和可验证的完成条件。</p>
+            </div>
+          </div>
+          <div id="error-banner" class="error-banner" role="alert" hidden></div>
+          <form id="run-form">
+            <div class="field">
+              <label for="task">任务</label>
+              <textarea
+                id="task"
+                name="task"
+                placeholder="例如：为 API 增加健康检查端点，并补齐测试。"
+                required
+              ></textarea>
+            </div>
+            <div class="field">
+              <label for="acceptance-criteria">验收条件</label>
+              <textarea
+                id="acceptance-criteria"
+                name="acceptanceCriteria"
+                placeholder="每行一条，例如：&#10;测试全部通过&#10;类型检查通过"
+                required
+              ></textarea>
+              <small>每行一条；Verifier 必须为每条条件建立证据。</small>
+            </div>
+            <div class="field">
+              <label for="environment-id">执行环境</label>
+              <input id="environment-id" name="environmentId" required />
+              <small>当前固定为 workspace-only + manual 审批模式。</small>
+            </div>
+            <button id="create-run" class="primary-button" type="submit">
+              创建并运行
+            </button>
+          </form>
+          </section>
+
+          <section class="panel history-panel">
+            <div class="panel-header">
+              <div>
+                <p class="eyebrow">Recent runs</p>
+                <h2>运行历史</h2>
+              </div>
+            </div>
+            <div id="run-history" class="history-list" aria-live="polite">
+              <p class="empty-state">正在加载最近 Run…</p>
+            </div>
+          </section>
+        </div>
+
+        <div class="run-column">
+          <section class="panel run-overview">
+            <div class="panel-header">
+              <div>
+                <p class="eyebrow">Live run</p>
+                <h2>执行时间线</h2>
+              </div>
+              <div class="run-meta">
+                <span id="stream-state" class="stream-chip" data-tone="idle">连接中</span>
+                <span id="status-badge" class="status-badge">尚未创建</span>
+                <span id="run-id-value" class="run-id">—</span>
+                <button id="cancel-run" class="danger-button" type="button" hidden>
+                  取消 Run
+                </button>
+              </div>
+            </div>
+            <div id="approval-card" class="approval-card" aria-live="polite" hidden>
+              <div>
+                <p class="eyebrow">Approval required</p>
+                <strong>Agent 请求执行一项受控操作</strong>
+                <p id="approval-summary"></p>
+              </div>
+              <div class="approval-actions">
+                <button id="reject-approval" class="secondary-button" type="button">
+                  拒绝本次
+                </button>
+                <button id="approve-approval" class="primary-button compact" type="button">
+                  仅批准本次
+                </button>
+              </div>
+            </div>
+            <div id="user-request-card" class="user-request-card" aria-live="polite" hidden>
+              <div>
+                <p class="eyebrow">Agent conversation</p>
+                <strong id="user-request-prompt"></strong>
+              </div>
+              <textarea
+                id="user-response"
+                maxlength="4000"
+                placeholder="回答问题，或作为追加约束继续本次 Run。"
+              ></textarea>
+              <div class="approval-actions">
+                <button id="steer-run" class="secondary-button" type="button">
+                  作为追加指令
+                </button>
+                <button id="answer-run" class="primary-button compact" type="button">
+                  回答并继续
+                </button>
+              </div>
+            </div>
+            <ol id="timeline" class="timeline" aria-live="polite"></ol>
+          </section>
+
+          <section class="panel evidence-panel">
+            <div class="panel-header">
+              <div>
+                <p class="eyebrow">Verifier</p>
+                <h2>验证证据</h2>
+              </div>
+            </div>
+            <div id="verification" class="evidence-grid">
+              <p id="verification-empty" class="empty-state">
+                Run 进入验证阶段后，检查结果会显示在这里。
+              </p>
+            </div>
+          </section>
+
+          <section class="panel changes-panel">
+            <div class="panel-header">
+              <div>
+                <p class="eyebrow">Workspace changes</p>
+                <h2>代码变更</h2>
+              </div>
+              <span id="changed-count" class="status-badge">0 个文件</span>
+            </div>
+            <p id="changes-state" class="changes-state">
+              选择 Run 后显示其受管工作区变更。
+            </p>
+            <div class="changes-layout">
+              <div id="changed-files" class="changed-files"></div>
+              <pre id="diff-output" class="diff-output" tabindex="0"></pre>
+            </div>
+          </section>
+        </div>
+      </main>
+    </div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

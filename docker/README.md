@@ -27,6 +27,25 @@ docker run --rm \
 
 Before production, pin the base image by digest and run the same controls on the target Linux host.
 
+## Offline verification image
+
+`verification.Dockerfile` builds a project-specific image from the reviewed
+workspace manifests and `pnpm-lock.yaml`. Build-time network access installs the
+exact dependency graph and pnpm version; verification Runs remain `network=none`.
+
+```bash
+docker build -f docker/verification.Dockerfile -t lecoding-verification:reviewed .
+```
+
+The Worker mounts a Run worktree at `/workspace/project` and an anonymous volume
+at `/workspace/project/node_modules`. Docker initializes that nested volume from
+the image before checks start. `link-workspace-packages.mjs` also places relative
+workspace-package links in the root dependency volume, so the bind-mounted source
+resolves current `apps/*` and `packages/*` code without copying dependencies into
+the worktree. Container disposal uses `docker rm -v`; the dependency volume cannot
+survive or pollute the Run. Publish the image and configure its immutable digest as
+`LECODING_VERIFICATION_IMAGE`.
+
 ## Target Linux evidence
 
 Run the strict evidence command on the actual Linux Worker host from a clean

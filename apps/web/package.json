@@ -1,0 +1,18 @@
+{
+  "name": "@lecoding/web",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "vite build",
+    "dev": "vite",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@lecoding/client-sdk": "workspace:*",
+    "@lecoding/contracts": "workspace:*"
+  },
+  "devDependencies": {
+    "vite": "^7.3.6"
+  }
+}

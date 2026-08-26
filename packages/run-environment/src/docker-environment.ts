@@ -32,6 +32,10 @@ export interface DockerRunLimits {
   workspacePath?: string;
   /** 管理员注册的 worktree 根目录;workspacePath 必须是其严格子目录。 */
   worktreeRoot?: string;
+  /** Container target for the worktree; verification uses a nested project path. */
+  containerWorkspacePath?: string;
+  /** Anonymous volume target containing dependencies prepared in the image. */
+  dependencyVolumePath?: string;
   /** Phase 0 仅允许 none;保留字段用于显式配置和未来受控网络扩展。 */
   network?: "none";
   /** 容器内 /tmp 的 tmpfs 大小,默认 64 MiB。 */
@@ -68,6 +72,9 @@ export function createDockerRunPlan(input: DockerRunPlanInput): DockerRunPlan {
   const image = input.limits.image ?? "lecoding/agent-runner:latest";
   const workspacePath = input.limits.workspacePath;
   const worktreeRoot = input.limits.worktreeRoot;
+  const containerWorkspacePath =
+    input.limits.containerWorkspacePath ?? "/workspace";
+  const dependencyVolumePath = input.limits.dependencyVolumePath;
 
   if (!workspacePath || !worktreeRoot) {
     throw new Error(
@@ -116,6 +123,29 @@ export function createDockerRunPlan(input: DockerRunPlanInput): DockerRunPlan {
   if (input.spec.fileAccessScope !== "workspace_only") {
     throw new Error("Server Docker runs only support workspace_only access");
   }
+  if (
+    containerWorkspacePath !== "/workspace" &&
+    !/^\/workspace\/[a-zA-Z0-9][a-zA-Z0-9_.-]*$/.test(containerWorkspacePath)
+  ) {
+    throw new Error("Docker containerWorkspacePath must stay below /workspace");
+  }
+  if (
+    dependencyVolumePath !== undefined &&
+    dependencyVolumePath !== `${containerWorkspacePath}/node_modules`
+  ) {
+    throw new Error(
+      "Docker dependencyVolumePath must be the workspace node_modules path"
+    );
+  }
+
+  const mounts = [
+    "--mount",
+    `type=bind,source=${workspacePath},target=${containerWorkspacePath}`
+  ];
+  if (dependencyVolumePath !== undefined) {
+    /* The nested volume exposes immutable image-built dependencies above the bind. */
+    mounts.push("--mount", `type=volume,target=${dependencyVolumePath}`);
+  }
 
   return {
     executable: "docker",
@@ -143,10 +173,9 @@ export function createDockerRunPlan(input: DockerRunPlanInput): DockerRunPlan {
       "none",
       "--tmpfs",
       `/tmp:rw,noexec,nosuid,nodev,size=${tmpfsSizeMb}m`,
-      "--mount",
-      `type=bind,source=${workspacePath},target=/workspace`,
+      ...mounts,
       "--workdir",
-      "/workspace",
+      containerWorkspacePath,
       "--env",
       "HOME=/tmp",
       "--label",
@@ -296,7 +325,8 @@ export function createDockerRunEnvironment(
       handle: EnvironmentHandle,
       _outcome: "keep" | "discard"
     ): Promise<void> {
-      await runDocker(["rm", "-f", handle.id]);
+      // -v removes the anonymous dependency volume together with the disposable Run.
+      await runDocker(["rm", "-f", "-v", handle.id]);
       containers.delete(handle.id);
     }
   };
