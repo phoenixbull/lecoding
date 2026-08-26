@@ -1104,10 +1104,12 @@ ai-coding-agent/
 version: 1
 verify:
   required:
-    - npm test
-    - npm run typecheck
-  optional:
-    - npm run lint
+    - name: tests
+      argv: [npm, test]
+      covers: ["*"]
+    - name: typecheck
+      argv: [npm, run, typecheck]
+      covers: ["*"]
 network:
   askDomains:
     - registry.npmjs.org
@@ -1117,6 +1119,7 @@ protectedPaths:
 ```
 
 - 配置进入 Git 并参与评审。
+- 当前 v1 loader 只接受结构化 `required` argv；`"*"` 必须由管理员显式评审，表示该命令为所有任务验收条件提供证据。
 - Agent 可以建议修改该文件，但修改本身属于 `protected_file_write`，必须人工批准。
 - Verifier 必须执行所有 `required` 命令；Agent 自行增加的命令只能补充，不能替代。
 

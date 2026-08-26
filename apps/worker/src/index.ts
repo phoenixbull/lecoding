@@ -26,8 +26,8 @@ import {
   createRunEventJournal
 } from "@lecoding/run-events";
 import {
-  createProductionVerifier,
-  type VerificationPlanProvider
+  createProjectYamlVerificationPlanProvider,
+  createProductionVerifier
 } from "@lecoding/verifier";
 
 /** Durable PostgreSQL resources supplied by the deployment-specific adapter. */
@@ -43,6 +43,8 @@ export interface WorkerDatabase {
 /** Validated process settings needed to construct the production Worker. */
 export interface WorkerConfig {
   workerId: string;
+  projectId: string;
+  projectConfigPath: string;
   worktreeRoot: string;
   workspacePath: string;
   dockerImage: string;
@@ -52,8 +54,6 @@ export interface WorkerConfig {
 /** Inputs whose concrete implementations belong to the deployment host. */
 export interface ProductionWorkerOptions {
   database: WorkerDatabase;
-  /** Reviewed project commands are the only configurable verification authority. */
-  verificationPlans: VerificationPlanProvider;
   environment: ModelEnvironment;
   /** Deterministic clock seam shared by state and event persistence. */
   now?: () => string;
@@ -80,6 +80,11 @@ export interface WorkerRuntime {
 /** Reads and validates security-sensitive Worker process settings. */
 export function loadWorkerConfig(environment: ModelEnvironment): WorkerConfig {
   const workerId = requireSetting(environment, "LECODING_WORKER_ID");
+  const projectId = requireSetting(environment, "LECODING_PROJECT_ID");
+  const projectConfigPath = requireAbsolutePath(
+    environment,
+    "LECODING_PROJECT_CONFIG_PATH"
+  );
   const worktreeRoot = requireAbsolutePath(
     environment,
     "LECODING_WORKTREE_ROOT"
@@ -107,6 +112,8 @@ export function loadWorkerConfig(environment: ModelEnvironment): WorkerConfig {
   }
   return {
     workerId,
+    projectId,
+    projectConfigPath,
     worktreeRoot,
     workspacePath,
     dockerImage,
@@ -131,6 +138,12 @@ export async function composeProductionWorker(
     const config = loadWorkerConfig(options.environment);
     const modelConfig = loadOpenAiCompatibleModelConfig(options.environment);
     const now = options.now ?? (() => new Date().toISOString());
+    const verificationPlans =
+      await createProjectYamlVerificationPlanProvider({
+        projectId: config.projectId,
+        configPath: config.projectConfigPath,
+        mutableWorktreeRoot: config.worktreeRoot
+      });
     /* Initialize schemas before accepting work, so startup fails as one unit. */
     const store = await createPostgresRunStore(options.database.executor);
     const transitions = await createPostgresRunTransitionWriter({
@@ -173,7 +186,7 @@ export async function composeProductionWorker(
       policy: createPolicyEngine(),
       events,
       verifier: createProductionVerifier({
-        plans: options.verificationPlans,
+        plans: verificationPlans,
         environment: verificationEnvironment
       }),
       workerId: config.workerId,

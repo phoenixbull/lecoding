@@ -32,6 +32,7 @@ Hard denies apply in every approval mode, including `full_access`:
 |---|---|
 | Model claims completion without verification | Run remains non-successful unless Verifier passes |
 | Model suggests weaker or replacement verification commands | Verifier executes only the administrator-reviewed required argv plan plus the non-removable system diff check; uncovered criteria remain inconclusive |
+| Agent edits `.ai-agent/project.yaml` in its own or a sibling worktree | Worker loads and caches the reviewed baseline from a realpath outside the entire managed worktree root before accepting work |
 | Verification infrastructure returns secret-bearing errors | VerificationReport records stable redacted failure categories and never copies command output or backend exceptions |
 | Full-access Run requests Docker socket | PolicyEngine returns fixed deny |
 | Concurrent task modifies source checkout | Change exists only inside the Run worktree |

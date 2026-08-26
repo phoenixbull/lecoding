@@ -1,6 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type { Engine, RunRecoveryWorker } from "@lecoding/run-engine";
-import type { VerificationPlanProvider } from "@lecoding/verifier";
 import {
   composeProductionWorker,
   createWorkerRuntime,
@@ -9,6 +11,8 @@ import {
 
 const validWorkerEnvironment = {
   LECODING_WORKER_ID: "worker-a",
+  LECODING_PROJECT_ID: "project-1",
+  LECODING_PROJECT_CONFIG_PATH: "/srv/lecoding/source/.ai-agent/project.yaml",
   LECODING_WORKTREE_ROOT: "/srv/lecoding/worktrees",
   LECODING_WORKSPACE_PATH: "/srv/lecoding/worktrees/run-a",
   LECODING_DOCKER_IMAGE:
@@ -95,6 +99,20 @@ describe("createWorkerRuntime", () => {
 
 describe("composeProductionWorker", () => {
   it("wires durable adapters and awaits LISTEN cleanup before closing PostgreSQL", async () => {
+    const fixtureRoot = await mkdtemp(join(tmpdir(), "lecoding-worker-config-"));
+    const worktreeRoot = join(fixtureRoot, "worktrees");
+    const workspacePath = join(worktreeRoot, "run-a");
+    const configDirectory = join(fixtureRoot, "source", ".ai-agent");
+    const projectConfigPath = join(configDirectory, "project.yaml");
+    await Promise.all([
+      mkdir(workspacePath, { recursive: true }),
+      mkdir(configDirectory, { recursive: true })
+    ]);
+    await writeFile(
+      projectConfigPath,
+      `version: 1\nverify:\n  required:\n    - name: tests\n      argv: [pnpm, test]\n      covers: [Tests pass]\n`,
+      "utf8"
+    );
     const calls: string[] = [];
     const executor = {
       query: vi.fn(async (sql: string) => {
@@ -116,35 +134,31 @@ describe("composeProductionWorker", () => {
     const close = vi.fn(async () => {
       calls.push("database.close");
     });
-    const verificationPlans: VerificationPlanProvider = {
-      load: vi.fn(async () => ({
-        required: [
-          {
-            name: "tests",
-            argv: ["pnpm", "test"],
-            covers: ["Tests pass"]
-          }
-        ]
-      }))
-    };
+    try {
+      const runtime = await composeProductionWorker({
+        database: { executor, notifications, close },
+        environment: {
+          ...validWorkerEnvironment,
+          LECODING_WORKTREE_ROOT: worktreeRoot,
+          LECODING_WORKSPACE_PATH: workspacePath,
+          LECODING_PROJECT_CONFIG_PATH: projectConfigPath
+        }
+      });
 
-    const runtime = await composeProductionWorker({
-      database: { executor, notifications, close },
-      verificationPlans,
-      environment: validWorkerEnvironment
-    });
+      runtime.start();
+      await runtime.stop();
 
-    runtime.start();
-    await runtime.stop();
-
-    expect(executor.query).toHaveBeenCalled();
-    expect(notifications.listen).toHaveBeenCalledWith(
-      "run_engine_cancel",
-      expect.any(Function)
-    );
-    expect(calls.indexOf("notifications.stop")).toBeLessThan(
-      calls.indexOf("database.close")
-    );
+      expect(executor.query).toHaveBeenCalled();
+      expect(notifications.listen).toHaveBeenCalledWith(
+        "run_engine_cancel",
+        expect.any(Function)
+      );
+      expect(calls.indexOf("notifications.stop")).toBeLessThan(
+        calls.indexOf("database.close")
+      );
+    } finally {
+      await rm(fixtureRoot, { recursive: true, force: true });
+    }
   });
 
   it("rejects a workspace outside the registered root during startup", () => {
@@ -170,7 +184,6 @@ describe("composeProductionWorker", () => {
           },
           close
         },
-        verificationPlans: { load: vi.fn() },
         environment: {}
       })
     ).rejects.toThrow("LECODING_WORKER_ID");

@@ -119,6 +119,49 @@ describe("createProductionVerifier", () => {
     });
   });
 
+  it("allows an administrator-reviewed wildcard to cover future task criteria", async () => {
+    const verifier = createProductionVerifier({
+      plans: {
+        load: vi.fn(async () => ({
+          required: [
+            {
+              name: "project tests",
+              argv: ["pnpm", "test"],
+              covers: ["*"]
+            }
+          ]
+        }))
+      },
+      environment: createVerificationEnvironment({
+        calls: [],
+        results: [
+          { exitCode: 0, stdout: "", stderr: "" },
+          { exitCode: 0, stdout: "", stderr: "" }
+        ]
+      })
+    });
+
+    const report = await verifier.verify({
+      runId: "run-wildcard",
+      run: {
+        projectId: "project-1",
+        environmentId: "environment-1",
+        task: "Add a future capability",
+        acceptanceCriteria: ["Future capability behaves correctly"],
+        approvalMode: "auto_review",
+        fileAccessScope: "workspace_only"
+      },
+      environment: { changedFiles: ["src/future.ts"] }
+    });
+
+    expect(report.outcome).toBe("passed");
+    expect(report.checks).toContainEqual({
+      name: "acceptance: Future capability behaves correctly",
+      outcome: "passed",
+      detail: "Covered by required check: project tests"
+    });
+  });
+
   it("runs every required command and fails without copying command output", async () => {
     const calls: string[] = [];
     const verifier = createProductionVerifier({

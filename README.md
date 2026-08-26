@@ -50,6 +50,24 @@ Before starting a local Worker, export the ignored file into its process environ
 
 The Worker also requires `LECODING_WORKER_ID`, canonical `LECODING_WORKTREE_ROOT` and `LECODING_WORKSPACE_PATH` values, plus an immutable `LECODING_DOCKER_IMAGE` digest; see `.env.example`. The workspace must be a dedicated strict child of the registered root. `composeProductionWorker(...)` takes ownership of an injected PostgreSQL query pool and a separate LISTEN connection, initializes every durable adapter before accepting work, and closes them after recovery and engine subscriptions stop.
 
+## Project verification configuration
+
+Set `LECODING_PROJECT_ID` and point `LECODING_PROJECT_CONFIG_PATH` at the administrator-reviewed source baseline's `.ai-agent/project.yaml`. The resolved config path must be outside the entire managed worktree root. Worker startup parses and caches version 1 before accepting work, so no Agent can weaken verification by editing any worktree copy:
+
+```yaml
+version: 1
+verify:
+  required:
+    - name: tests
+      argv: [pnpm, test]
+      covers: ["*"]
+    - name: typecheck
+      argv: [pnpm, typecheck]
+      covers: ["*"]
+```
+
+Commands are structured argv arrays and are executed without an implicit shell. `covers` may list exact acceptance criteria; the explicit administrator-reviewed `"*"` means that check supplies evidence for every task criterion. Unknown fields, string commands, empty plans, duplicate command names, configs inside the managed worktree root, and files larger than 64 KiB are rejected during startup.
+
 ## Workspace
 
 ```text
@@ -69,4 +87,4 @@ docker/               sandbox image and runtime notes
 docs/                 threat model and Phase 0 evidence
 ```
 
-The current implementation has PostgreSQL adapters for Run snapshots, tool-call idempotency, leases, cancellation, and events, while tests can still use in-memory adapters. The Worker and production Verifier composition seams are implemented, but the deployment host must still supply concrete PostgreSQL connections and a provider for committed/admin-reviewed project verification plans; pg-boss remains a later replacement for interval recovery. The golden-task catalog, Codex CLI and provider-native evaluation adapters, and RunEngine-native OpenAI-compatible model gateway are implemented. The configured third-party model passed the five-task Phase 0 development baseline; see [`docs/evidence/golden-baseline-2026-08-25.md`](docs/evidence/golden-baseline-2026-08-25.md). A project YAML plan loader, pg-boss adapter, executable Web/deployment hosts, and target-Linux isolation evidence remain pending Phase 0/1 work.
+The current implementation has PostgreSQL adapters for Run snapshots, tool-call idempotency, leases, cancellation, and events, while tests can still use in-memory adapters. The Worker, production Verifier, and trusted project-YAML plan loader are implemented; the deployment host must still supply concrete PostgreSQL connections, while pg-boss remains a later replacement for interval recovery. The golden-task catalog, Codex CLI and provider-native evaluation adapters, and RunEngine-native OpenAI-compatible model gateway are implemented. The configured third-party model passed the five-task Phase 0 development baseline; see [`docs/evidence/golden-baseline-2026-08-25.md`](docs/evidence/golden-baseline-2026-08-25.md). A pg-boss adapter, executable Web/deployment hosts, dependency-prepared verification image, immediate verification cancellation, and target-Linux isolation evidence remain pending Phase 0/1 work.

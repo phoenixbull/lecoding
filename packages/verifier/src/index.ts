@@ -24,7 +24,7 @@ export interface RequiredVerificationCommand {
   name: string;
   /** argv is executed directly by RunEnvironment and is never parsed by a shell. */
   argv: string[];
-  /** Exact user acceptance criteria for which this command provides evidence. */
+  /** Exact criteria, or reviewed `*` when this check covers all project tasks. */
   covers: string[];
 }
 
@@ -185,7 +185,7 @@ export function createProductionVerifier(
 
       for (const criterion of input.run.acceptanceCriteria) {
         const covering = plan.required.filter((command) =>
-          command.covers.includes(criterion)
+          command.covers.includes("*") || command.covers.includes(criterion)
         );
         if (covering.length === 0) {
           checks.push({
@@ -252,3 +252,8 @@ function isValidVerificationPlan(plan: VerificationPlan): boolean {
   }
   return true;
 }
+
+export {
+  createProjectYamlVerificationPlanProvider,
+  type ProjectYamlVerificationPlanProviderOptions
+} from "./project-yaml-plan-provider.js";

@@ -9,6 +9,7 @@
   },
   "dependencies": {
     "@lecoding/contracts": "workspace:*",
-    "@lecoding/run-environment": "workspace:*"
+    "@lecoding/run-environment": "workspace:*",
+    "yaml": "^2.9.0"
   }
 }
