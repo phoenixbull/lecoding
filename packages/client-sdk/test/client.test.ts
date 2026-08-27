@@ -1,7 +1,60 @@
 import { describe, expect, it, vi } from "vitest";
-import { createClient } from "../src/index.js";
+import { createClient, LeCodingHttpError } from "../src/index.js";
 
 describe("LeCodingClient", () => {
+  it("attaches one bearer token to ordinary, command, and SSE requests", async () => {
+    const requests: Array<{ url: string; authorization: string | null }> = [];
+    const fetch: typeof globalThis.fetch = async (input, init) => {
+      requests.push({
+        url: String(input),
+        authorization: new Headers(init?.headers).get("authorization")
+      });
+      if (String(input).endsWith("/events")) {
+        return new Response("");
+      }
+      if (String(input).endsWith("/commands")) {
+        return new Response(null, { status: 202 });
+      }
+      return Response.json({
+        id: "run-1",
+        projectId: "project-1",
+        environmentId: "server-docker",
+        task: "Protected",
+        status: "running"
+      });
+    };
+    const client = createClient({
+      baseUrl: "https://agent.example",
+      accessToken: "browser-session-token",
+      fetch
+    });
+
+    await client.inspectRun("run-1");
+    await client.cancelRun("run-1");
+    await client.openRunEventStream("run-1");
+
+    expect(requests).toEqual([
+      expect.objectContaining({ authorization: "Bearer browser-session-token" }),
+      expect.objectContaining({ authorization: "Bearer browser-session-token" }),
+      expect.objectContaining({ authorization: "Bearer browser-session-token" })
+    ]);
+    expect(requests.every(({ url }) => !url.includes("browser-session-token"))).toBe(true);
+  });
+
+  it("exposes an authentication status without copying the response body", async () => {
+    const client = createClient({
+      baseUrl: "https://agent.example",
+      fetch: async () =>
+        new Response("provider or proxy detail must stay opaque", { status: 401 })
+    });
+
+    const failure = await client.getControlPlaneConfig().catch((error) => error);
+
+    expect(failure).toBeInstanceOf(LeCodingHttpError);
+    expect(failure).toMatchObject({ status: 401 });
+    expect(String(failure)).not.toContain("proxy detail");
+  });
+
   it("inspects a run through the versioned public endpoint", async () => {
     const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(
       new Response(

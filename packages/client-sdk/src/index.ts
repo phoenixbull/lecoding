@@ -47,13 +47,33 @@ export interface OpenRunEventStreamOptions {
 
 export interface ClientOptions {
   baseUrl: string;
+  /** Optional single-user bearer token; it is sent only in the Authorization header. */
+  accessToken?: string;
   fetch?: typeof globalThis.fetch;
+}
+
+/** Stable transport failure that lets UI clients distinguish authentication. */
+export class LeCodingHttpError extends Error {
+  constructor(
+    operation: string,
+    readonly status: number
+  ) {
+    super(`${operation}: HTTP ${status}`);
+    this.name = "LeCodingHttpError";
+  }
 }
 
 /** Creates one transport adapter shared by browser, Electron, and Local Runner clients. */
 export function createClient(options: ClientOptions): LeCodingClient {
   const fetchImplementation = options.fetch ?? globalThis.fetch;
   const baseUrl = options.baseUrl.replace(/\/+$/, "");
+  const authenticatedFetch: typeof globalThis.fetch = (input, init = {}) => {
+    const headers = new Headers(init.headers);
+    if (options.accessToken) {
+      headers.set("authorization", `Bearer ${options.accessToken}`);
+    }
+    return fetchImplementation(input, { ...init, headers });
+  };
 
   const openRunEventStream = async (
     runId: RunId,
@@ -65,7 +85,7 @@ export function createClient(options: ClientOptions): LeCodingClient {
       headers.set("last-event-id", streamOptions.lastEventId);
     }
 
-    const response = await fetchImplementation(
+    const response = await authenticatedFetch(
       `${baseUrl}/api/v1/runs/${encodeURIComponent(runId)}/events`,
       {
         method: "GET",
@@ -74,7 +94,7 @@ export function createClient(options: ClientOptions): LeCodingClient {
       }
     );
     if (!response.ok) {
-      throw new Error(`Failed to open Run event stream: HTTP ${response.status}`);
+      throw new LeCodingHttpError("Failed to open Run event stream", response.status);
     }
     if (!response.body) {
       throw new Error("Run event stream response has no body");
@@ -83,7 +103,7 @@ export function createClient(options: ClientOptions): LeCodingClient {
   };
 
   const sendRunCommand = async (runId: RunId, command: object): Promise<void> => {
-    const response = await fetchImplementation(
+    const response = await authenticatedFetch(
       `${baseUrl}/api/v1/runs/${encodeURIComponent(runId)}/commands`,
       {
         method: "POST",
@@ -95,18 +115,18 @@ export function createClient(options: ClientOptions): LeCodingClient {
       }
     );
     if (!response.ok) {
-      throw new Error(`Failed to command Run: HTTP ${response.status}`);
+      throw new LeCodingHttpError("Failed to command Run", response.status);
     }
   };
 
   return {
     async getControlPlaneConfig(): Promise<ControlPlaneConfig> {
-      const response = await fetchImplementation(`${baseUrl}/api/v1/config`, {
+      const response = await authenticatedFetch(`${baseUrl}/api/v1/config`, {
         method: "GET",
         headers: { accept: "application/json" }
       });
       if (!response.ok) {
-        throw new Error(`Failed to load control plane: HTTP ${response.status}`);
+        throw new LeCodingHttpError("Failed to load control plane", response.status);
       }
       return (await response.json()) as ControlPlaneConfig;
     },
@@ -115,7 +135,7 @@ export function createClient(options: ClientOptions): LeCodingClient {
       projectId: ProjectId,
       input: CreateRunInput
     ): Promise<CreateRunResult> {
-      const response = await fetchImplementation(
+      const response = await authenticatedFetch(
         `${baseUrl}/api/v1/projects/${encodeURIComponent(projectId)}/runs`,
         {
           method: "POST",
@@ -127,13 +147,13 @@ export function createClient(options: ClientOptions): LeCodingClient {
         }
       );
       if (!response.ok) {
-        throw new Error(`Failed to create Run: HTTP ${response.status}`);
+        throw new LeCodingHttpError("Failed to create Run", response.status);
       }
       return (await response.json()) as CreateRunResult;
     },
 
     async inspectRun(runId: RunId): Promise<RunView> {
-      const response = await fetchImplementation(
+      const response = await authenticatedFetch(
         `${baseUrl}/api/v1/runs/${encodeURIComponent(runId)}`,
         {
           method: "GET",
@@ -142,7 +162,7 @@ export function createClient(options: ClientOptions): LeCodingClient {
       );
 
       if (!response.ok) {
-        throw new Error(`Failed to inspect Run: HTTP ${response.status}`);
+        throw new LeCodingHttpError("Failed to inspect Run", response.status);
       }
 
       return (await response.json()) as RunView;
@@ -152,23 +172,23 @@ export function createClient(options: ClientOptions): LeCodingClient {
       if (!Number.isSafeInteger(limit) || limit < 1 || limit > 50) {
         throw new Error("Run history limit must be an integer from 1 to 50");
       }
-      const response = await fetchImplementation(
+      const response = await authenticatedFetch(
         `${baseUrl}/api/v1/projects/${encodeURIComponent(projectId)}/runs?limit=${limit}`,
         { method: "GET", headers: { accept: "application/json" } }
       );
       if (!response.ok) {
-        throw new Error(`Failed to list Runs: HTTP ${response.status}`);
+        throw new LeCodingHttpError("Failed to list Runs", response.status);
       }
       return (await response.json()) as RunHistoryResult;
     },
 
     async getRunChanges(runId: RunId): Promise<RunChanges> {
-      const response = await fetchImplementation(
+      const response = await authenticatedFetch(
         `${baseUrl}/api/v1/runs/${encodeURIComponent(runId)}/changes`,
         { method: "GET", headers: { accept: "application/json" } }
       );
       if (!response.ok) {
-        throw new Error(`Failed to load Run changes: HTTP ${response.status}`);
+        throw new LeCodingHttpError("Failed to load Run changes", response.status);
       }
       return (await response.json()) as RunChanges;
     },

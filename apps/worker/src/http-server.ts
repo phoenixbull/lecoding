@@ -1,5 +1,6 @@
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { once } from "node:events";
+import { createHash, timingSafeEqual } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { extname, relative, resolve } from "node:path";
 import type { ModelEnvironment } from "@lecoding/openai-model";
@@ -19,10 +20,16 @@ const CONTENT_SECURITY_POLICY = [
   "form-action 'self'"
 ].join("; ");
 
+/** API authentication modes accepted by the single-user control plane. */
+export type WorkerHttpAuth =
+  | { mode: "none" }
+  | { mode: "bearer"; token: string };
+
 /** Validated single-user HTTP listener settings. */
 export interface WorkerHttpConfig {
-  host: "127.0.0.1" | "::1" | "localhost";
+  host: string;
   port: number;
+  auth: WorkerHttpAuth;
 }
 
 /** Inputs for serving the API and prebuilt Web assets on one origin. */
@@ -38,20 +45,32 @@ export interface WorkerHttpServer {
   stop(): Promise<void>;
 }
 
-/** Reads a loopback-only listener until authentication exists in a later phase. */
+/** Reads an authenticated listener; remote binds require explicit TLS termination. */
 export function loadWorkerHttpConfig(
   environment: ModelEnvironment
 ): WorkerHttpConfig {
   const host = environment.LECODING_HTTP_HOST?.trim() || "127.0.0.1";
-  if (!LOOPBACK_HOSTS.has(host)) {
-    throw new Error("LECODING_HTTP_HOST must be a loopback host in single-user mode");
+  if (!isValidListenHost(host)) {
+    throw new Error("LECODING_HTTP_HOST must be a valid hostname or IP address");
   }
   const rawPort = environment.LECODING_HTTP_PORT?.trim() || "8787";
   const port = Number(rawPort);
   if (!Number.isSafeInteger(port) || port < 1 || port > 65_535) {
     throw new Error("LECODING_HTTP_PORT must be an integer from 1 to 65535");
   }
-  return { host: host as WorkerHttpConfig["host"], port };
+  const token = environment.LECODING_HTTP_AUTH_TOKEN;
+  const auth: WorkerHttpAuth = token ? loadBearerAuth(token) : { mode: "none" };
+  if (!LOOPBACK_HOSTS.has(host)) {
+    if (auth.mode === "none") {
+      throw new Error("Non-loopback HTTP requires LECODING_HTTP_AUTH_TOKEN");
+    }
+    if (environment.LECODING_HTTP_BEHIND_TLS_PROXY !== "1") {
+      throw new Error(
+        "Non-loopback HTTP requires LECODING_HTTP_BEHIND_TLS_PROXY=1"
+      );
+    }
+  }
+  return { host, port, auth };
 }
 
 /** Starts the Node transport adapter around the Web-standard API handler. */
@@ -129,6 +148,10 @@ async function handleNodeRequest(
   const host = incoming.headers.host ?? `${options.host}:${options.port}`;
   const url = new URL(incoming.url ?? "/", `http://${host}`);
   if (url.pathname.startsWith("/api/")) {
+    if (!isApiAuthorized(incoming, options.auth)) {
+      sendUnauthorized(outgoing);
+      return;
+    }
     const abort = new AbortController();
     outgoing.once("close", () => abort.abort());
     const body = await readIncomingBody(incoming);
@@ -143,6 +166,57 @@ async function handleNodeRequest(
     return;
   }
   await serveStatic(outgoing, options.webRoot, url.pathname);
+}
+
+function loadBearerAuth(token: string): WorkerHttpAuth {
+  if (token.length < 32) {
+    throw new Error("LECODING_HTTP_AUTH_TOKEN must contain at least 32 characters");
+  }
+  if (token.length > 512 || !/^[\x21-\x7e]+$/u.test(token)) {
+    throw new Error(
+      "LECODING_HTTP_AUTH_TOKEN must contain at most 512 visible ASCII characters"
+    );
+  }
+  return { mode: "bearer", token };
+}
+
+function isValidListenHost(host: string): boolean {
+  return (
+    host.length <= 253 &&
+    /^[a-zA-Z0-9._:-]+$/u.test(host) &&
+    !host.startsWith(".") &&
+    !host.endsWith(".")
+  );
+}
+
+function isApiAuthorized(
+  incoming: IncomingMessage,
+  auth: WorkerHttpAuth
+): boolean {
+  if (auth.mode === "none") {
+    return true;
+  }
+  const header = incoming.headers.authorization;
+  const supplied =
+    typeof header === "string" && header.startsWith("Bearer ")
+      ? header.slice("Bearer ".length)
+      : "";
+  // Fixed-length digests avoid leaking token-prefix or token-length matches.
+  const suppliedDigest = createHash("sha256").update(supplied).digest();
+  const expectedDigest = createHash("sha256").update(auth.token).digest();
+  return supplied !== "" && timingSafeEqual(suppliedDigest, expectedDigest);
+}
+
+function sendUnauthorized(response: ServerResponse): void {
+  applySecurityHeaders(response);
+  response.writeHead(401, {
+    "content-type": "application/json",
+    "cache-control": "no-store",
+    "www-authenticate": 'Bearer realm="LeCoding"'
+  });
+  response.end(
+    '{"error":{"code":"unauthorized","message":"Authentication required"}}'
+  );
 }
 
 async function readIncomingBody(incoming: IncomingMessage): Promise<Uint8Array> {

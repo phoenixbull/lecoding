@@ -44,6 +44,8 @@ Hard denies apply in every approval mode, including `full_access`:
 | Model call requires continuation after Worker replacement | Provider response ID is persisted with the tool result and reused only with the matching `call_id` output |
 | Model provider rejects a request with credential-bearing detail | Gateway records only the HTTP status and never copies the remote body or API key into Run failure text |
 | Operator configures a plaintext remote model endpoint | Configuration rejects remote HTTP before attaching the bearer credential; only HTTPS or loopback HTTP is allowed |
+| Remote client reaches the Run API without authentication | Non-loopback startup requires a 32+ character Bearer token and an explicit TLS-proxy assertion; every API, SSE, and command route authenticates before reading its body or invoking control seams |
+| Browser or proxy leaks the control-plane token through URLs | The Web console keeps it in tab-scoped session storage and the SDK sends it only as an Authorization header; deployment guidance forbids credential-bearing proxy logs |
 | Browser disconnects | Run persists independently of SSE connection |
 | Browser approval is tampered into a broad grant | Control plane accepts only the current approval ID with `scope: once`; RunEngine validates it against durable pending state |
 | A stale browser tab answers a newer model question | `answer` must carry the exact durable pending request ID; RunEngine rejects mismatches and consumes only the current `waiting_user` request |

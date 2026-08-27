@@ -120,6 +120,20 @@ button:disabled {
   align-items: start;
 }
 
+.auth-panel {
+  align-items: end;
+  display: grid;
+  gap: 24px;
+  grid-template-columns: minmax(0, 1fr) minmax(280px, 420px);
+  margin: 18px 24px 0;
+  padding: 24px;
+}
+
+.auth-form {
+  display: grid;
+  gap: 10px;
+}
+
 .left-column,
 .run-column {
   display: grid;
@@ -613,6 +627,11 @@ input:focus {
 
   .workspace-grid {
     grid-template-columns: 1fr;
+  }
+
+  .auth-panel {
+    grid-template-columns: 1fr;
+    margin-inline: 0;
   }
 
 }

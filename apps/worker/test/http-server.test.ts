@@ -11,10 +11,108 @@ import {
 } from "../src/http-server.js";
 
 describe("Worker HTTP server", () => {
-  it("refuses a non-loopback bind before the single-user API has authentication", () => {
+  it("refuses a non-loopback bind without authentication and TLS termination", () => {
     expect(() =>
       loadWorkerHttpConfig({ LECODING_HTTP_HOST: "0.0.0.0" })
-    ).toThrow("loopback");
+    ).toThrow("LECODING_HTTP_AUTH_TOKEN");
+    expect(() =>
+      loadWorkerHttpConfig({
+        LECODING_HTTP_HOST: "0.0.0.0",
+        LECODING_HTTP_AUTH_TOKEN: "a".repeat(32)
+      })
+    ).toThrow("LECODING_HTTP_BEHIND_TLS_PROXY");
+    expect(
+      loadWorkerHttpConfig({
+        LECODING_HTTP_HOST: "0.0.0.0",
+        LECODING_HTTP_AUTH_TOKEN: "a".repeat(32),
+        LECODING_HTTP_BEHIND_TLS_PROXY: "1"
+      })
+    ).toEqual({
+      host: "0.0.0.0",
+      port: 8787,
+      auth: { mode: "bearer", token: "a".repeat(32) }
+    });
+  });
+
+  it("rejects weak bearer tokens even on loopback", () => {
+    expect(() =>
+      loadWorkerHttpConfig({
+        LECODING_HTTP_AUTH_TOKEN: "too-short"
+      })
+    ).toThrow("at least 32 characters");
+  });
+
+  it("protects every API route while leaving the static login shell available", async () => {
+    const webRoot = await mkdtemp(join(tmpdir(), "lecoding-auth-web-root-"));
+    await writeFile(join(webRoot, "index.html"), "<main>Authenticate</main>", "utf8");
+    const inspect = vi.fn(async () => ({
+      id: "run-auth",
+      projectId: "project-1",
+      environmentId: "server-docker",
+      task: "Protected",
+      status: "running" as const
+    }));
+    const command = vi.fn();
+    const eventHandle = vi.fn();
+    const server = await startWorkerHttpServer({
+      host: "127.0.0.1",
+      port: 0,
+      auth: { mode: "bearer", token: "secret-token-that-is-at-least-32-chars" },
+      webRoot,
+      control: {
+        projectId: "project-1",
+        runs: {
+          start: vi.fn(),
+          resume: vi.fn(),
+          command,
+          inspect
+        } as unknown as Engine,
+        history: { list: vi.fn(async () => []) },
+        changes: { read: vi.fn(async () => ({ changedFiles: [], unifiedDiff: "", truncated: false })) },
+        eventStream: { handle: eventHandle }
+      }
+    });
+    try {
+      const shell = await fetch(`${server.origin}/`);
+      const missing = await fetch(`${server.origin}/api/v1/runs/run-auth`);
+      const missingSse = await fetch(
+        `${server.origin}/api/v1/runs/run-auth/events`
+      );
+      const missingCommand = await fetch(
+        `${server.origin}/api/v1/runs/run-auth/commands`,
+        {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ type: "cancel" })
+        }
+      );
+      const wrong = await fetch(`${server.origin}/api/v1/runs/run-auth`, {
+        headers: { authorization: "Bearer wrong-token" }
+      });
+      const authorized = await fetch(`${server.origin}/api/v1/runs/run-auth`, {
+        headers: {
+          authorization: "Bearer secret-token-that-is-at-least-32-chars"
+        }
+      });
+
+      expect(shell.status).toBe(200);
+      expect(missing.status).toBe(401);
+      expect(missingSse.status).toBe(401);
+      expect(missingCommand.status).toBe(401);
+      expect(missing.headers.get("www-authenticate")).toBe('Bearer realm="LeCoding"');
+      expect(missing.headers.get("cache-control")).toBe("no-store");
+      await expect(missing.json()).resolves.toEqual({
+        error: { code: "unauthorized", message: "Authentication required" }
+      });
+      expect(wrong.status).toBe(401);
+      expect(authorized.status).toBe(200);
+      expect(inspect).toHaveBeenCalledTimes(1);
+      expect(command).not.toHaveBeenCalled();
+      expect(eventHandle).not.toHaveBeenCalled();
+    } finally {
+      await server.stop();
+      await rm(webRoot, { recursive: true, force: true });
+    }
   });
 
   it("serves the Web shell and versioned Run API on one origin", async () => {
@@ -37,6 +135,7 @@ describe("Worker HTTP server", () => {
     const server = await startWorkerHttpServer({
       host: "127.0.0.1",
       port: 0,
+      auth: { mode: "none" },
       webRoot,
       control: {
         projectId: "project-1",
@@ -108,6 +207,7 @@ describe("Worker HTTP server", () => {
     const server = await startWorkerHttpServer({
       host: "127.0.0.1",
       port: 0,
+      auth: { mode: "none" },
       webRoot,
       control: {
         projectId: "project-1",

@@ -1,4 +1,4 @@
-import { createClient } from "@lecoding/client-sdk";
+import { createClient, LeCodingHttpError } from "@lecoding/client-sdk";
 import type {
   ControlPlaneConfig,
   RunChanges,
@@ -19,8 +19,13 @@ import {
 import { followRunEventStream } from "./run-stream.js";
 import "./styles.css";
 
-const client = createClient({ baseUrl: window.location.origin });
+const AUTH_TOKEN_STORAGE_KEY = "lecoding.httpAuthToken";
+let client = createSessionClient(readSessionToken());
 const form = requiredElement<HTMLFormElement>("#run-form");
+const authPanel = requiredElement<HTMLElement>("#auth-panel");
+const authForm = requiredElement<HTMLFormElement>("#auth-form");
+const authTokenInput = requiredElement<HTMLInputElement>("#auth-token");
+const clearAuthButton = requiredElement<HTMLButtonElement>("#clear-auth");
 const submitButton = requiredElement<HTMLButtonElement>("#create-run");
 const cancelButton = requiredElement<HTMLButtonElement>("#cancel-run");
 const approvalCard = requiredElement<HTMLElement>("#approval-card");
@@ -62,6 +67,31 @@ form.addEventListener("submit", (event) => {
   void createRun();
 });
 
+authForm.addEventListener("submit", (event) => {
+  event.preventDefault();
+  const token = authTokenInput.value.trim();
+  if (token.length < 32) {
+    showError("访问令牌至少需要 32 个字符。");
+    return;
+  }
+  writeSessionToken(token);
+  client = createSessionClient(token);
+  authTokenInput.value = "";
+  authPanel.hidden = true;
+  clearAuthButton.hidden = false;
+  void initialize();
+});
+
+clearAuthButton.addEventListener("click", () => {
+  streamController?.abort();
+  writeSessionToken(undefined);
+  client = createSessionClient(undefined);
+  bootstrap = undefined;
+  clearAuthButton.hidden = true;
+  clearAuthenticatedView();
+  void initialize();
+});
+
 cancelButton.addEventListener("click", () => {
   void cancelCurrentRun();
 });
@@ -97,10 +127,20 @@ runHistory.addEventListener("click", (event) => {
 async function initialize(): Promise<void> {
   try {
     bootstrap = await client.getControlPlaneConfig();
+    authPanel.hidden = true;
+    clearAuthButton.hidden = readSessionToken() === undefined;
+    submitButton.disabled = false;
+    hideError();
     projectValue.textContent = bootstrap.projectId;
     environmentInput.value = bootstrap.defaultEnvironmentId;
     setStreamState("就绪", "idle");
-  } catch {
+  } catch (error) {
+    if (error instanceof LeCodingHttpError && error.status === 401) {
+      writeSessionToken(undefined);
+      client = createSessionClient(undefined);
+      requireAuthentication();
+      return;
+    }
     showError("无法连接本地 LeCoding 控制面，请确认 Worker 已启动。");
     setStreamState("离线", "negative");
     submitButton.disabled = true;
@@ -111,6 +151,65 @@ async function initialize(): Promise<void> {
   } catch {
     showError("Run 历史暂时不可用；仍可创建新的 Run。");
   }
+}
+
+function createSessionClient(accessToken: string | undefined) {
+  return createClient({
+    baseUrl: window.location.origin,
+    ...(accessToken ? { accessToken } : {})
+  });
+}
+
+function readSessionToken(): string | undefined {
+  try {
+    return window.sessionStorage.getItem(AUTH_TOKEN_STORAGE_KEY) ?? undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function writeSessionToken(token: string | undefined): void {
+  try {
+    if (token) {
+      // sessionStorage avoids URL leakage and clears the credential with the tab session.
+      window.sessionStorage.setItem(AUTH_TOKEN_STORAGE_KEY, token);
+    } else {
+      window.sessionStorage.removeItem(AUTH_TOKEN_STORAGE_KEY);
+    }
+  } catch {
+    // The in-memory client remains usable when browser storage is unavailable.
+  }
+}
+
+function requireAuthentication(): void {
+  clearAuthenticatedView();
+  bootstrap = undefined;
+  authPanel.hidden = false;
+  clearAuthButton.hidden = true;
+  projectValue.textContent = "需要认证";
+  submitButton.disabled = true;
+  showError("控制面需要访问令牌，请完成认证后继续。");
+  setStreamState("需要认证", "warning");
+  authTokenInput.focus();
+}
+
+function clearAuthenticatedView(): void {
+  // Logout removes already-rendered task and evidence text before any network retry.
+  streamController?.abort();
+  currentRun = undefined;
+  selectedRunId = undefined;
+  recentRuns = [];
+  timeline.replaceChildren();
+  runHistory.replaceChildren();
+  verification.replaceChildren();
+  verification.append(emptyVerification);
+  emptyVerification.hidden = false;
+  approvalCard.hidden = true;
+  userRequestCard.hidden = true;
+  cancelButton.hidden = true;
+  runIdValue.textContent = "—";
+  statusBadge.textContent = "尚未创建";
+  resetChanges("认证后显示受管工作区变更。");
 }
 
 async function createRun(): Promise<void> {

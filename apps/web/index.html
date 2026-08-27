@@ -20,7 +20,30 @@
           <span>项目</span>
           <strong id="project-value">连接中…</strong>
         </div>
+        <button id="clear-auth" class="secondary-button compact" type="button" hidden>
+          清除访问令牌
+        </button>
       </header>
+
+      <section id="auth-panel" class="panel auth-panel" aria-live="polite" hidden>
+        <div>
+          <p class="eyebrow">Authenticated control plane</p>
+          <h2>连接 LeCoding Worker</h2>
+          <p class="muted">输入部署管理员提供的访问令牌。令牌仅保存在当前标签页。</p>
+        </div>
+        <form id="auth-form" class="auth-form">
+          <label for="auth-token">访问令牌</label>
+          <input
+            id="auth-token"
+            name="authToken"
+            type="password"
+            autocomplete="current-password"
+            minlength="32"
+            required
+          />
+          <button class="primary-button compact" type="submit">连接</button>
+        </form>
+      </section>
 
       <main class="workspace-grid">
         <div class="left-column">

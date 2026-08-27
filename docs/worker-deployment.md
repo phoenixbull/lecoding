@@ -91,8 +91,22 @@ same loopback listener then serves the Web console and these versioned endpoints
 - `GET /api/v1/runs/:runId/events` streams durable, resumable SSE events.
 - `POST /api/v1/runs/:runId/commands` accepts cancel, strict single-call approve/reject commands, a matching `answer`, or a bounded `steer`. Browser approval scope must be `once`; Run-wide grants are rejected. Answers carry the displayed request ID so a stale tab cannot answer a newer question. Every answer and steer also carries a client-stable `commandId` of at most 128 characters; the SDK generates a UUID unless the caller supplies one for an explicit retry. Steering resolves the current `waiting_user` question or enters the durable mailbox while a Run is queued, preparing, running, or awaiting environment recovery.
 
-`LECODING_HTTP_HOST` defaults to `127.0.0.1` and rejects non-loopback values until
-an authentication boundary exists. `LECODING_HTTP_PORT` defaults to `8787`.
+`LECODING_HTTP_HOST` defaults to `127.0.0.1` and `LECODING_HTTP_PORT` defaults to
+`8787`. Loopback remains unauthenticated when `LECODING_HTTP_AUTH_TOKEN` is empty.
+Setting a 32–512 character visible-ASCII token protects every `/api/*` route,
+including config, history, inspect, changes, SSE, and commands, with a constant-time
+Bearer comparison. Static assets remain public so the login shell can load; they
+contain no Run or provider data. The Web console stores the entered token only in
+the current tab's `sessionStorage` and the Client SDK sends it only in the
+`Authorization` header, never a URL.
+
+A non-loopback host additionally requires `LECODING_HTTP_BEHIND_TLS_PROXY=1`.
+This flag is an explicit operator assertion, not TLS implementation: terminate
+HTTPS at a trusted reverse proxy, restrict direct access to the Worker port, and
+forward the Authorization header unchanged. Without both the token and assertion,
+startup fails before binding. Rotate the token through the deployment secret
+manager and reload the Worker; do not place it in source control or proxy access
+logs.
 SSE delivery is at least once; clients deduplicate by the event sequence and may
 resume with `Last-Event-ID`. The Web console reconnects after transport EOF or
 failure, refreshes status during the retry window, and stops after replaying the
