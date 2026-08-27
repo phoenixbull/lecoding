@@ -159,6 +159,46 @@ describe("createRunApiHandler", () => {
     expect(changes.read).toHaveBeenCalledWith("run-1");
   });
 
+  it("discards a terminal Run result through the versioned result endpoint", async () => {
+    const runs = createRuns([]);
+    runs.inspect.mockResolvedValue({
+      id: "run-1",
+      projectId: "project-1",
+      environmentId: "server-docker",
+      task: "Finished task",
+      status: "succeeded"
+    });
+    const results = { resolve: vi.fn(async () => undefined) };
+    const handler = createHandler(runs, undefined, undefined, results);
+
+    const response = await handler.handle(
+      new Request("http://127.0.0.1:8787/api/v1/runs/run-1/result", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ outcome: "discard" })
+      })
+    );
+
+    expect(response.status).toBe(204);
+    expect(results.resolve).toHaveBeenCalledWith("run-1", "discard");
+  });
+
+  it("rejects result resolution before the Run reaches a terminal state", async () => {
+    const results = { resolve: vi.fn(async () => undefined) };
+    const handler = createHandler(createRuns([]), undefined, undefined, results);
+
+    const response = await handler.handle(
+      new Request("http://127.0.0.1:8787/api/v1/runs/run-1/result", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ outcome: "discard" })
+      })
+    );
+
+    expect(response.status).toBe(409);
+    expect(results.resolve).not.toHaveBeenCalled();
+  });
+
   it("accepts only single-call approval and rejection commands", async () => {
     const runs = createRuns([]);
     const handler = createHandler(runs);
@@ -322,6 +362,7 @@ describe("createRunApiHandler", () => {
       runs: createRuns([]),
       history: { list: vi.fn(async () => []) },
       changes: { read: vi.fn(async () => ({ changedFiles: [], unifiedDiff: "", truncated: false })) },
+      results: { resolve: vi.fn(async () => undefined) },
       eventStream
     });
     const response = await handler.handle(
@@ -359,7 +400,8 @@ function createRuns(calls: string[]) {
 function createHandler(
   runs: ReturnType<typeof createRuns>,
   history = { list: vi.fn(async () => []) },
-  changes = { read: vi.fn(async () => ({ changedFiles: [], unifiedDiff: "", truncated: false })) }
+  changes = { read: vi.fn(async () => ({ changedFiles: [], unifiedDiff: "", truncated: false })) },
+  results = { resolve: vi.fn(async () => undefined) }
 ) {
   return createRunApiHandler({
     defaultProjectId: "project-1",
@@ -367,6 +409,7 @@ function createHandler(
     runs,
     history,
     changes,
+    results,
     eventStream: {
       handle: vi.fn(async () => new Response("", { status: 200 }))
     }

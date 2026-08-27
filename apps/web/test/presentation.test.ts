@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { JsonValue } from "@lecoding/contracts";
 import {
   canLoadRunChanges,
+  canResolveRunResult,
   formatEventTitle,
   formatRunEventDetail,
   isTerminalStatus,
@@ -49,6 +50,11 @@ describe("Web Run presentation", () => {
     expect(canLoadRunChanges("waiting_approval")).toBe(true);
     expect(canLoadRunChanges("succeeded")).toBe(true);
     expect(canLoadRunChanges("cancelled")).toBe(false);
+    // Only completed worktrees can be kept or discarded by the user.
+    expect(canResolveRunResult("succeeded")).toBe(true);
+    expect(canResolveRunResult("failed")).toBe(true);
+    expect(canResolveRunResult("running")).toBe(false);
+    expect(canResolveRunResult("cancelled")).toBe(false);
   });
 
   it("provides stable Chinese labels for status and timeline events", () => {

@@ -86,6 +86,7 @@ export async function startWorkerHttpServer(
     runs: options.control.runs,
     history: options.control.history,
     changes: options.control.changes,
+    results: options.control.results,
     eventStream: options.control.eventStream,
     ...(options.onBackgroundError
       ? { onBackgroundError: options.onBackgroundError }

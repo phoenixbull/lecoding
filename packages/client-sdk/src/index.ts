@@ -18,6 +18,8 @@ export interface LeCodingClient {
   inspectRun(runId: RunId): Promise<RunView>;
   listRuns(projectId: ProjectId, limit?: number): Promise<RunHistoryResult>;
   getRunChanges(runId: RunId): Promise<RunChanges>;
+  /** Keeps or discards the isolated worktree only after the Run reaches a terminal state. */
+  resolveRunResult(runId: RunId, outcome: "keep" | "discard"): Promise<void>;
   cancelRun(runId: RunId): Promise<void>;
   approveRun(runId: RunId, approvalId: string): Promise<void>;
   rejectRun(runId: RunId, approvalId: string): Promise<void>;
@@ -191,6 +193,26 @@ export function createClient(options: ClientOptions): LeCodingClient {
         throw new LeCodingHttpError("Failed to load Run changes", response.status);
       }
       return (await response.json()) as RunChanges;
+    },
+
+    async resolveRunResult(
+      runId: RunId,
+      outcome: "keep" | "discard"
+    ): Promise<void> {
+      const response = await authenticatedFetch(
+        `${baseUrl}/api/v1/runs/${encodeURIComponent(runId)}/result`,
+        {
+          method: "POST",
+          headers: {
+            accept: "application/json",
+            "content-type": "application/json"
+          },
+          body: JSON.stringify({ outcome })
+        }
+      );
+      if (!response.ok) {
+        throw new LeCodingHttpError("Failed to resolve Run result", response.status);
+      }
     },
 
     async cancelRun(runId: RunId): Promise<void> {

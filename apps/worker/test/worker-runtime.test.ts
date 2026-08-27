@@ -160,6 +160,7 @@ function createControlPlane(engine: Engine) {
     runs: engine,
     history: { list: vi.fn(async () => []) },
     changes: { read: vi.fn(async () => ({ changedFiles: [], unifiedDiff: "", truncated: false })) },
+    results: { resolve: vi.fn(async () => undefined) },
     eventStream: {
       handle: vi.fn(async () => new Response("", { status: 200 }))
     }

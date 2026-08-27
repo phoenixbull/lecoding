@@ -2,6 +2,10 @@
 
 Phase 0 implementation of the v3.2 design: a recoverable, policy-enforced coding-agent harness with portable execution-environment contracts.
 
+Phase 0 and the V3 Phase 1 single-user reliable-loop scope are complete for the
+accepted development target. The target-Linux isolation run remains explicit
+environmental evidence debt; see [`docs/phase-1-completion.md`](docs/phase-1-completion.md).
+
 ## Current vertical slices
 
 - A Run reaches `succeeded` only after the Verifier returns `passed`.
@@ -18,7 +22,7 @@ Phase 0 implementation of the v3.2 design: a recoverable, policy-enforced coding
 - The SSE handler combines durable replay with race-safe, deduplicated live delivery.
 - RunEvent V1 now records user-message submission, safe-boundary delivery, and Agent questions, so the conversation timeline survives refresh and Worker replacement. Answer and steer commands use client-stable `commandId` values. PostgreSQL atomically persists mailbox submission or waiting-question resolution together with the matching Run snapshot, conversation events, and SSE outbox records; exact retries reuse their durable receipt.
 - PolicyEngine hard-denies Docker socket reads even in full-access mode.
-- GitWorkspace creates or safely reopens one isolated worktree per Run and leaves the source checkout unchanged.
+- GitWorkspace creates or safely reopens one isolated worktree per Run, and terminal results can be kept or idempotently discarded only after revalidating the exact managed Git worktree; the source checkout remains unchanged.
 - Docker creation uses an auditable fixed-security plan; the macOS Docker Desktop PoC verifies non-root/read-only execution, bounded resources, scoped writable mounts, and cancellation.
 - A fail-closed Linux-only evidence command builds the project sandbox image, rejects skipped isolation cases, and records target host/Docker/image metadata without accepting Docker Desktop as production evidence.
 - A 20-task deterministic golden catalog covers Node and Python changes; stable 5-task representative and category-balanced 12-task acceptance suites run through the isolated, cost-accounted compatible-model executor.
@@ -26,8 +30,8 @@ Phase 0 implementation of the v3.2 design: a recoverable, policy-enforced coding
 - `apps/worker` composes the durable PostgreSQL adapters, Docker environment, model gateway, policy, production Verifier, cancellation listener, lease heartbeat, and pg-boss recovery scheduler behind one idempotent process lifecycle.
 - The executable Worker host creates a bounded node-postgres Pool plus a rotating dedicated LISTEN session, proves both paths ready before startup, and drains them on SIGINT/SIGTERM without logging the database URI.
 - The production Verifier executes every reviewed required argv command in a separate restricted container, while a system-owned host checker revalidates the managed worktree and applies Diff Safety without exposing Git metadata to either container. Uncovered acceptance criteria and infrastructure uncertainty fail closed as `inconclusive`, and Run cancellation aborts an in-flight verification command immediately.
-- A loopback-only versioned HTTP control plane creates, inspects, streams, cancels, resolves single-call approvals, resumes persisted user questions, and queues live steering without competing for the active driver's lease while keeping the trusted project identity server-owned.
-- The Phase 1 Web console creates Runs through the shared Client SDK, restores the newest Run after refresh, switches among a bounded project history, renders managed-worktree file changes and unified Diff, automatically resumes strict SSE streams from `Last-Event-ID`, suppresses at-least-once duplicates, replays the complete conversation and execution timeline through its terminal status event, renders bounded approval/tool/verification/failure detail plus current verification evidence, exposes cancellation, resolves only the displayed pending approval, answers a displayed `waiting_user` turn, and appends constraints while a Run is queued, preparing, running, or awaiting environment recovery.
+- A loopback-only versioned HTTP control plane creates, inspects, streams, cancels, resolves terminal `keep`/`discard` results and single-call approvals, resumes persisted user questions, and queues live steering without competing for the active driver's lease while keeping trusted project and filesystem identities server-owned.
+- The Phase 1 Web console creates Runs through the shared Client SDK, restores the newest Run after refresh, switches among a bounded project history, renders managed-worktree file changes and unified Diff, automatically resumes strict SSE streams from `Last-Event-ID`, suppresses at-least-once duplicates, replays the complete conversation and execution timeline through its terminal status event, renders bounded approval/tool/verification/failure detail plus current verification evidence, exposes cancellation and confirmed terminal-result discard, resolves only the displayed pending approval, answers a displayed `waiting_user` turn, and appends constraints while a Run is queued, preparing, running, or awaiting environment recovery.
 
 ## Commands
 

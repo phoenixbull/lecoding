@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { access, mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
@@ -7,6 +7,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import {
   createGitRunDiffSafetyChecker,
   createGitRunChangesReader,
+  createGitRunResultManager,
   createGitWorkspace
 } from "../src/index.js";
 
@@ -22,6 +23,50 @@ afterEach(async () => {
 });
 
 describe("GitWorkspace", () => {
+  it("keeps or idempotently discards only a verified managed Run result", async () => {
+    const fixtureRoot = await mkdtemp(join(tmpdir(), "lecoding-result-"));
+    temporaryDirectories.push(fixtureRoot);
+    const sourceRepo = join(fixtureRoot, "source");
+    const worktreeRoot = join(fixtureRoot, "runs");
+    await mkdir(sourceRepo);
+    await exec("git", ["init", "-q", sourceRepo]);
+    await writeFile(join(sourceRepo, "result.txt"), "source\n");
+    await exec("git", ["-C", sourceRepo, "add", "result.txt"]);
+    await exec("git", [
+      "-C",
+      sourceRepo,
+      "-c",
+      "user.name=Result Test",
+      "-c",
+      "user.email=result@example.invalid",
+      "commit",
+      "-qm",
+      "fixture"
+    ]);
+    const workspace = createGitWorkspace({ worktreeRoot });
+    const handle = await workspace.prepare({
+      runId: "run-result",
+      sourceRepo,
+      baseRef: "HEAD"
+    });
+    await workspace.apply(handle, { path: "result.txt", content: "changed\n" });
+    const results = createGitRunResultManager({ sourceRepo, worktreeRoot });
+
+    await results.resolve("run-result", "keep");
+    await expect(readFile(join(handle.path, "result.txt"), "utf8")).resolves.toBe(
+      "changed\n"
+    );
+    await results.resolve("run-result", "discard");
+    await expect(access(handle.path)).rejects.toMatchObject({ code: "ENOENT" });
+    await expect(readFile(join(sourceRepo, "result.txt"), "utf8")).resolves.toBe(
+      "source\n"
+    );
+    // Retried HTTP commands must not fail after the exact worktree is already gone.
+    await expect(
+      results.resolve("run-result", "discard")
+    ).resolves.toBeUndefined();
+  });
+
   it("checks tracked and untracked changes through the managed host worktree", async () => {
     const fixtureRoot = await mkdtemp(join(tmpdir(), "lecoding-diff-safety-"));
     temporaryDirectories.push(fixtureRoot);

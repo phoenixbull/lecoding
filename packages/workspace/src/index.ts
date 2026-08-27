@@ -44,6 +44,11 @@ export interface RunChangesReader {
   read(runId: string): Promise<RunChanges>;
 }
 
+/** Terminal result action over one revalidated managed Run worktree. */
+export interface RunResultManager {
+  resolve(runId: string, outcome: "keep" | "discard"): Promise<void>;
+}
+
 /** Trusted host-side whitespace/conflict-marker check for one managed Run patch. */
 export interface RunDiffSafetyChecker {
   check(runId: string): Promise<boolean>;
@@ -139,6 +144,62 @@ export function createGitRunChangesReader(options: {
         unifiedDiff = `${unifiedDiff.slice(0, MAX_DIFF_CHARACTERS)}\n... diff truncated ...\n`;
       }
       return { changedFiles, unifiedDiff, truncated };
+    }
+  };
+}
+
+/**
+ * Creates the terminal keep/discard boundary without accepting caller paths.
+ * Discard is idempotent for safe HTTP retry but never removes an unverified path.
+ */
+export function createGitRunResultManager(options: {
+  sourceRepo: string;
+  worktreeRoot: string;
+}): RunResultManager {
+  const sourceRepo = resolve(options.sourceRepo);
+  const worktreeRoot = resolve(options.worktreeRoot);
+  return {
+    async resolve(runId, outcome) {
+      if (!/^[a-zA-Z0-9_-]+$/.test(runId)) {
+        throw new Error("Run ID contains unsupported path characters");
+      }
+      const canonicalSource = await realpath(sourceRepo);
+      let canonicalRoot: string;
+      try {
+        canonicalRoot = await realpath(worktreeRoot);
+      } catch (error) {
+        if (outcome === "discard" && isMissingPathError(error)) {
+          return;
+        }
+        throw error;
+      }
+      const worktreePath = join(canonicalRoot, runId);
+      if (!(await pathExists(worktreePath))) {
+        if (outcome === "discard") {
+          return;
+        }
+        throw new Error("Managed Run result was not found");
+      }
+      await assertManagedWorktree(canonicalSource, worktreePath);
+      if (outcome === "keep") {
+        return;
+      }
+      try {
+        await exec("git", [
+          "-C",
+          canonicalSource,
+          "worktree",
+          "remove",
+          "--force",
+          worktreePath
+        ]);
+      } catch (error) {
+        // Concurrent retries converge once the exact verified worktree is gone.
+        if (!(await pathExists(worktreePath))) {
+          return;
+        }
+        throw error;
+      }
     }
   };
 }
@@ -356,4 +417,8 @@ async function pathExists(path: string): Promise<boolean> {
     }
     throw error;
   }
+}
+
+function isMissingPathError(error: unknown): boolean {
+  return (error as NodeJS.ErrnoException).code === "ENOENT";
 }

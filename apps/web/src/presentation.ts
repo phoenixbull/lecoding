@@ -70,6 +70,11 @@ export function canLoadRunChanges(status: RunStatus): boolean {
   );
 }
 
+/** Completed worktrees remain user-discardable; cancelled Runs are already cleaned up. */
+export function canResolveRunResult(status: RunStatus): boolean {
+  return status === "succeeded" || status === "failed";
+}
+
 /** Stable event title independent of untrusted event payload content. */
 export function formatEventTitle(type: RunEventType): string {
   return EVENT_LABELS[type];

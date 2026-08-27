@@ -9,7 +9,7 @@ import type {
 } from "@lecoding/contracts";
 import type { RunHistory } from "@lecoding/run-engine";
 import type { RunEventSseHandler } from "@lecoding/run-events";
-import type { RunChangesReader } from "@lecoding/workspace";
+import type { RunChangesReader, RunResultManager } from "@lecoding/workspace";
 
 const MAX_JSON_BODY_BYTES = 64 * 1024;
 const APPROVAL_MODES = new Set<ApprovalMode>([
@@ -38,6 +38,7 @@ export interface RunApiHandlerOptions {
   runs: RunApiOperations;
   history: RunHistory;
   changes: RunChangesReader;
+  results: RunResultManager;
   eventStream: RunEventSseHandler;
   /** Observes detached resume failures without exposing them to HTTP clients. */
   onBackgroundError?: (error: unknown) => void;
@@ -131,6 +132,36 @@ export function createRunApiHandler(
           return jsonResponse(await options.changes.read(runId));
         } catch {
           return errorResponse(404, "changes_not_found", "Run changes were not found");
+        }
+      }
+
+      const resultMatch = path.match(/^\/api\/v1\/runs\/([^/]+)\/result$/);
+      if (request.method === "POST" && resultMatch) {
+        let runId: RunId;
+        try {
+          runId = decodePathSegment(resultMatch[1]!) as RunId;
+          const run = await inspectProjectRun(options, runId);
+          if (!isTerminalRunStatus(run.status)) {
+            return errorResponse(
+              409,
+              "result_not_terminal",
+              "Run result is not terminal"
+            );
+          }
+        } catch {
+          return errorResponse(404, "run_not_found", "Run was not found");
+        }
+        let outcome: "keep" | "discard";
+        try {
+          outcome = parseRunResult(await readJsonBody(request));
+        } catch {
+          return errorResponse(400, "invalid_result", "Run result input is invalid");
+        }
+        try {
+          await options.results.resolve(runId, outcome);
+          return new Response(null, { status: 204 });
+        } catch {
+          return errorResponse(409, "result_rejected", "Run result was rejected");
         }
       }
 
@@ -296,6 +327,21 @@ function parseMinimalRunCommand(value: unknown): RunCommand {
     };
   }
   throw new Error("Run command is not available in the minimal control plane");
+}
+
+function parseRunResult(value: unknown): "keep" | "discard" {
+  if (
+    isRecord(value) &&
+    Object.keys(value).length === 1 &&
+    (value.outcome === "keep" || value.outcome === "discard")
+  ) {
+    return value.outcome;
+  }
+  throw new Error("Run result must be keep or discard");
+}
+
+function isTerminalRunStatus(status: string): boolean {
+  return status === "succeeded" || status === "failed" || status === "cancelled";
 }
 
 function decodePathSegment(value: string): string {

@@ -131,12 +131,13 @@ same loopback listener then serves the Web console and these versioned endpoints
 - `GET /api/v1/runs/:runId` returns current status and verification evidence.
 - `GET /api/v1/runs/:runId/changes` returns a bounded file list and unified Git Diff from the managed worktree.
 - `GET /api/v1/runs/:runId/events` streams durable, resumable SSE events.
+- `POST /api/v1/runs/:runId/result` accepts exactly `{ "outcome": "keep" | "discard" }` for a terminal Run. `discard` immediately removes the revalidated managed worktree and is idempotent for safe retries; neither outcome accepts a caller-controlled filesystem path.
 - `POST /api/v1/runs/:runId/commands` accepts cancel, strict single-call approve/reject commands, a matching `answer`, or a bounded `steer`. Browser approval scope must be `once`; Run-wide grants are rejected. Answers carry the displayed request ID so a stale tab cannot answer a newer question. Every answer and steer also carries a client-stable `commandId` of at most 128 characters; the SDK generates a UUID unless the caller supplies one for an explicit retry. Steering resolves the current `waiting_user` question or enters the durable mailbox while a Run is queued, preparing, running, or awaiting environment recovery.
 
 `LECODING_HTTP_HOST` defaults to `127.0.0.1` and `LECODING_HTTP_PORT` defaults to
 `8787`. Loopback remains unauthenticated when `LECODING_HTTP_AUTH_TOKEN` is empty.
 Setting a 32–512 character visible-ASCII token protects every `/api/*` route,
-including config, history, inspect, changes, SSE, and commands, with a constant-time
+including config, history, inspect, changes, result resolution, SSE, and commands, with a constant-time
 Bearer comparison. Static assets remain public so the login shell can load; they
 contain no Run or provider data. The Web console stores the entered token only in
 the current tab's `sessionStorage` and the Client SDK sends it only in the
@@ -164,7 +165,7 @@ execution.
 History is a bounded read-only projection from durable Run snapshots. The path
 project must belong to the Worker registry. Responses contain
 task/status metadata only, never model continuation, tool results, approval
-internals, or provider data. Inspect, SSE, changes, and command routes independently
+internals, or provider data. Inspect, SSE, changes, result, and command routes independently
 check that the resolved Run belongs to this Worker's allowlist before returning data
 or changing state. The Web selector is populated only from the same bootstrap list
 and aborts the previous project's SSE before loading another project's history.
@@ -195,6 +196,14 @@ every request. It never creates a missing worktree. Responses include at most 50
 file paths and approximately 256k Diff characters; larger output is marked
 truncated. New untracked files use Git `--no-index` output, and all browser
 rendering uses text rather than HTML.
+
+Result resolution uses the same server-owned routing. The API first verifies that
+the durable Run belongs to a registered project and is terminal. The Workspace
+manager then derives the path again, resolves the source and worktree roots, and
+asks Git to prove the exact directory belongs to that source before `discard` can
+remove it. Repeated discard requests converge after the worktree is gone. The Web
+console requires a destructive-action confirmation and exposes discard only for
+successful or failed Runs; cancelled Runs have already released their worktree.
 
 Required commands run in the independent verification image, but Git metadata is
 never mounted there. A host-owned Diff Safety checker revalidates the exact managed

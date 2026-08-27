@@ -70,6 +70,7 @@ describe("Worker HTTP server", () => {
         } as unknown as Engine,
         history: { list: vi.fn(async () => []) },
         changes: { read: vi.fn(async () => ({ changedFiles: [], unifiedDiff: "", truncated: false })) },
+        results: { resolve: vi.fn(async () => undefined) },
         eventStream: { handle: eventHandle }
       }
     });
@@ -144,6 +145,7 @@ describe("Worker HTTP server", () => {
         runs: runs as unknown as Engine,
         history: { list: vi.fn(async () => []) },
         changes: { read: vi.fn(async () => ({ changedFiles: [], unifiedDiff: "", truncated: false })) },
+        results: { resolve: vi.fn(async () => undefined) },
         eventStream: {
           handle: vi.fn(async () => new Response("", { status: 200 }))
         }
@@ -178,10 +180,11 @@ describe("Worker HTTP server", () => {
     }
   });
 
-  it("closes the SDK loop across create, SSE, evidence inspection, and cancel", async () => {
+  it("closes the SDK loop across create, SSE, evidence, cancel, and result discard", async () => {
     const webRoot = await mkdtemp(join(tmpdir(), "lecoding-web-root-"));
     await writeFile(join(webRoot, "index.html"), "<main>LeCoding</main>", "utf8");
     const command = vi.fn(async () => undefined);
+    const resolveResult = vi.fn(async () => undefined);
     const event = {
       version: 1 as const,
       sequence: 1,
@@ -199,7 +202,7 @@ describe("Worker HTTP server", () => {
         projectId: "project-1",
         environmentId: "server-docker",
         task: "Close the loop",
-        status: "running" as const,
+        status: "succeeded" as const,
         verification: {
           outcome: "passed" as const,
           checks: [{ name: "tests", outcome: "passed" as const, detail: "11 passed" }]
@@ -217,6 +220,7 @@ describe("Worker HTTP server", () => {
         runs: runs as unknown as Engine,
         history: { list: vi.fn(async () => []) },
         changes: { read: vi.fn(async () => ({ changedFiles: [], unifiedDiff: "", truncated: false })) },
+        results: { resolve: resolveResult },
         eventStream: {
           handle: vi.fn(async () =>
             new Response(encodeRunEventSse(event), {
@@ -243,10 +247,12 @@ describe("Worker HTTP server", () => {
       }
       const view = await client.inspectRun(created.runId);
       await client.cancelRun(created.runId);
+      await client.resolveRunResult(created.runId, "discard");
 
       expect(events).toEqual([event]);
       expect(view.verification?.checks[0]?.detail).toBe("11 passed");
       expect(command).toHaveBeenCalledWith("run-loop", { type: "cancel" });
+      expect(resolveResult).toHaveBeenCalledWith("run-loop", "discard");
     } finally {
       await server.stop();
       await rm(webRoot, { recursive: true, force: true });

@@ -9,6 +9,7 @@ import type {
 } from "@lecoding/contracts";
 import {
   canLoadRunChanges,
+  canResolveRunResult,
   formatEventTitle,
   formatRunEventDetail,
   isTerminalStatus,
@@ -29,6 +30,7 @@ const authTokenInput = requiredElement<HTMLInputElement>("#auth-token");
 const clearAuthButton = requiredElement<HTMLButtonElement>("#clear-auth");
 const submitButton = requiredElement<HTMLButtonElement>("#create-run");
 const cancelButton = requiredElement<HTMLButtonElement>("#cancel-run");
+const discardResultButton = requiredElement<HTMLButtonElement>("#discard-result");
 const approvalCard = requiredElement<HTMLElement>("#approval-card");
 const approvalSummary = requiredElement<HTMLElement>("#approval-summary");
 const approveButton = requiredElement<HTMLButtonElement>("#approve-approval");
@@ -61,6 +63,7 @@ let userCommandPending = false;
 let selectedRunId: string | undefined;
 let selectedProjectId: string | undefined;
 let recentRuns: RunSummary[] = [];
+const discardedRunIds = new Set<string>();
 
 void initialize();
 
@@ -96,6 +99,10 @@ clearAuthButton.addEventListener("click", () => {
 
 cancelButton.addEventListener("click", () => {
   void cancelCurrentRun();
+});
+
+discardResultButton.addEventListener("click", () => {
+  void discardCurrentResult();
 });
 
 approveButton.addEventListener("click", () => {
@@ -215,6 +222,7 @@ function requireAuthentication(): void {
 
 function clearAuthenticatedView(): void {
   // Logout removes already-rendered task and evidence text before any network retry.
+  discardedRunIds.clear();
   clearProjectView("认证后显示受管工作区变更。");
   selectedProjectId = undefined;
   renderProjectOptions([], undefined, "连接中…");
@@ -240,6 +248,7 @@ function clearProjectView(changesMessage = "选择 Run 后显示其受管工作�
   approvalCard.hidden = true;
   userRequestCard.hidden = true;
   cancelButton.hidden = true;
+  discardResultButton.hidden = true;
   runIdValue.textContent = "—";
   statusBadge.textContent = "尚未创建";
   delete statusBadge.dataset.status;
@@ -447,10 +456,36 @@ async function loadChanges(runId: string): Promise<void> {
     if (selectedRunId === runId) {
       renderChanges(changes);
     }
-  } catch {
+  } catch (error) {
     if (selectedRunId === runId) {
+      if (error instanceof LeCodingHttpError && error.status === 404) {
+        // A discarded result has no worktree to read; remember that disposition locally.
+        discardedRunIds.add(runId);
+        updateResultAction();
+      }
       resetChanges("当前 Run 尚未产生可读取的工作区变更。");
     }
+  }
+}
+
+async function discardCurrentResult(): Promise<void> {
+  if (!currentRun || !canResolveRunResult(currentRun.status)) {
+    return;
+  }
+  const runId = currentRun.id;
+  if (!window.confirm("确认丢弃该 Run 的隔离工作区？此操作无法撤销。")) {
+    return;
+  }
+  hideError();
+  discardResultButton.disabled = true;
+  try {
+    await client.resolveRunResult(runId, "discard");
+    discardedRunIds.add(runId);
+    resetChanges("该 Run 的隔离工作区已安全丢弃，源仓库未被修改。");
+  } catch {
+    showError("无法丢弃 Run 结果；请确认 Run 已进入终态后重试。");
+  } finally {
+    updateResultAction();
   }
 }
 
@@ -515,9 +550,19 @@ function renderRun(run: RunView): void {
   statusBadge.dataset.status = run.status;
   cancelButton.disabled = isTerminalStatus(run.status) || run.status === "cancelling";
   cancelButton.hidden = false;
+  updateResultAction();
   renderApproval(run);
   renderUserRequest(run);
   renderVerification(run.verification?.checks ?? []);
+}
+
+function updateResultAction(): void {
+  const available =
+    currentRun !== undefined &&
+    canResolveRunResult(currentRun.status) &&
+    !discardedRunIds.has(currentRun.id);
+  discardResultButton.hidden = !available;
+  discardResultButton.disabled = !available;
 }
 
 function renderApproval(run: RunView): void {

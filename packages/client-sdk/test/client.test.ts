@@ -126,6 +126,31 @@ describe("LeCodingClient", () => {
     );
   });
 
+  it("resolves a terminal Run result through the versioned endpoint", async () => {
+    const requests: Array<{ url: string; method: string; body: unknown }> = [];
+    const client = createClient({
+      baseUrl: "https://agent.example",
+      fetch: async (input, init) => {
+        requests.push({
+          url: String(input),
+          method: init?.method ?? "GET",
+          body: init?.body ? JSON.parse(String(init.body)) : undefined
+        });
+        return new Response(null, { status: 204 });
+      }
+    });
+
+    await expect(client.resolveRunResult("run/1", "discard")).resolves.toBeUndefined();
+
+    expect(requests).toEqual([
+      {
+        url: "https://agent.example/api/v1/runs/run%2F1/result",
+        method: "POST",
+        body: { outcome: "discard" }
+      }
+    ]);
+  });
+
   it("opens a resumable run event stream with the last delivered event ID", async () => {
     let request: { url: string; lastEventId: string | null } | undefined;
     const fetch: typeof globalThis.fetch = async (input, init) => {

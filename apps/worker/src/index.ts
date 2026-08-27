@@ -52,8 +52,10 @@ import {
 import {
   createGitRunChangesReader,
   createGitRunDiffSafetyChecker,
+  createGitRunResultManager,
   createGitWorkspace,
-  type RunChangesReader
+  type RunChangesReader,
+  type RunResultManager
 } from "@lecoding/workspace";
 import { createProductionPgBossRecoveryQueue } from "./pg-boss-recovery.js";
 
@@ -121,6 +123,7 @@ export interface WorkerControlPlane {
   runs: Engine;
   history: RunHistory;
   changes: RunChangesReader;
+  results: RunResultManager;
   eventStream: RunEventSseHandler;
 }
 
@@ -575,6 +578,20 @@ export async function composeProductionWorker(
               sourceRepo: project.projectSourcePath,
               worktreeRoot: project.worktreeRoot
             }).read(runId);
+          }
+        },
+        results: {
+          async resolve(runId, outcome) {
+            // Resolve the server-owned project from durable Run state; callers never choose paths.
+            const run = await engine.inspect(runId);
+            const project = projectById.get(run.projectId);
+            if (!project) {
+              throw new Error("Run project is not registered by this Worker");
+            }
+            return createGitRunResultManager({
+              sourceRepo: project.projectSourcePath,
+              worktreeRoot: project.worktreeRoot
+            }).resolve(runId, outcome);
           }
         },
         eventStream: createRunEventSseHandler({
