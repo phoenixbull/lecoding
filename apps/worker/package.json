@@ -5,6 +5,7 @@
   "type": "module",
   "exports": "./src/index.ts",
   "scripts": {
+    "smoke:postgres": "tsx --env-file=../../.env.local src/postgres-smoke-main.ts",
     "start": "tsx src/main.ts",
     "typecheck": "tsc --noEmit"
   },

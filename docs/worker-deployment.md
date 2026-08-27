@@ -84,20 +84,18 @@ deployment log backend and alert on `outcome: "exhausted"` or a sustained rise
 in `retrying`; telemetry receiver failures are isolated from Run execution.
 
 Unit tests exercise Pool/LISTEN separation, readiness cleanup, listener rotation,
-duplicate signals, and shutdown ordering. A smoke test against the target
-PostgreSQL service is still required deployment evidence. The configured local
-PostgreSQL container has passed Worker composition/start/stop and initialized all
-the original six Worker-owned tables, which is development-host evidence rather than a target
-deployment claim.
+duplicate signals, and shutdown ordering. The reusable `pnpm smoke:postgres`
+command has also passed against the PostgreSQL service configured in `.env.local`:
+production composition/start/stop created all seven Worker-owned tables, migrated
+the `pgboss` schema, and registered both recovery queues. See
+[`evidence/postgres-worker-smoke-2026-08-27.md`](evidence/postgres-worker-smoke-2026-08-27.md).
+This is configured-service evidence rather than a claim about a different target
+deployment; rerun the command with that deployment's injected environment.
 
-The real pg-boss adapter has PGlite integration evidence for schema migration,
-queue creation, expired-lease discovery, terminal filtering, job claiming, and
-graceful shutdown. This is PostgreSQL-compatible development evidence; the next
-real-service smoke must confirm the additional `pgboss` schema and permissions.
-
-The steering mailbox adds a seventh table. Its ordering and replacement-Worker
-behavior pass the PostgreSQL-compatible integration suite; include it in the next
-real PostgreSQL startup smoke before claiming the expanded schema on that service.
+The real pg-boss adapter additionally has PGlite integration evidence for
+expired-lease discovery, terminal filtering, job claiming, and graceful shutdown.
+The steering mailbox's ordering and replacement-Worker behavior also pass the
+PostgreSQL-compatible integration suite.
 
 ## Web and API control plane
 

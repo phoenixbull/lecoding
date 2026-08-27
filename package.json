@@ -8,6 +8,7 @@
   },
   "scripts": {
     "build": "turbo run build",
+    "smoke:postgres": "pnpm --filter @lecoding/worker smoke:postgres",
     "test": "vitest run",
     "test:watch": "vitest",
     "typecheck": "turbo run typecheck"
