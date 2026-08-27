@@ -116,7 +116,7 @@ export function createWorkerProcessHost(
           ...(options.onModelRetry ? { onModelRetry: options.onModelRetry } : {})
         });
         try {
-          runtime.start();
+          await runtime.start();
           controlPlane = await options.startControlPlane?.(runtime.control);
         } catch (error) {
           await runtime.stop().catch(() => undefined);

@@ -7,13 +7,45 @@ import {
 } from "../src/worker-host.js";
 
 describe("createWorkerProcessHost", () => {
+  it("waits for durable recovery startup before exposing the control plane", async () => {
+    let releaseRecovery!: () => void;
+    const recoveryReady = new Promise<void>((resolve) => {
+      releaseRecovery = resolve;
+    });
+    const startControlPlane = vi.fn(async () => ({
+      stop: vi.fn(async () => undefined)
+    }));
+    const runtime = {
+      control: createControlPlane(),
+      start: vi.fn(() => recoveryReady),
+      stop: vi.fn(async () => undefined)
+    };
+    const host = createWorkerProcessHost({
+      environment: {},
+      signals: new EventEmitter() as WorkerProcessSignals,
+      createDatabase: async () => createDatabase(),
+      composeWorker: async () => runtime,
+      startControlPlane
+    });
+
+    const started = host.start();
+    await vi.waitFor(() => expect(runtime.start).toHaveBeenCalledTimes(1));
+    expect(startControlPlane).not.toHaveBeenCalled();
+    releaseRecovery();
+    await started;
+    expect(startControlPlane).toHaveBeenCalledTimes(1);
+    await host.stop();
+  });
+
   it("connects, composes, starts, and gracefully stops on SIGTERM", async () => {
     const calls: string[] = [];
     const signals = new EventEmitter() as WorkerProcessSignals;
     const database = createDatabase();
     const runtime = {
       control: createControlPlane(),
-      start: vi.fn(() => calls.push("runtime.start")),
+      start: vi.fn(async () => {
+        calls.push("runtime.start");
+      }),
       stop: vi.fn(async () => {
         calls.push("runtime.stop");
       })
@@ -54,7 +86,7 @@ describe("createWorkerProcessHost", () => {
     const failure = new Error("shutdown failed");
     const runtime = {
       control: createControlPlane(),
-      start: vi.fn(),
+      start: vi.fn(async () => undefined),
       stop: vi.fn(async () => {
         throw failure;
       })
@@ -81,7 +113,7 @@ describe("createWorkerProcessHost", () => {
     const signals = new EventEmitter() as WorkerProcessSignals;
     const runtime = {
       control: createControlPlane(),
-      start: vi.fn(),
+      start: vi.fn(async () => undefined),
       stop: vi.fn(async () => {
         calls.push("runtime.stop");
       })

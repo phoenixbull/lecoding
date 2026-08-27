@@ -8,11 +8,16 @@ import {
   type OpenAiMalformedJsonRetryEvent
 } from "@lecoding/openai-model";
 import { createPolicyEngine } from "@lecoding/policy";
-import type { Engine, RunHistory, RunRecoveryWorker } from "@lecoding/run-engine";
+import type {
+  Engine,
+  RecoveryJobQueue,
+  RunHistory,
+  RunRecoveryWorker
+} from "@lecoding/run-engine";
 import {
   createInMemoryRunHandleRegistry,
   createIntervalLeaseHeartbeat,
-  createIntervalRecoveryWorker,
+  createPgBossRecoveryWorker,
   createPostgresRunCancelBus,
   createPostgresRunLease,
   createPostgresRunStore,
@@ -50,6 +55,7 @@ import {
   createGitWorkspace,
   type RunChangesReader
 } from "@lecoding/workspace";
+import { createProductionPgBossRecoveryQueue } from "./pg-boss-recovery.js";
 
 /** Durable PostgreSQL resources supplied by the deployment-specific adapter. */
 export interface WorkerDatabase {
@@ -92,6 +98,8 @@ export interface ProductionWorkerOptions {
   onBackgroundError?: (error: unknown) => void;
   /** Receives provider retry telemetry containing only stable enums and Run identity. */
   onModelRetry?: (event: OpenAiMalformedJsonRetryEvent) => void;
+  /** Test/deployment seam for supplying the durable pg-boss queue adapter. */
+  createRecoveryQueue?: (executor: PostgresExecutor) => RecoveryJobQueue;
 }
 
 /** Serializes the fixed retry projection without spreading caller-owned fields. */
@@ -131,7 +139,7 @@ export interface WorkerRuntime {
   /** Versioned HTTP API dependencies bound to this Worker's trusted project. */
   readonly control: WorkerControlPlane;
   /** Starts background recovery only after all durable dependencies exist. */
-  start(): void;
+  start(): Promise<void>;
   /** Stops producers before consumers, then releases durable connections. */
   stop(): Promise<void>;
 }
@@ -161,7 +169,8 @@ export function loadWorkerConfig(environment: ModelEnvironment): WorkerConfig {
     recoveryIntervalMs: readPositiveInteger(
       environment,
       "LECODING_RECOVERY_INTERVAL_MS",
-      5_000
+      5_000,
+      3_600_000
     ),
     eventDispatchIntervalMs: readPositiveInteger(
       environment,
@@ -516,10 +525,20 @@ export async function composeProductionWorker(
       now,
       createId: options.createId ?? randomUUID
     });
-    const recovery = createIntervalRecoveryWorker({
+    const recoveryQueue = options.createRecoveryQueue
+      ? options.createRecoveryQueue(options.database.executor)
+      : createProductionPgBossRecoveryQueue({
+          executor: options.database.executor,
+          ...(options.onBackgroundError ? { onError: options.onBackgroundError } : {})
+        });
+    const recovery = createPgBossRecoveryWorker({
+      queue: recoveryQueue,
       executor: options.database.executor,
       resumer: engine,
-      intervalMs: config.recoveryIntervalMs,
+      scanIntervalSeconds: Math.max(
+        1,
+        Math.ceil(config.recoveryIntervalMs / 1_000)
+      ),
       now
     });
     const eventDispatch = createIntervalRunEventDispatchWorker({
@@ -580,21 +599,24 @@ export async function composeProductionWorker(
 export function createWorkerRuntime(
   resources: WorkerRuntimeResources
 ): WorkerRuntime {
-  let started = false;
+  let startPromise: Promise<void> | undefined;
   let stopPromise: Promise<void> | undefined;
 
   return {
     control: resources.control,
     start() {
       if (stopPromise) {
-        throw new Error("Worker runtime has stopped");
+        return Promise.reject(new Error("Worker runtime has stopped"));
       }
-      if (started) {
-        return;
+      if (startPromise) {
+        return startPromise;
       }
-      started = true;
-      resources.eventDispatch.start();
-      resources.recovery.start();
+      startPromise = (async () => {
+        resources.eventDispatch.start();
+        // Durable queue startup must finish before the HTTP control plane opens.
+        await resources.recovery.start();
+      })();
+      return startPromise;
     },
 
     stop() {
@@ -608,6 +630,8 @@ export function createWorkerRuntime(
        */
       stopPromise = (async () => {
         const failures: unknown[] = [];
+        // Collapse a stop-during-start race before tearing down shared connections.
+        await startPromise?.catch(() => undefined);
         for (const cleanup of [
           () => resources.recovery.stop(),
           () => resources.engine.dispose(),
@@ -657,14 +681,22 @@ function requireAbsolutePath(
 function readPositiveInteger(
   environment: ModelEnvironment,
   name: string,
-  fallback: number
+  fallback: number,
+  maximum?: number
 ): number {
   const raw = environment[name]?.trim();
   if (!raw) {
     return fallback;
   }
   const value = Number(raw);
-  if (!Number.isSafeInteger(value) || value < 1) {
+  if (
+    !Number.isSafeInteger(value) ||
+    value < 1 ||
+    (maximum !== undefined && value > maximum)
+  ) {
+    if (maximum !== undefined) {
+      throw new Error(`${name} must be an integer from 1 to ${maximum}`);
+    }
     throw new Error(`${name} must be a positive integer`);
   }
   return value;

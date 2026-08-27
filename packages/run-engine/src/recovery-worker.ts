@@ -2,18 +2,186 @@ import type { RunId, RunResumer } from "@lecoding/contracts";
 import type { PostgresExecutor } from "./postgres-run-lease.js";
 
 /**
- * 恢复 Worker:后台扫描过期 lease,自动调用 RunResumer.resume 接管。
- * 生产环境用 pg-boss 替换;当前实现是 setInterval 轮询版(tracer bullet)。
- *
- * 语义约束:
- * - start() 幂等(已启动则 no-op)
- * - stop() 幂等;返回当前正在执行的扫描周期结束后的 Promise
- * - 扫描周期内对每条过期 lease 调一次 resumer.resume;
- *   resume 自身幂等(isDriverStartable + lease 抢锁),重复触发安全
+ * Recovery lifecycle shared by the production pg-boss scheduler and the
+ * deterministic interval adapter retained for focused lease tests.
  */
 export interface RunRecoveryWorker {
-  start(): void;
+  start(): void | Promise<void>;
   stop(): Promise<void>;
+}
+
+/** Minimal pg-boss surface kept structural so RunEngine does not own connections. */
+export interface RecoveryJobQueue {
+  start(): Promise<void>;
+  stop(options?: { graceful?: boolean; timeout?: number }): Promise<void>;
+  createQueue(name: string, options?: RecoveryQueueOptions): Promise<void>;
+  send(
+    name: string,
+    data?: Record<string, unknown>,
+    options?: RecoverySendOptions
+  ): Promise<string | null>;
+  work(
+    name: string,
+    options: RecoveryWorkOptions,
+    handler: (job: { data: unknown }) => Promise<void>
+  ): Promise<string>;
+}
+
+/** Queue-level retry and expiration controls used by recovery scheduling. */
+export interface RecoveryQueueOptions {
+  policy: "standard" | "short";
+  retryLimit: number;
+  retryDelay: number;
+  retryBackoff: boolean;
+  expireInSeconds: number;
+}
+
+/** Per-job de-duplication or deferral controls. */
+export interface RecoverySendOptions {
+  singletonKey?: string;
+  singletonSeconds?: number;
+  startAfter?: number;
+}
+
+/** Bounded pg-boss fetch size for one polling worker. */
+export interface RecoveryWorkOptions {
+  batchSize: number;
+}
+
+/** Inputs for the durable pg-boss recovery scheduler. */
+export interface PgBossRecoveryWorkerOptions {
+  queue: RecoveryJobQueue;
+  executor: PostgresExecutor;
+  resumer: RunResumer;
+  /** Durable scan cadence; pg-boss `startAfter` is expressed in seconds. */
+  scanIntervalSeconds?: number;
+  /** Deterministic lease-expiry clock used by tests and production composition. */
+  now?: () => string;
+}
+
+const RECOVERY_SCAN_QUEUE = "lecoding-run-recovery-scan";
+const RUN_RECOVERY_QUEUE = "lecoding-run-recovery";
+
+/**
+ * Creates a durable recovery scheduler: one chained scan job discovers expired
+ * leases, while per-Run jobs provide SKIP LOCKED claiming and automatic retry.
+ */
+export function createPgBossRecoveryWorker(
+  options: PgBossRecoveryWorkerOptions
+): RunRecoveryWorker {
+  const scanIntervalSeconds = options.scanIntervalSeconds ?? 5;
+  if (!Number.isSafeInteger(scanIntervalSeconds) || scanIntervalSeconds < 1) {
+    throw new Error("Recovery scan interval must be a positive integer");
+  }
+  const now = options.now ?? (() => new Date().toISOString());
+  let startPromise: Promise<void> | undefined;
+  let stopPromise: Promise<void> | undefined;
+  let queueStarted = false;
+
+  async function startQueue(): Promise<void> {
+    try {
+      await options.queue.start();
+      queueStarted = true;
+      await options.queue.createQueue(RECOVERY_SCAN_QUEUE, {
+        // `short` keeps at most one future scan queued across all Worker processes.
+        policy: "short",
+        retryLimit: 20,
+        retryDelay: scanIntervalSeconds,
+        retryBackoff: true,
+        expireInSeconds: Math.max(30, scanIntervalSeconds * 3)
+      });
+      await options.queue.createQueue(RUN_RECOVERY_QUEUE, {
+        policy: "standard",
+        retryLimit: 5,
+        retryDelay: 5,
+        retryBackoff: true,
+        // RunEngine owns its finer lease heartbeat; this is only a crash ceiling.
+        expireInSeconds: 43_200
+      });
+      await options.queue.work(
+        RUN_RECOVERY_QUEUE,
+        // A failed handler must retry only its own Run, never a successful batch peer.
+        { batchSize: 1 },
+        async (job) => {
+          const runId = readRecoveryRunId(job.data);
+          // Throwing delegates transient failure/backoff to pg-boss persistence.
+          await options.resumer.resume(runId);
+        }
+      );
+      await options.queue.work(
+        RECOVERY_SCAN_QUEUE,
+        { batchSize: 1 },
+        async () => {
+          const expired = await findRecoverableExpiredLeases(
+            options.executor,
+            now()
+          );
+          for (const runId of expired) {
+            await options.queue.send(
+              RUN_RECOVERY_QUEUE,
+              { runId },
+              {
+                // Repeated scans coalesce one Run while its prior job is pending.
+                singletonKey: runId,
+                singletonSeconds: scanIntervalSeconds
+              }
+            );
+          }
+          // The next scan is committed before this job completes, surviving restarts.
+          await options.queue.send(
+            RECOVERY_SCAN_QUEUE,
+            {},
+            { startAfter: scanIntervalSeconds }
+          );
+        }
+      );
+      // Queue policy coalesces concurrent process startup into one pending scan.
+      await options.queue.send(RECOVERY_SCAN_QUEUE, {});
+    } catch (error) {
+      if (queueStarted) {
+        await options.queue.stop({ graceful: false }).catch(() => undefined);
+        queueStarted = false;
+      }
+      throw error;
+    }
+  }
+
+  return {
+    start() {
+      if (stopPromise) {
+        return Promise.reject(new Error("Recovery worker has stopped"));
+      }
+      startPromise ??= startQueue();
+      return startPromise;
+    },
+    stop() {
+      if (stopPromise) {
+        return stopPromise;
+      }
+      stopPromise = (async () => {
+        await startPromise?.catch(() => undefined);
+        if (queueStarted) {
+          // Stop polling first and let active Run recovery finish before DB teardown.
+          await options.queue.stop({ graceful: true, timeout: 30_000 });
+          queueStarted = false;
+        }
+      })();
+      return stopPromise;
+    }
+  };
+}
+
+function readRecoveryRunId(data: unknown): RunId {
+  if (
+    typeof data !== "object" ||
+    data === null ||
+    Array.isArray(data) ||
+    typeof (data as { runId?: unknown }).runId !== "string" ||
+    !/^[a-zA-Z0-9_-]{1,128}$/u.test((data as { runId: string }).runId)
+  ) {
+    throw new Error("Recovery job contains an invalid Run identity");
+  }
+  return (data as { runId: RunId }).runId;
 }
 
 export interface IntervalRecoveryWorkerOptions {
@@ -69,7 +237,7 @@ export function createIntervalRecoveryWorker(
   }
 
   return {
-    start() {
+    async start() {
       if (timer !== undefined) {
         return;
       }
@@ -112,6 +280,25 @@ async function findExpiredLeases(
       FROM run_engine_leases
      WHERE lease_until < $1::timestamptz
      ORDER BY lease_until ASC
+     LIMIT 50;
+    `,
+    [nowIso]
+  );
+  return rows.map((row) => row.run_id);
+}
+
+async function findRecoverableExpiredLeases(
+  executor: PostgresExecutor,
+  nowIso: string
+): Promise<RunId[]> {
+  const { rows } = await executor.query<{ run_id: string }>(
+    `
+    SELECT lease.run_id
+      FROM run_engine_leases AS lease
+      JOIN run_engine_runs AS run ON run.run_id = lease.run_id
+     WHERE lease.lease_until < $1::timestamptz
+       AND run.snapshot->>'status' NOT IN ('succeeded', 'failed', 'cancelled')
+     ORDER BY lease.lease_until ASC
      LIMIT 50;
     `,
     [nowIso]

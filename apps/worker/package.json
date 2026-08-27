@@ -18,9 +18,11 @@
     "@lecoding/verifier": "workspace:*",
     "@lecoding/workspace": "workspace:*",
     "pg": "^8.23.0",
+    "pg-boss": "10.4.2",
     "tsx": "^4.23.12"
   },
   "devDependencies": {
+    "@electric-sql/pglite": "^0.5.5",
     "@lecoding/client-sdk": "workspace:*",
     "@types/pg": "^8.23.1"
   }

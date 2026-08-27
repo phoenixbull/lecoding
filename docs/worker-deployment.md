@@ -33,6 +33,15 @@ lease, tool-call, and event tables. Startup connects the dedicated listener and
 runs `SELECT 1` through the otherwise-lazy Pool before schema initialization.
 Any failure aborts startup and closes both resources.
 
+Startup also migrates the pinned pg-boss 10.4.2 schema through the same Worker-owned
+Pool before opening HTTP. One durable `lecoding-run-recovery-scan` job chains the
+next scan using `startAfter`; expired non-terminal leases become singleton-keyed
+`lecoding-run-recovery` jobs. pg-boss claims them with PostgreSQL `SKIP LOCKED`,
+applies bounded exponential retry, and runs only one Run per callback so one failure
+cannot retry successful peers. Terminal snapshots are excluded before enqueue.
+`LECODING_RECOVERY_INTERVAL_MS` defaults to 5000, accepts 1–3600000, and is
+rounded up to whole seconds.
+
 ## Project registration boundary
 
 Prefer a versioned administrator-controlled registry:
@@ -80,6 +89,11 @@ PostgreSQL service is still required deployment evidence. The configured local
 PostgreSQL container has passed Worker composition/start/stop and initialized all
 the original six Worker-owned tables, which is development-host evidence rather than a target
 deployment claim.
+
+The real pg-boss adapter has PGlite integration evidence for schema migration,
+queue creation, expired-lease discovery, terminal filtering, job claiming, and
+graceful shutdown. This is PostgreSQL-compatible development evidence; the next
+real-service smoke must confirm the additional `pgboss` schema and permissions.
 
 The steering mailbox adds a seventh table. Its ordering and replacement-Worker
 behavior pass the PostgreSQL-compatible integration suite; include it in the next

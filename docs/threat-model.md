@@ -56,6 +56,9 @@ Hard denies apply in every approval mode, including `full_access`:
 | Client retries after losing a steer response | The SDK reuses a stable `commandId`; mailbox row, submitted event, and SSE outbox are one PostgreSQL statement, so the exact retry returns the original sequence without duplicating model input |
 | Client reuses an idempotency key with altered content | The unique Run/command identity resolves to the original message and the adapter rejects any content mismatch |
 | Worker crashes between mailbox staging and delivery receipt | Production `persistEvents` commits the Run cursor/pending steering snapshot, `user_message_delivered`, and its SSE outbox rows in one CAS transaction |
+| Multiple Workers discover the same expired Run | pg-boss uses SKIP LOCKED job claims plus a Run-scoped singleton key; RunEngine's generation lease remains the final authority before any state transition |
+| Recovery handler or Worker crashes after a job is claimed | The durable job is retried with bounded exponential backoff, while the chained scan independently rediscovers an expired non-terminal Run |
+| Released leases for terminal Runs create an infinite recovery loop | The durable scanner joins the Run snapshot and excludes succeeded, failed, and cancelled statuses before enqueue |
 | Client retries a waiting-user answer after the Run advances | The Run snapshot retains the command receipt; exact answer/steer retries succeed after completion, while changed type, request ID, or content fails closed |
 | Conversation event contains model/user markup | Event payloads pass the strict JSON envelope and Web renders titles from a closed local map plus details with `textContent`; replay never evaluates payload HTML |
 | SSE reconnect redelivers conversation history | Web deduplicates by the stable per-Run event sequence and stops only on the terminal status event, preserving ordered full-history replay |

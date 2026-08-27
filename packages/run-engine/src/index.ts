@@ -1644,9 +1644,15 @@ export {
 } from "./postgres-run-lease.js";
 export type { PostgresExecutor } from "./postgres-run-lease.js";
 export {
+  createPgBossRecoveryWorker,
   createIntervalRecoveryWorker
 } from "./recovery-worker.js";
 export type {
+  PgBossRecoveryWorkerOptions,
+  RecoveryJobQueue,
+  RecoveryQueueOptions,
+  RecoverySendOptions,
+  RecoveryWorkOptions,
   RunRecoveryWorker,
   IntervalRecoveryWorkerOptions
 } from "./recovery-worker.js";

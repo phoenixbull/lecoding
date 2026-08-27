@@ -83,7 +83,7 @@ describe("createWorkerRuntime", () => {
       closeDatabase
     });
 
-    runtime.start();
+    await runtime.start();
     await runtime.stop();
 
     expect(calls).toEqual([
@@ -148,7 +148,7 @@ describe("createWorkerRuntime", () => {
 
     await runtime.stop();
 
-    expect(() => runtime.start()).toThrow("Worker runtime has stopped");
+    await expect(runtime.start()).rejects.toThrow("Worker runtime has stopped");
     expect(recovery.start).not.toHaveBeenCalled();
   });
 });
@@ -229,9 +229,17 @@ describe("composeProductionWorker", () => {
     const close = vi.fn(async () => {
       calls.push("database.close");
     });
+    const recoveryQueue = {
+      start: vi.fn(async () => undefined),
+      stop: vi.fn(async () => undefined),
+      createQueue: vi.fn(async () => undefined),
+      send: vi.fn(async () => "recovery-job"),
+      work: vi.fn(async () => "recovery-worker")
+    };
     try {
       const runtime = await composeProductionWorker({
         database: { executor, notifications, close },
+        createRecoveryQueue: () => recoveryQueue,
         environment: {
           ...validWorkerEnvironment,
           LECODING_PROJECT_REGISTRY_PATH: registryPath,
@@ -240,9 +248,10 @@ describe("composeProductionWorker", () => {
         }
       });
 
-      runtime.start();
+      await runtime.start();
       expect(runtime.control.defaultProjectId).toBe("project-1");
       expect(runtime.control.projectIds).toEqual(["project-1", "project-2"]);
+      expect(recoveryQueue.start).toHaveBeenCalledTimes(1);
       await runtime.stop();
 
       expect(executor.query).toHaveBeenCalled();
@@ -253,6 +262,10 @@ describe("composeProductionWorker", () => {
       expect(calls.indexOf("notifications.stop")).toBeLessThan(
         calls.indexOf("database.close")
       );
+      expect(recoveryQueue.stop).toHaveBeenCalledWith({
+        graceful: true,
+        timeout: 30_000
+      });
     } finally {
       await rm(fixtureRoot, { recursive: true, force: true });
     }
@@ -488,6 +501,15 @@ describe("composeProductionWorker", () => {
         LECODING_VERIFICATION_IMAGE: verificationImage
       })
     ).toMatchObject({ dockerImage: runtimeImage, verificationImage });
+  });
+
+  it("bounds the durable recovery cadence to pg-boss queue limits", () => {
+    expect(() =>
+      loadWorkerConfig({
+        ...validWorkerEnvironment,
+        LECODING_RECOVERY_INTERVAL_MS: "3600001"
+      })
+    ).toThrow("LECODING_RECOVERY_INTERVAL_MS must be an integer from 1 to 3600000");
   });
 
   it("closes transferred database resources when configuration fails", async () => {
