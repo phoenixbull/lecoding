@@ -105,6 +105,14 @@ dedicated jobs, queues, lease, and Run were deleted and absence was rechecked. S
 The smoke uses explicit queue names and an exact Run allowlist so it cannot consume
 production recovery work.
 
+`pnpm smoke:postgres-cancel` has also passed with two independent real LISTEN
+sessions. Cancellation fanout reached both sessions in both publisher directions;
+after one Worker's owned listener was deliberately ended, its cancel bus rotated
+the client, re-LISTENed, and restored two-recipient fanout while the other Worker
+remained online. See
+[`evidence/postgres-cancel-reconnect-smoke-2026-08-27.md`](evidence/postgres-cancel-reconnect-smoke-2026-08-27.md).
+The diagnostic disconnect cannot close the query Pool or another Worker's session.
+
 ## Web and API control plane
 
 Run `pnpm build` before starting the Worker so `apps/web/dist` is available. The

@@ -27,6 +27,12 @@ export interface WorkerPgClient extends EventEmitter {
   end(): Promise<void>;
 }
 
+/** Real Worker database plus a connection-local operational diagnostic seam. */
+export interface PostgresWorkerDatabase extends WorkerDatabase {
+  /** Ends only this Worker's LISTEN session so reconnection can be smoke-tested. */
+  disconnectNotifications(): Promise<void>;
+}
+
 /** Injectable constructors keep readiness and cleanup behavior testable without PostgreSQL. */
 export interface PostgresWorkerDatabaseOptions {
   environment: ModelEnvironment;
@@ -73,7 +79,7 @@ export function loadPostgresWorkerConfig(
  */
 export async function createPostgresWorkerDatabase(
   options: PostgresWorkerDatabaseOptions
-): Promise<WorkerDatabase> {
+): Promise<PostgresWorkerDatabase> {
   const config = loadPostgresWorkerConfig(options.environment);
   const poolConfig: PoolConfig = {
     connectionString: config.connectionString,
@@ -115,6 +121,7 @@ export async function createPostgresWorkerDatabase(
         listen: listener.listen,
         onClientDisconnect: listener.onClientDisconnect
       },
+      disconnectNotifications: listener.disconnect,
       close
     };
   } catch (error) {
@@ -152,6 +159,7 @@ interface RotatingNotificationClient {
   connect(): Promise<void>;
   listen: PostgresNotifiable["listen"];
   onClientDisconnect: PostgresNotifiable["onClientDisconnect"];
+  disconnect(): Promise<void>;
   close(): Promise<void>;
 }
 
@@ -169,6 +177,20 @@ function createRotatingNotificationClient(
   let connecting: Promise<NotificationClientState> | undefined;
   let closing = false;
 
+  const markDisconnected = (state: NotificationClientState): void => {
+    if (closing || state.disconnected) {
+      return;
+    }
+    state.disconnected = true;
+    for (const handler of disconnectHandlers) {
+      try {
+        handler();
+      } catch {
+        // A consumer failure must not interrupt other disconnect subscribers.
+      }
+    }
+  };
+
   const connect = async (): Promise<NotificationClientState> => {
     if (current && !current.disconnected) {
       return current;
@@ -180,21 +202,8 @@ function createRotatingNotificationClient(
       const client = createClient(config);
       const state: NotificationClientState = { client, disconnected: false };
       clients.add(client);
-      const markDisconnected = (): void => {
-        if (closing || state.disconnected) {
-          return;
-        }
-        state.disconnected = true;
-        for (const handler of disconnectHandlers) {
-          try {
-            handler();
-          } catch {
-            // A consumer failure must not interrupt other disconnect subscribers.
-          }
-        }
-      };
-      client.on("error", markDisconnected);
-      client.on("end", markDisconnected);
+      client.on("error", () => markDisconnected(state));
+      client.on("end", () => markDisconnected(state));
       await client.connect();
       current = state;
       return state;
@@ -219,6 +228,19 @@ function createRotatingNotificationClient(
       return () => {
         disconnectHandlers.delete(handler);
       };
+    },
+    async disconnect() {
+      const state = current;
+      if (!state || state.disconnected) {
+        return;
+      }
+      await state.client.end();
+      // Some Client doubles do not emit `end`; preserve the disconnect contract.
+      markDisconnected(state);
+      clients.delete(state.client);
+      if (current === state) {
+        current = undefined;
+      }
     },
     async close() {
       closing = true;

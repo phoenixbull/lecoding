@@ -122,6 +122,27 @@ describe("createPostgresWorkerDatabase", () => {
     await stop();
     await database.close();
   });
+
+  it("allows an operational smoke to disconnect only its owned LISTEN session", async () => {
+    const calls: string[] = [];
+    const pool = createPool(calls);
+    const clients = [createClient(calls), createClient(calls)];
+    const createClientFactory = vi.fn(() => clients.shift()!);
+    const database = await createPostgresWorkerDatabase({
+      environment: databaseEnvironment,
+      createPool: () => pool,
+      createClient: createClientFactory
+    });
+    const bus = createPostgresRunCancelBus(database.notifications);
+    const stop = await bus.subscribe(() => undefined);
+
+    await database.disconnectNotifications();
+    await vi.waitFor(() => expect(createClientFactory).toHaveBeenCalledTimes(2));
+    expect(pool.end).not.toHaveBeenCalled();
+
+    await stop();
+    await database.close();
+  });
 });
 
 function createPool(calls: string[]): WorkerPgPool {
@@ -149,6 +170,7 @@ function createClient(calls: string[]): WorkerPgClient {
     }),
     end: vi.fn(async () => {
       calls.push("client.end");
+      emitter.emit("end");
     })
   });
 }
