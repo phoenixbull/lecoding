@@ -8,6 +8,7 @@
   },
   "scripts": {
     "build": "turbo run build",
+    "smoke:postgres-steering": "pnpm --filter @lecoding/worker smoke:postgres-steering",
     "smoke:postgres-cancel": "pnpm --filter @lecoding/worker smoke:postgres-cancel",
     "smoke:postgres-failover": "pnpm --filter @lecoding/worker smoke:postgres-failover",
     "smoke:postgres": "pnpm --filter @lecoding/worker smoke:postgres",

@@ -5,6 +5,7 @@
   "type": "module",
   "exports": "./src/index.ts",
   "scripts": {
+    "smoke:postgres-steering": "tsx --env-file=../../.env.local src/postgres-steering-smoke-main.ts",
     "smoke:postgres-cancel": "tsx --env-file=../../.env.local src/postgres-cancel-smoke-main.ts",
     "smoke:postgres-failover": "tsx --env-file=../../.env.local src/postgres-failover-smoke-main.ts",
     "smoke:postgres": "tsx --env-file=../../.env.local src/postgres-smoke-main.ts",

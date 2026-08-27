@@ -113,6 +113,13 @@ remained online. See
 [`evidence/postgres-cancel-reconnect-smoke-2026-08-27.md`](evidence/postgres-cancel-reconnect-smoke-2026-08-27.md).
 The diagnostic disconnect cannot close the query Pool or another Worker's session.
 
+`pnpm smoke:postgres-steering` has passed against the same configured service.
+Worker A inserted two ordered commands and retried one command ID idempotently;
+Worker B read both, then resumed after the first durable sequence. Exactly two
+submitted-message events had matching outbox rows. The UUID-scoped mailbox,
+event/outbox, and counter fixtures were deleted and absence was rechecked. See
+[`evidence/postgres-steering-smoke-2026-08-27.md`](evidence/postgres-steering-smoke-2026-08-27.md).
+
 ## Web and API control plane
 
 Run `pnpm build` before starting the Worker so `apps/web/dist` is available. The
