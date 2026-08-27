@@ -5,6 +5,8 @@ Phase 0 implementation of the v3.2 design: a recoverable, policy-enforced coding
 Phase 0 and the V3 Phase 1 single-user reliable-loop scope are complete for the
 accepted development target. The target-Linux isolation run remains explicit
 environmental evidence debt; see [`docs/phase-1-completion.md`](docs/phase-1-completion.md).
+The requirement-by-requirement closure record is
+[`docs/phase-0-1-completion-audit.md`](docs/phase-0-1-completion-audit.md).
 
 ## Current vertical slices
 

@@ -87,7 +87,7 @@ Updated: 2026-08-27
 
 ```text
 Test files: 56 passed, 1 opt-in live baseline file skipped
-Tests:      239 passed, 1 opt-in live model test skipped
+Tests:      241 passed, 1 opt-in live model test skipped
 Typecheck:  12 package tasks passed
 Build:      Web production bundle passed
 ```

@@ -356,10 +356,11 @@ describe("createRunApiHandler", () => {
       journal,
       broadcaster: createRunEventLiveBroadcaster()
     });
+    const runs = createRuns([]);
     const handler = createRunApiHandler({
       defaultProjectId: "project-1",
       projectIds: ["project-1", "project-2"],
-      runs: createRuns([]),
+      runs,
       history: { list: vi.fn(async () => []) },
       changes: { read: vi.fn(async () => ({ changedFiles: [], unifiedDiff: "", truncated: false })) },
       results: { resolve: vi.fn(async () => undefined) },
@@ -374,6 +375,8 @@ describe("createRunApiHandler", () => {
 
     expect(response.headers.get("content-type")).toContain("text/event-stream");
     expect(first).toContain("event: status_changed");
+    // Closing the browser-owned stream must not become a Run cancellation command.
+    expect(runs.command).not.toHaveBeenCalled();
   });
 });
 

@@ -23,6 +23,53 @@ afterEach(async () => {
 });
 
 describe("GitWorkspace", () => {
+  it("isolates parallel Run worktrees from each other and the source checkout", async () => {
+    const fixtureRoot = await mkdtemp(join(tmpdir(), "lecoding-parallel-workspace-"));
+    temporaryDirectories.push(fixtureRoot);
+    const sourceRepo = join(fixtureRoot, "source");
+    const worktreeRoot = join(fixtureRoot, "runs");
+    await mkdir(sourceRepo);
+    await exec("git", ["init", "-q", sourceRepo]);
+    await writeFile(join(sourceRepo, "shared.txt"), "source\n");
+    await exec("git", ["-C", sourceRepo, "add", "shared.txt"]);
+    await exec("git", [
+      "-C",
+      sourceRepo,
+      "-c",
+      "user.name=Parallel Test",
+      "-c",
+      "user.email=parallel@example.invalid",
+      "commit",
+      "-qm",
+      "fixture"
+    ]);
+    const workspace = createGitWorkspace({ worktreeRoot });
+
+    // Concurrent preparation must allocate independent branches and directories.
+    const [first, second] = await Promise.all([
+      workspace.prepare({ runId: "parallel-a", sourceRepo, baseRef: "HEAD" }),
+      workspace.prepare({ runId: "parallel-b", sourceRepo, baseRef: "HEAD" })
+    ]);
+    await Promise.all([
+      workspace.apply(first, { path: "shared.txt", content: "run-a\n" }),
+      workspace.apply(second, { path: "shared.txt", content: "run-b\n" })
+    ]);
+
+    await expect(readFile(join(first.path, "shared.txt"), "utf8")).resolves.toBe(
+      "run-a\n"
+    );
+    await expect(readFile(join(second.path, "shared.txt"), "utf8")).resolves.toBe(
+      "run-b\n"
+    );
+    await expect(readFile(join(sourceRepo, "shared.txt"), "utf8")).resolves.toBe(
+      "source\n"
+    );
+    await Promise.all([
+      workspace.dispose(first, "discard"),
+      workspace.dispose(second, "discard")
+    ]);
+  });
+
   it("keeps or idempotently discards only a verified managed Run result", async () => {
     const fixtureRoot = await mkdtemp(join(tmpdir(), "lecoding-result-"));
     temporaryDirectories.push(fixtureRoot);

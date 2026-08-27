@@ -22,7 +22,7 @@ result can be discarded without changing the source checkout.
 ```text
 Focused Workspace/API/SDK/Web tests: 31 passed
 HTTP SDK integration tests:           5 passed
-Repository tests:                     239 passed, 1 skipped
+Repository tests:                     241 passed, 1 skipped
 Typecheck:                            12 package tasks passed
 Web production build:                 passed
 git diff --check:                     passed
@@ -30,5 +30,5 @@ git diff --check:                     passed
 
 The ordinary sandbox cannot bind a loopback listener, so the first aggregate
 invocation reported `EPERM` for three listener cases. A complete rerun with
-loopback and Docker access passed all 56 enabled files and 239 tests, including
+loopback and Docker access passed all 56 enabled files and 241 tests, including
 the public Client SDK result-discard request and both daemon-backed Docker cases.

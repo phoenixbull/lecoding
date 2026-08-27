@@ -27,7 +27,7 @@ isolation remains evidence debt and is not represented as a production claim.
   through the versioned API/SDK/Web seam. The real Git test proves discard and
   retry do not modify the source checkout. See
   [`evidence/run-result-discard-2026-08-27.md`](evidence/run-result-discard-2026-08-27.md).
-- Automated baseline: 56 test files and 239 tests pass; the one skipped test is
+- Automated baseline: 56 test files and 241 tests pass; the one skipped test is
   the opt-in live model baseline. All 12 package typecheck tasks and the Web
   production build pass.
 
