@@ -1,0 +1,138 @@
+{
+  "schemaVersion": 1,
+  "createdAt": "2026-08-27T07:56:44.688Z",
+  "results": [
+    {
+      "taskId": "ts-fix-boundary",
+      "category": "bugfix",
+      "modelId": "deepseek-v4-flash-0731",
+      "outcome": "failed",
+      "inputTokens": 4598,
+      "outputTokens": 429,
+      "costUsd": 0.000764,
+      "failure": "AgentModel execution failed: OpenAI execute_command arguments are invalid JSON",
+      "durationMs": 14267
+    },
+    {
+      "taskId": "js-fix-async-race",
+      "category": "bugfix",
+      "modelId": "deepseek-v4-flash-0731",
+      "outcome": "passed",
+      "inputTokens": 8609,
+      "outputTokens": 978,
+      "costUsd": 0.001479,
+      "durationMs": 23121
+    },
+    {
+      "taskId": "python-fix-parser",
+      "category": "bugfix",
+      "modelId": "deepseek-v4-flash-0731",
+      "outcome": "passed",
+      "inputTokens": 7164,
+      "outputTokens": 1255,
+      "costUsd": 0.001354,
+      "durationMs": 14142
+    },
+    {
+      "taskId": "ts-add-required-field",
+      "category": "feature",
+      "modelId": "deepseek-v4-flash-0731",
+      "outcome": "passed",
+      "inputTokens": 7320,
+      "outputTokens": 688,
+      "costUsd": 0.001217,
+      "durationMs": 24398
+    },
+    {
+      "taskId": "python-add-validation",
+      "category": "feature",
+      "modelId": "deepseek-v4-flash-0731",
+      "outcome": "passed",
+      "inputTokens": 7522,
+      "outputTokens": 787,
+      "costUsd": 0.001273,
+      "durationMs": 12078
+    },
+    {
+      "taskId": "ui-empty-state",
+      "category": "feature",
+      "modelId": "deepseek-v4-flash-0731",
+      "outcome": "passed",
+      "inputTokens": 6275,
+      "outputTokens": 734,
+      "costUsd": 0.001084,
+      "durationMs": 11172
+    },
+    {
+      "taskId": "security-path-traversal",
+      "category": "security",
+      "modelId": "deepseek-v4-flash-0731",
+      "outcome": "passed",
+      "inputTokens": 7186,
+      "outputTokens": 2022,
+      "costUsd": 0.001572,
+      "durationMs": 18382
+    },
+    {
+      "taskId": "schema-unique-call-id",
+      "category": "security",
+      "modelId": "deepseek-v4-flash-0731",
+      "outcome": "passed",
+      "inputTokens": 6386,
+      "outputTokens": 666,
+      "costUsd": 0.001081,
+      "durationMs": 14374
+    },
+    {
+      "taskId": "docs-quickstart",
+      "category": "docs",
+      "modelId": "deepseek-v4-flash-0731",
+      "outcome": "passed",
+      "inputTokens": 7560,
+      "outputTokens": 643,
+      "costUsd": 0.001238,
+      "durationMs": 11329
+    },
+    {
+      "taskId": "docs-error-reference",
+      "category": "docs",
+      "modelId": "deepseek-v4-flash-0731",
+      "outcome": "passed",
+      "inputTokens": 7276,
+      "outputTokens": 647,
+      "costUsd": 0.0012,
+      "durationMs": 10580
+    },
+    {
+      "taskId": "performance-deduplicate",
+      "category": "performance",
+      "modelId": "deepseek-v4-flash-0731",
+      "outcome": "passed",
+      "inputTokens": 9302,
+      "outputTokens": 735,
+      "costUsd": 0.001508,
+      "durationMs": 12000
+    },
+    {
+      "taskId": "performance-bounded-log",
+      "category": "performance",
+      "modelId": "deepseek-v4-flash-0731",
+      "outcome": "failed",
+      "inputTokens": 1698,
+      "outputTokens": 263,
+      "costUsd": 0.000311,
+      "failure": "AgentModel execution failed: OpenAI Chat Completions API returned invalid JSON (HTTP 200)",
+      "durationMs": 27782
+    }
+  ],
+  "summary": {
+    "taskCount": 12,
+    "passed": 10,
+    "failed": 2,
+    "passRate": 0.8333333333333334,
+    "inputTokens": 80896,
+    "outputTokens": 9847,
+    "costUsd": 0.014081,
+    "durationMs": 193625
+  }
+}

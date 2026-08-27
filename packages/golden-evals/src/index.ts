@@ -289,6 +289,21 @@ const REPRESENTATIVE_IDS = [
   "performance-deduplicate"
 ] as const;
 
+const ACCEPTANCE_IDS = [
+  "ts-fix-boundary",
+  "js-fix-async-race",
+  "python-fix-parser",
+  "ts-add-required-field",
+  "python-add-validation",
+  "ui-empty-state",
+  "security-path-traversal",
+  "schema-unique-call-id",
+  "docs-quickstart",
+  "docs-error-reference",
+  "performance-deduplicate",
+  "performance-bounded-log"
+] as const;
+
 /** Returns a fresh catalog so one evaluation cannot mutate another run. */
 export function loadGoldenTaskCatalog(): GoldenTask[] {
   return structuredClone(CATALOG);
@@ -298,11 +313,27 @@ export function loadGoldenTaskCatalog(): GoldenTask[] {
 export function selectRepresentativeGoldenTasks(
   catalog: GoldenTask[]
 ): GoldenTask[] {
+  return selectGoldenTasksById(catalog, REPRESENTATIVE_IDS, "Representative");
+}
+
+/** Selects the stable category-balanced 12/20 Phase 1 acceptance suite. */
+export function selectAcceptanceGoldenTasks(
+  catalog: GoldenTask[]
+): GoldenTask[] {
+  return selectGoldenTasksById(catalog, ACCEPTANCE_IDS, "Acceptance");
+}
+
+/** Resolves an immutable suite and fails closed if catalog drift removes a task. */
+function selectGoldenTasksById(
+  catalog: GoldenTask[],
+  ids: readonly string[],
+  suiteName: string
+): GoldenTask[] {
   const byId = new Map(catalog.map((task) => [task.id, task]));
-  return REPRESENTATIVE_IDS.map((id) => {
+  return ids.map((id) => {
     const task = byId.get(id);
     if (!task) {
-      throw new Error(`Representative golden task is missing: ${id}`);
+      throw new Error(`${suiteName} golden task is missing: ${id}`);
     }
     return structuredClone(task);
   });

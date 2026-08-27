@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   loadGoldenTaskCatalog,
+  selectAcceptanceGoldenTasks,
   selectRepresentativeGoldenTasks
 } from "../src/index.js";
 
@@ -41,5 +42,32 @@ describe("GoldenTaskCatalog", () => {
     expect(task?.verificationCommands).toEqual([
       ["python3", "-m", "unittest", "-v"]
     ]);
+  });
+
+  it("selects a stable category-balanced 12-task acceptance suite", () => {
+    const selected = selectAcceptanceGoldenTasks(loadGoldenTaskCatalog());
+
+    expect(selected.map((task) => task.id)).toEqual([
+      "ts-fix-boundary",
+      "js-fix-async-race",
+      "python-fix-parser",
+      "ts-add-required-field",
+      "python-add-validation",
+      "ui-empty-state",
+      "security-path-traversal",
+      "schema-unique-call-id",
+      "docs-quickstart",
+      "docs-error-reference",
+      "performance-deduplicate",
+      "performance-bounded-log"
+    ]);
+    expect(
+      Object.fromEntries(
+        [...new Set(selected.map((task) => task.category))].map((category) => [
+          category,
+          selected.filter((task) => task.category === category).length
+        ])
+      )
+    ).toEqual({ bugfix: 3, feature: 3, security: 2, docs: 2, performance: 2 });
   });
 });

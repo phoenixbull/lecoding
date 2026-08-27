@@ -1,0 +1,137 @@
+{
+  "schemaVersion": 1,
+  "createdAt": "2026-08-27T08:00:45.418Z",
+  "results": [
+    {
+      "taskId": "ts-fix-boundary",
+      "category": "bugfix",
+      "modelId": "deepseek-v4-flash-0731",
+      "outcome": "passed",
+      "inputTokens": 10037,
+      "outputTokens": 1761,
+      "costUsd": 0.001898,
+      "durationMs": 16201
+    },
+    {
+      "taskId": "js-fix-async-race",
+      "category": "bugfix",
+      "modelId": "deepseek-v4-flash-0731",
+      "outcome": "passed",
+      "inputTokens": 7247,
+      "outputTokens": 705,
+      "costUsd": 0.001212,
+      "durationMs": 9209
+    },
+    {
+      "taskId": "python-fix-parser",
+      "category": "bugfix",
+      "modelId": "deepseek-v4-flash-0731",
+      "outcome": "passed",
+      "inputTokens": 5518,
+      "outputTokens": 704,
+      "costUsd": 0.00097,
+      "durationMs": 7546
+    },
+    {
+      "taskId": "ts-add-required-field",
+      "category": "feature",
+      "modelId": "deepseek-v4-flash-0731",
+      "outcome": "passed",
+      "inputTokens": 8980,
+      "outputTokens": 950,
+      "costUsd": 0.001523,
+      "durationMs": 10214
+    },
+    {
+      "taskId": "python-add-validation",
+      "category": "feature",
+      "modelId": "deepseek-v4-flash-0731",
+      "outcome": "passed",
+      "inputTokens": 5790,
+      "outputTokens": 985,
+      "costUsd": 0.001086,
+      "durationMs": 9920
+    },
+    {
+      "taskId": "ui-empty-state",
+      "category": "feature",
+      "modelId": "deepseek-v4-flash-0731",
+      "outcome": "passed",
+      "inputTokens": 7139,
+      "outputTokens": 549,
+      "costUsd": 0.001153,
+      "durationMs": 7787
+    },
+    {
+      "taskId": "security-path-traversal",
+      "category": "security",
+      "modelId": "deepseek-v4-flash-0731",
+      "outcome": "passed",
+      "inputTokens": 8965,
+      "outputTokens": 1235,
+      "costUsd": 0.001601,
+      "durationMs": 11183
+    },
+    {
+      "taskId": "schema-unique-call-id",
+      "category": "security",
+      "modelId": "deepseek-v4-flash-0731",
+      "outcome": "passed",
+      "inputTokens": 5305,
+      "outputTokens": 519,
+      "costUsd": 0.000888,
+      "durationMs": 6883
+    },
+    {
+      "taskId": "docs-quickstart",
+      "category": "docs",
+      "modelId": "deepseek-v4-flash-0731",
+      "outcome": "passed",
+      "inputTokens": 7792,
+      "outputTokens": 869,
+      "costUsd": 0.001334,
+      "durationMs": 8904
+    },
+    {
+      "taskId": "docs-error-reference",
+      "category": "docs",
+      "modelId": "deepseek-v4-flash-0731",
+      "outcome": "failed",
+      "inputTokens": 2873,
+      "outputTokens": 314,
+      "costUsd": 0.00049,
+      "failure": "AgentModel execution failed: OpenAI execute_command arguments are invalid JSON",
+      "durationMs": 6073
+    },
+    {
+      "taskId": "performance-deduplicate",
+      "category": "performance",
+      "modelId": "deepseek-v4-flash-0731",
+      "outcome": "passed",
+      "inputTokens": 6355,
+      "outputTokens": 807,
+      "costUsd": 0.001116,
+      "durationMs": 7939
+    },
+    {
+      "taskId": "performance-bounded-log",
+      "category": "performance",
+      "modelId": "deepseek-v4-flash-0731",
+      "outcome": "passed",
+      "inputTokens": 7108,
+      "outputTokens": 837,
+      "costUsd": 0.001229,
+      "durationMs": 9250
+    }
+  ],
+  "summary": {
+    "taskCount": 12,
+    "passed": 11,
+    "failed": 1,
+    "passRate": 0.9166666666666666,
+    "inputTokens": 83109,
+    "outputTokens": 10235,
+    "costUsd": 0.0145,
+    "durationMs": 111109
+  }
+}

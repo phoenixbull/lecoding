@@ -11,6 +11,7 @@ import {
   createAgentModelGoldenTaskExecutor,
   loadGoldenTaskCatalog,
   runGoldenBaseline,
+  selectAcceptanceGoldenTasks,
   selectRepresentativeGoldenTasks
 } from "../src/index.js";
 
@@ -18,7 +19,7 @@ const runLiveBaseline = process.env.RUN_LIVE_GOLDEN === "1";
 
 describe("live OpenAI-compatible golden baseline", () => {
   it.skipIf(!runLiveBaseline)(
-    "runs five representatives through the Docker-isolated AgentModel gateway",
+    "runs the selected suite through the Docker-isolated AgentModel gateway",
     async () => {
       const config = loadOpenAiCompatibleModelConfig(process.env);
       const pricing = {
@@ -44,8 +45,13 @@ describe("live OpenAI-compatible golden baseline", () => {
           })
       });
 
+      const suite = readSuite();
+      const tasks =
+        suite === "acceptance"
+          ? selectAcceptanceGoldenTasks(loadGoldenTaskCatalog())
+          : selectRepresentativeGoldenTasks(loadGoldenTaskCatalog());
       const report = await runGoldenBaseline({
-        tasks: selectRepresentativeGoldenTasks(loadGoldenTaskCatalog()),
+        tasks,
         executor,
         createdAt: new Date().toISOString(),
         nowMs: Date.now
@@ -58,12 +64,20 @@ describe("live OpenAI-compatible golden baseline", () => {
       // The report contains metrics and bounded failures, never credentials or raw prompts.
       await writeFile(outputPath, `${JSON.stringify(report, null, 2)}\n`, "utf8");
 
-      expect(report.summary.taskCount).toBe(5);
+      expect(report.summary.taskCount).toBe(suite === "acceptance" ? 12 : 5);
       expect(report.summary.inputTokens + report.summary.outputTokens).toBeGreaterThan(0);
     },
     15 * 60_000
   );
 });
+
+function readSuite(): "representative" | "acceptance" {
+  const suite = process.env.LECODING_GOLDEN_SUITE?.trim() || "representative";
+  if (suite !== "representative" && suite !== "acceptance") {
+    throw new Error("LECODING_GOLDEN_SUITE must be representative or acceptance");
+  }
+  return suite;
+}
 
 function readPrice(name: string): number {
   const raw = process.env[name]?.trim();
