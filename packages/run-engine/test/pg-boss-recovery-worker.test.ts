@@ -69,4 +69,63 @@ describe("pg-boss recovery worker", () => {
     await recover!({ data: { runId: "run-expired-a" } });
     expect(resumer.resume).toHaveBeenCalledWith("run-expired-a");
   });
+
+  it("isolates an operational smoke to explicit queues and Run identities", async () => {
+    const handlers = new Map<string, (job: { data: unknown }) => Promise<void>>();
+    const queue = {
+      start: vi.fn(async () => undefined),
+      stop: vi.fn(async () => undefined),
+      createQueue: vi.fn(async () => undefined),
+      send: vi.fn(async () => "smoke-job"),
+      work: vi.fn(
+        async (
+          name: string,
+          _options: unknown,
+          handler: (job: { data: unknown }) => Promise<void>
+        ) => {
+          handlers.set(name, handler);
+          return `worker:${name}`;
+        }
+      )
+    };
+    const query = vi.fn();
+    const executor: PostgresExecutor = {
+      async query<Row extends Record<string, unknown>>(
+        sql: string,
+        parameters?: unknown[]
+      ) {
+        query(sql, parameters);
+        return { rows: [{ run_id: "smoke-run" }] as unknown as Row[] };
+      }
+    };
+    const resumer: RunResumer = {
+      resume: vi.fn(async () => undefined),
+      recoverEnvironment: vi.fn(async () => undefined)
+    };
+    const worker = createPgBossRecoveryWorker({
+      queue,
+      executor,
+      resumer,
+      queueNames: {
+        scan: "smoke-scan",
+        run: "smoke-run-queue"
+      },
+      runIdScope: ["smoke-run"],
+      scanIntervalSeconds: 1
+    });
+
+    await worker.start();
+    await handlers.get("smoke-scan")!({ data: {} });
+
+    expect(query).toHaveBeenCalledWith(
+      expect.stringContaining("run.run_id = ANY($2::text[])"),
+      [expect.any(String), ["smoke-run"]]
+    );
+    expect(queue.send).toHaveBeenCalledWith(
+      "smoke-run-queue",
+      { runId: "smoke-run" },
+      expect.objectContaining({ singletonKey: "smoke-run" })
+    );
+    await worker.stop();
+  });
 });

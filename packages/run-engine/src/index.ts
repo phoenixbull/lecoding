@@ -1650,6 +1650,7 @@ export {
 export type {
   PgBossRecoveryWorkerOptions,
   RecoveryJobQueue,
+  RecoveryQueueNames,
   RecoveryQueueOptions,
   RecoverySendOptions,
   RecoveryWorkOptions,

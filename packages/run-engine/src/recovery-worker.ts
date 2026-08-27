@@ -53,10 +53,20 @@ export interface PgBossRecoveryWorkerOptions {
   queue: RecoveryJobQueue;
   executor: PostgresExecutor;
   resumer: RunResumer;
+  /** Optional isolated queue names for bounded operational smoke tests. */
+  queueNames?: RecoveryQueueNames;
+  /** Optional exact Run allowlist; omitted production workers scan every project. */
+  runIdScope?: readonly RunId[];
   /** Durable scan cadence; pg-boss `startAfter` is expressed in seconds. */
   scanIntervalSeconds?: number;
   /** Deterministic lease-expiry clock used by tests and production composition. */
   now?: () => string;
+}
+
+/** Queue pair that must be shared by every Worker in one recovery domain. */
+export interface RecoveryQueueNames {
+  scan: string;
+  run: string;
 }
 
 const RECOVERY_SCAN_QUEUE = "lecoding-run-recovery-scan";
@@ -73,6 +83,14 @@ export function createPgBossRecoveryWorker(
   if (!Number.isSafeInteger(scanIntervalSeconds) || scanIntervalSeconds < 1) {
     throw new Error("Recovery scan interval must be a positive integer");
   }
+  const queueNames = options.queueNames ?? {
+    scan: RECOVERY_SCAN_QUEUE,
+    run: RUN_RECOVERY_QUEUE
+  };
+  validateQueueNames(queueNames);
+  const runIdScope = options.runIdScope
+    ? [...new Set(options.runIdScope.map(readScopedRunId))]
+    : undefined;
   const now = options.now ?? (() => new Date().toISOString());
   let startPromise: Promise<void> | undefined;
   let stopPromise: Promise<void> | undefined;
@@ -82,7 +100,7 @@ export function createPgBossRecoveryWorker(
     try {
       await options.queue.start();
       queueStarted = true;
-      await options.queue.createQueue(RECOVERY_SCAN_QUEUE, {
+      await options.queue.createQueue(queueNames.scan, {
         // `short` keeps at most one future scan queued across all Worker processes.
         policy: "short",
         retryLimit: 20,
@@ -90,7 +108,7 @@ export function createPgBossRecoveryWorker(
         retryBackoff: true,
         expireInSeconds: Math.max(30, scanIntervalSeconds * 3)
       });
-      await options.queue.createQueue(RUN_RECOVERY_QUEUE, {
+      await options.queue.createQueue(queueNames.run, {
         policy: "standard",
         retryLimit: 5,
         retryDelay: 5,
@@ -99,7 +117,7 @@ export function createPgBossRecoveryWorker(
         expireInSeconds: 43_200
       });
       await options.queue.work(
-        RUN_RECOVERY_QUEUE,
+        queueNames.run,
         // A failed handler must retry only its own Run, never a successful batch peer.
         { batchSize: 1 },
         async (job) => {
@@ -109,16 +127,17 @@ export function createPgBossRecoveryWorker(
         }
       );
       await options.queue.work(
-        RECOVERY_SCAN_QUEUE,
+        queueNames.scan,
         { batchSize: 1 },
         async () => {
           const expired = await findRecoverableExpiredLeases(
             options.executor,
-            now()
+            now(),
+            runIdScope
           );
           for (const runId of expired) {
             await options.queue.send(
-              RUN_RECOVERY_QUEUE,
+              queueNames.run,
               { runId },
               {
                 // Repeated scans coalesce one Run while its prior job is pending.
@@ -129,14 +148,14 @@ export function createPgBossRecoveryWorker(
           }
           // The next scan is committed before this job completes, surviving restarts.
           await options.queue.send(
-            RECOVERY_SCAN_QUEUE,
+            queueNames.scan,
             {},
             { startAfter: scanIntervalSeconds }
           );
         }
       );
       // Queue policy coalesces concurrent process startup into one pending scan.
-      await options.queue.send(RECOVERY_SCAN_QUEUE, {});
+      await options.queue.send(queueNames.scan, {});
     } catch (error) {
       if (queueStarted) {
         await options.queue.stop({ graceful: false }).catch(() => undefined);
@@ -169,6 +188,24 @@ export function createPgBossRecoveryWorker(
       return stopPromise;
     }
   };
+}
+
+function validateQueueNames(names: RecoveryQueueNames): void {
+  for (const name of [names.scan, names.run]) {
+    if (!/^[a-zA-Z0-9_-]{1,128}$/u.test(name)) {
+      throw new Error("Recovery queue names must use 1-128 safe characters");
+    }
+  }
+  if (names.scan === names.run) {
+    throw new Error("Recovery scan and Run queue names must differ");
+  }
+}
+
+function readScopedRunId(runId: RunId): RunId {
+  if (!/^[a-zA-Z0-9_-]{1,128}$/u.test(runId)) {
+    throw new Error("Recovery Run scope contains an invalid identity");
+  }
+  return runId;
 }
 
 function readRecoveryRunId(data: unknown): RunId {
@@ -289,8 +326,10 @@ async function findExpiredLeases(
 
 async function findRecoverableExpiredLeases(
   executor: PostgresExecutor,
-  nowIso: string
+  nowIso: string,
+  runIdScope?: readonly RunId[]
 ): Promise<RunId[]> {
+  const scopeClause = runIdScope ? "AND run.run_id = ANY($2::text[])" : "";
   const { rows } = await executor.query<{ run_id: string }>(
     `
     SELECT lease.run_id
@@ -298,10 +337,11 @@ async function findRecoverableExpiredLeases(
       JOIN run_engine_runs AS run ON run.run_id = lease.run_id
      WHERE lease.lease_until < $1::timestamptz
        AND run.snapshot->>'status' NOT IN ('succeeded', 'failed', 'cancelled')
+       ${scopeClause}
      ORDER BY lease.lease_until ASC
      LIMIT 50;
     `,
-    [nowIso]
+    runIdScope ? [nowIso, runIdScope] : [nowIso]
   );
   return rows.map((row) => row.run_id);
 }

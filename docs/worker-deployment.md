@@ -97,6 +97,14 @@ expired-lease discovery, terminal filtering, job claiming, and graceful shutdown
 The steering mailbox's ordering and replacement-Worker behavior also pass the
 PostgreSQL-compatible integration suite.
 
+`pnpm smoke:postgres-failover` has passed against the configured real PostgreSQL
+service with two independent connections and recovery consumers. One UUID-scoped
+expired Run produced exactly one replacement lease claimant, after which the
+dedicated jobs, queues, lease, and Run were deleted and absence was rechecked. See
+[`evidence/postgres-failover-smoke-2026-08-27.md`](evidence/postgres-failover-smoke-2026-08-27.md).
+The smoke uses explicit queue names and an exact Run allowlist so it cannot consume
+production recovery work.
+
 ## Web and API control plane
 
 Run `pnpm build` before starting the Worker so `apps/web/dist` is available. The

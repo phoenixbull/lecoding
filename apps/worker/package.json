@@ -5,6 +5,7 @@
   "type": "module",
   "exports": "./src/index.ts",
   "scripts": {
+    "smoke:postgres-failover": "tsx --env-file=../../.env.local src/postgres-failover-smoke-main.ts",
     "smoke:postgres": "tsx --env-file=../../.env.local src/postgres-smoke-main.ts",
     "start": "tsx src/main.ts",
     "typecheck": "tsc --noEmit"

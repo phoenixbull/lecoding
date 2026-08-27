@@ -14,13 +14,18 @@ export interface PgBossRecoveryQueueOptions {
   onError?: (error: unknown) => void;
 }
 
+/** Recovery queue plus exact queue cleanup used by isolated operational smokes. */
+export interface ProductionPgBossRecoveryQueue extends RecoveryJobQueue {
+  deleteQueue(name: string): Promise<void>;
+}
+
 /**
  * Adapts pg-boss 10.x batch callbacks to RunEngine's single-job recovery seam.
  * The external DB adapter ensures pg-boss never owns or closes the Worker pool.
  */
 export function createProductionPgBossRecoveryQueue(
   options: PgBossRecoveryQueueOptions
-): RecoveryJobQueue {
+): ProductionPgBossRecoveryQueue {
   const boss = new PgBoss({
     db: {
       async executeSql(text: string, values: unknown[]) {
@@ -53,6 +58,10 @@ export function createProductionPgBossRecoveryQueue(
         name,
         queueOptions ? { name, ...queueOptions } : undefined
       );
+    },
+    async deleteQueue(name: string) {
+      // pg-boss deletes only this named queue and its partition-owned jobs.
+      await boss.deleteQueue(name);
     },
     send(name: string, data = {}, sendOptions?: RecoverySendOptions) {
       return sendOptions
