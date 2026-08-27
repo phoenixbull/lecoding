@@ -1,5 +1,7 @@
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import type { OpenAiMalformedJsonRetryEvent } from "@lecoding/openai-model";
+import { formatModelRetryLog } from "./index.js";
 import {
   loadWorkerHttpConfig,
   startWorkerHttpServer
@@ -12,9 +14,15 @@ function reportFatalWorkerError(): void {
   console.error("LeCoding Worker stopped because of a fatal lifecycle error");
 }
 
+/** Writes only the gateway's stable retry projection, never provider-controlled data. */
+function reportModelRetry(event: OpenAiMalformedJsonRetryEvent): void {
+  console.warn(formatModelRetryLog(event));
+}
+
 const host = createWorkerProcessHost({
   environment: process.env,
   onFatalError: reportFatalWorkerError,
+  onModelRetry: reportModelRetry,
   async startControlPlane(control) {
     const server = await startWorkerHttpServer({
       ...loadWorkerHttpConfig(process.env),

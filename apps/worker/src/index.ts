@@ -3,7 +3,8 @@ import { dirname, isAbsolute, join, resolve } from "node:path";
 import {
   createOpenAiCompatibleAgentModel,
   loadOpenAiCompatibleModelConfig,
-  type ModelEnvironment
+  type ModelEnvironment,
+  type OpenAiMalformedJsonRetryEvent
 } from "@lecoding/openai-model";
 import { createPolicyEngine } from "@lecoding/policy";
 import type { Engine, RunHistory, RunRecoveryWorker } from "@lecoding/run-engine";
@@ -89,6 +90,20 @@ export interface ProductionWorkerOptions {
   createId?: () => string;
   /** Receives recoverable background-loop failures without leaking into requests. */
   onBackgroundError?: (error: unknown) => void;
+  /** Receives provider retry telemetry containing only stable enums and Run identity. */
+  onModelRetry?: (event: OpenAiMalformedJsonRetryEvent) => void;
+}
+
+/** Serializes the fixed retry projection without spreading caller-owned fields. */
+export function formatModelRetryLog(event: OpenAiMalformedJsonRetryEvent): string {
+  return JSON.stringify({
+    event: "model_malformed_json_retry",
+    runId: event.runId,
+    protocol: event.protocol,
+    retryCount: event.retryCount,
+    failureCategory: event.failureCategory,
+    outcome: event.outcome
+  });
 }
 
 /** HTTP-facing seams exposed only after production composition succeeds. */
@@ -302,7 +317,12 @@ export async function composeProductionWorker(
       handles: createInMemoryRunHandleRegistry(),
       cancelBus,
       environment: runtimeEnvironment,
-      model: createOpenAiCompatibleAgentModel({ config: modelConfig }),
+      model: createOpenAiCompatibleAgentModel({
+        config: modelConfig,
+        ...(options.onModelRetry
+          ? { onMalformedJsonRetry: options.onModelRetry }
+          : {})
+      }),
       policy: createPolicyEngine(),
       events,
       verifier: createProductionVerifier({

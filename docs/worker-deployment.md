@@ -53,6 +53,20 @@ RunEngine subscriptions and environments are disposed, the LISTEN Client ends,
 and the Pool drains. Fatal lifecycle reporting uses a stable message and does not
 echo the database URI.
 
+Malformed provider JSON retries are written to stderr as one-line structured
+events. Each retry chain emits `retrying`, followed by either `recovered` or
+`exhausted`:
+
+```json
+{"event":"model_malformed_json_retry","runId":"run-123","protocol":"openai_chat_completions","retryCount":1,"failureCategory":"tool_arguments_invalid_json","outcome":"recovered"}
+```
+
+The fixed projection contains only Run identity, protocol, count, stable failure
+category, and outcome. It deliberately excludes model ID, endpoint, API key,
+request/response bodies, and tool arguments. Forward these JSON lines to the
+deployment log backend and alert on `outcome: "exhausted"` or a sustained rise
+in `retrying`; telemetry receiver failures are isolated from Run execution.
+
 Unit tests exercise Pool/LISTEN separation, readiness cleanup, listener rotation,
 duplicate signals, and shutdown ordering. A smoke test against the target
 PostgreSQL service is still required deployment evidence. The configured local

@@ -18,6 +18,7 @@ describe("createWorkerProcessHost", () => {
         calls.push("runtime.stop");
       })
     };
+    const onModelRetry = vi.fn();
     const host = createWorkerProcessHost({
       environment: {},
       signals,
@@ -25,11 +26,13 @@ describe("createWorkerProcessHost", () => {
         calls.push("database.connect");
         return database;
       }),
-      composeWorker: vi.fn(async ({ database: supplied }) => {
+      composeWorker: vi.fn(async ({ database: supplied, onModelRetry: suppliedRetry }) => {
         expect(supplied).toBe(database);
+        expect(suppliedRetry).toBe(onModelRetry);
         calls.push("worker.compose");
         return runtime;
-      })
+      }),
+      onModelRetry
     });
 
     await host.start();

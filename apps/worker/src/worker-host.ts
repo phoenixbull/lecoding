@@ -28,6 +28,8 @@ export interface WorkerProcessHostOptions {
   ) => Promise<WorkerHostedControlPlane>;
   /** Called for shutdown failures triggered outside an awaitable caller path. */
   onFatalError?: (error: unknown) => void;
+  /** Forwarded to model composition for secret-free malformed-JSON retry logs. */
+  onModelRetry?: ProductionWorkerOptions["onModelRetry"];
 }
 
 /** HTTP listener or equivalent service owned ahead of Worker teardown. */
@@ -110,7 +112,8 @@ export function createWorkerProcessHost(
           environment: options.environment,
           ...(options.onFatalError
             ? { onBackgroundError: options.onFatalError }
-            : {})
+            : {}),
+          ...(options.onModelRetry ? { onModelRetry: options.onModelRetry } : {})
         });
         try {
           runtime.start();

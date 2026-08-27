@@ -90,9 +90,11 @@ describe("createOpenAiResponsesAgentModel", () => {
   it("retries malformed Responses tool JSON once and accounts for both responses", async () => {
     let requestCount = 0;
     const observedUsage: Array<{ inputTokens: number; outputTokens: number }> = [];
+    const retryEvents: unknown[] = [];
     const model = createOpenAiResponsesAgentModel({
       model: "gpt-test",
       onUsage: (usage) => observedUsage.push(usage),
+      onMalformedJsonRetry: (event) => retryEvents.push(event),
       client: {
         async create() {
           requestCount += 1;
@@ -125,6 +127,22 @@ describe("createOpenAiResponsesAgentModel", () => {
     expect(observedUsage).toEqual([
       { inputTokens: 10, outputTokens: 1 },
       { inputTokens: 20, outputTokens: 2 }
+    ]);
+    expect(retryEvents).toEqual([
+      {
+        runId: "run-1",
+        protocol: "openai_responses",
+        retryCount: 1,
+        failureCategory: "tool_arguments_invalid_json",
+        outcome: "retrying"
+      },
+      {
+        runId: "run-1",
+        protocol: "openai_responses",
+        retryCount: 1,
+        failureCategory: "tool_arguments_invalid_json",
+        outcome: "recovered"
+      }
     ]);
   });
 
@@ -223,8 +241,10 @@ describe("createOpenAiResponsesAgentModel", () => {
 
   it("retries malformed Chat Completions tool JSON once before exposing an action", async () => {
     let requestCount = 0;
+    const retryEvents: unknown[] = [];
     const model = createOpenAiChatCompletionsAgentModel({
       model: "chat-test",
+      onMalformedJsonRetry: (event) => retryEvents.push(event),
       client: {
         async create() {
           requestCount += 1;
@@ -260,12 +280,23 @@ describe("createOpenAiResponsesAgentModel", () => {
       arguments: { argv: ["pnpm", "test"] }
     });
     expect(requestCount).toBe(2);
+    expect(retryEvents).toEqual([
+      expect.objectContaining({
+        protocol: "openai_chat_completions",
+        retryCount: 1,
+        failureCategory: "tool_arguments_invalid_json",
+        outcome: "retrying"
+      }),
+      expect.objectContaining({ outcome: "recovered" })
+    ]);
   });
 
   it("fails closed after the single malformed tool JSON retry is exhausted", async () => {
     let requestCount = 0;
+    const retryEvents: unknown[] = [];
     const model = createOpenAiChatCompletionsAgentModel({
       model: "chat-test",
+      onMalformedJsonRetry: (event) => retryEvents.push(event),
       client: {
         async create() {
           requestCount += 1;
@@ -295,6 +326,34 @@ describe("createOpenAiResponsesAgentModel", () => {
     await expect(model.next(baseInput([]))).rejects.toThrow(
       "OpenAI execute_command arguments are invalid JSON"
     );
+    expect(requestCount).toBe(2);
+    expect(retryEvents).toEqual([
+      expect.objectContaining({ outcome: "retrying", retryCount: 1 }),
+      expect.objectContaining({ outcome: "exhausted", retryCount: 1 })
+    ]);
+  });
+
+  it("ignores retry telemetry receiver failures without exposing malformed actions", async () => {
+    let requestCount = 0;
+    const model = createOpenAiChatCompletionsAgentModel({
+      model: "chat-test",
+      onMalformedJsonRetry: () => {
+        throw new Error("telemetry unavailable");
+      },
+      client: {
+        async create() {
+          requestCount += 1;
+          return requestCount === 1
+            ? chatCommandResponse('{"argv":["node","--test"]')
+            : chatCommandResponse('{"argv":["node","--test"]}');
+        }
+      }
+    });
+
+    await expect(model.next(baseInput([]))).resolves.toMatchObject({
+      type: "tool_call",
+      arguments: { argv: ["node", "--test"] }
+    });
     expect(requestCount).toBe(2);
   });
 
@@ -512,5 +571,24 @@ function baseInput(toolResults: ModelToolResult[]): AgentModelInput {
       fileAccessScope: "workspace_only" as const
     },
     toolResults
+  };
+}
+
+function chatCommandResponse(argumentsJson: string): unknown {
+  return {
+    choices: [
+      {
+        message: {
+          content: null,
+          tool_calls: [
+            {
+              id: "call-telemetry",
+              type: "function",
+              function: { name: "execute_command", arguments: argumentsJson }
+            }
+          ]
+        }
+      }
+    ]
   };
 }

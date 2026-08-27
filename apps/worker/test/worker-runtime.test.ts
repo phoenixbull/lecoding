@@ -6,9 +6,33 @@ import type { Engine, RunRecoveryWorker } from "@lecoding/run-engine";
 import {
   composeProductionWorker,
   createWorkerRuntime,
+  formatModelRetryLog,
   loadWorkerConfig,
   loadWorkerProjectRegistration
 } from "../src/index.js";
+
+describe("formatModelRetryLog", () => {
+  it("projects only stable retry fields even when the caller supplies extra data", () => {
+    const line = formatModelRetryLog({
+      runId: "run-1",
+      protocol: "openai_chat_completions",
+      retryCount: 1,
+      failureCategory: "tool_arguments_invalid_json",
+      outcome: "recovered",
+      responseBody: "must-not-leak"
+    } as Parameters<typeof formatModelRetryLog>[0] & { responseBody: string });
+
+    expect(JSON.parse(line)).toEqual({
+      event: "model_malformed_json_retry",
+      runId: "run-1",
+      protocol: "openai_chat_completions",
+      retryCount: 1,
+      failureCategory: "tool_arguments_invalid_json",
+      outcome: "recovered"
+    });
+    expect(line).not.toContain("must-not-leak");
+  });
+});
 
 const validWorkerEnvironment = {
   LECODING_WORKER_ID: "worker-a",
