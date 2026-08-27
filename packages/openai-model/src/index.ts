@@ -217,6 +217,17 @@ const DEFAULT_INSTRUCTIONS = [
   "Finish the editing turn only when the requested change is ready for host verification."
 ].join(" ");
 
+// A single replay improves compatible-provider tolerance without turning malformed
+// output into an unbounded loop or allowing any command to escape validation.
+const MALFORMED_JSON_RETRY_LIMIT = 1;
+
+class OpenAiMalformedJsonError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "OpenAiMalformedJsonError";
+  }
+}
+
 /** Loads one OpenAI-compatible provider without assuming vendor names. */
 export function loadOpenAiCompatibleModelConfig(
   environment: ModelEnvironment
@@ -318,7 +329,9 @@ export function createOpenAiResponsesClient(
         body = await response.json();
       } catch {
         // Preserve a stable, credential-free failure when an upstream proxy returns HTML.
-        throw new Error(`OpenAI Responses API returned invalid JSON (HTTP ${response.status})`);
+        throw new OpenAiMalformedJsonError(
+          `OpenAI Responses API returned invalid JSON (HTTP ${response.status})`
+        );
       }
       if (!response.ok) {
         throw new Error(`OpenAI Responses API returned HTTP ${response.status}`);
@@ -357,7 +370,7 @@ export function createOpenAiChatCompletionsClient(
       try {
         body = await response.json();
       } catch {
-        throw new Error(
+        throw new OpenAiMalformedJsonError(
           `OpenAI Chat Completions API returned invalid JSON (HTTP ${response.status})`
         );
       }
@@ -398,14 +411,17 @@ export function createOpenAiResponsesAgentModel(
   }
   return {
     async next(input) {
-      const response = await options.client.create(
-        buildRequest(input, options.model, options.instructions ?? DEFAULT_INSTRUCTIONS)
+      const request = buildRequest(
+        input,
+        options.model,
+        options.instructions ?? DEFAULT_INSTRUCTIONS
       );
-      const turn = parseResponse(response);
-      if (options.onUsage) {
-        options.onUsage(parseModelUsage(response, "responses"));
-      }
-      return turn;
+      return requestValidatedTurn(
+        () => options.client.create(request),
+        (response) => parseResponse(response),
+        "responses",
+        options.onUsage
+      );
     }
   };
 }
@@ -449,7 +465,7 @@ export function createOpenAiChatCompletionsAgentModel(
           });
         }
       }
-      const response = await options.client.create({
+      const request: OpenAiChatCompletionsRequest = {
         model: options.model,
         messages: [...initialMessages, ...continuationMessages],
         tools: [EXECUTE_COMMAND_TOOL, REQUEST_USER_INPUT_TOOL].map((tool) => ({
@@ -460,17 +476,46 @@ export function createOpenAiChatCompletionsAgentModel(
               strict: tool.strict,
               parameters: structuredClone(tool.parameters)
             }
-          })),
+        })),
         tool_choice: "auto",
         parallel_tool_calls: false
-      });
-      const turn = parseChatCompletion(response, continuationMessages);
-      if (options.onUsage) {
-        options.onUsage(parseModelUsage(response, "chat_completions"));
-      }
-      return turn;
+      };
+      return requestValidatedTurn(
+        () => options.client.create(request),
+        (response) => parseChatCompletion(response, continuationMessages),
+        "chat_completions",
+        options.onUsage
+      );
     }
   };
+}
+
+async function requestValidatedTurn(
+  create: () => Promise<unknown>,
+  parse: (response: unknown) => AgentModelTurn,
+  protocol: "responses" | "chat_completions",
+  onUsage: ((usage: OpenAiModelUsage) => void) | undefined
+): Promise<AgentModelTurn> {
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      const response = await create();
+      // Bill every syntactically valid provider response, including one whose tool
+      // arguments force a retry, so resilience does not hide token consumption.
+      if (onUsage) {
+        onUsage(parseModelUsage(response, protocol));
+      }
+      return parse(response);
+    } catch (error) {
+      if (
+        !(error instanceof OpenAiMalformedJsonError) ||
+        attempt >= MALFORMED_JSON_RETRY_LIMIT
+      ) {
+        throw error;
+      }
+      // No AgentModelTurn has escaped yet, so replaying the identical request cannot
+      // approve or execute a provider-suggested command from the malformed attempt.
+    }
+  }
 }
 
 function parseModelUsage(
@@ -869,7 +914,9 @@ function parseUserQuestion(value: string): string {
   try {
     parsed = JSON.parse(value);
   } catch {
-    throw new Error("OpenAI request_user_input arguments are invalid JSON");
+    throw new OpenAiMalformedJsonError(
+      "OpenAI request_user_input arguments are invalid JSON"
+    );
   }
   if (
     !isRecord(parsed) ||
@@ -887,7 +934,9 @@ function parseCommandArguments(value: string): { argv: string[] } {
   try {
     parsed = JSON.parse(value);
   } catch {
-    throw new Error("OpenAI execute_command arguments are invalid JSON");
+    throw new OpenAiMalformedJsonError(
+      "OpenAI execute_command arguments are invalid JSON"
+    );
   }
   if (
     !isRecord(parsed) ||

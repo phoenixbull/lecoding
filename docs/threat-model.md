@@ -39,7 +39,7 @@ Hard denies apply in every approval mode, including `full_access`:
 | Path contains `/var` versus `/private/var` alias | Repository identity uses filesystem `realpath` |
 | Worktree patch uses `../` or an absolute path | Workspace rejects before write |
 | Worker retries a side-effecting call | The model-issued call is persisted before execution; its durable `call_id` completion is reused, while an unfinished claim stops for reconciliation instead of invoking the model or command again |
-| Model provider returns malformed or multiple function calls | Gateway rejects the response before PolicyEngine or RunEnvironment receives an action |
+| Model provider returns malformed JSON or multiple/invalid function calls | Before exposing an action, the gateway replays the identical request at most once only for malformed HTTP/tool JSON; exhaustion and every semantic/schema violation fail closed before PolicyEngine or RunEnvironment |
 | Model call requires continuation after Worker replacement | Provider response ID is persisted with the tool result and reused only with the matching `call_id` output |
 | Model provider rejects a request with credential-bearing detail | Gateway records only the HTTP status and never copies the remote body or API key into Run failure text |
 | Operator configures a plaintext remote model endpoint | Configuration rejects remote HTTP before attaching the bearer credential; only HTTPS or loopback HTTP is allowed |

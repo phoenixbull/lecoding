@@ -175,6 +175,57 @@ describe("loadOpenAiCompatibleModelConfig", () => {
     );
   });
 
+  it("retries one invalid Chat Completions HTTP JSON body through compatible composition", async () => {
+    let requestCount = 0;
+    const model = createOpenAiCompatibleAgentModel({
+      config: {
+        protocol: "openai_chat_completions",
+        baseUrl: "https://model.vendor.example/v2",
+        apiKey: "vendor-secret",
+        model: "vendor-coder-v3"
+      },
+      fetch: async () => {
+        requestCount += 1;
+        return {
+          ok: true,
+          status: 200,
+          async json() {
+            if (requestCount === 1) {
+              throw new SyntaxError("truncated body");
+            }
+            return {
+              choices: [
+                {
+                  finish_reason: "stop",
+                  message: { role: "assistant", content: "Recovered" }
+                }
+              ]
+            };
+          }
+        };
+      }
+    });
+
+    await expect(
+      model.next({
+        runId: "run-retry",
+        run: {
+          projectId: "project-1",
+          environmentId: "environment-1",
+          task: "Recover the provider response",
+          acceptanceCriteria: ["Return a valid turn"],
+          approvalMode: "auto_review",
+          fileAccessScope: "workspace_only"
+        },
+        toolResults: []
+      })
+    ).resolves.toEqual({
+      type: "completed",
+      summary: "Recovered"
+    });
+    expect(requestCount).toBe(2);
+  });
+
   it("observes validated Chat Completions token usage without changing the model turn", async () => {
     const observedUsage: Array<{ inputTokens: number; outputTokens: number }> = [];
     const model = createOpenAiCompatibleAgentModel({

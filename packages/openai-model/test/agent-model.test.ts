@@ -87,6 +87,47 @@ describe("createOpenAiResponsesAgentModel", () => {
     );
   });
 
+  it("retries malformed Responses tool JSON once and accounts for both responses", async () => {
+    let requestCount = 0;
+    const observedUsage: Array<{ inputTokens: number; outputTokens: number }> = [];
+    const model = createOpenAiResponsesAgentModel({
+      model: "gpt-test",
+      onUsage: (usage) => observedUsage.push(usage),
+      client: {
+        async create() {
+          requestCount += 1;
+          return {
+            id: `resp-${requestCount}`,
+            status: "completed",
+            output: [
+              {
+                type: "function_call",
+                call_id: `call-${requestCount}`,
+                name: "execute_command",
+                arguments:
+                  requestCount === 1
+                    ? '{"argv":["node","--test"]'
+                    : '{"argv":["node","--test"]}'
+              }
+            ],
+            usage: { input_tokens: 10 * requestCount, output_tokens: requestCount }
+          };
+        }
+      }
+    });
+
+    await expect(model.next(baseInput([]))).resolves.toMatchObject({
+      type: "tool_call",
+      callId: "call-2",
+      continuationId: "resp-2",
+      arguments: { argv: ["node", "--test"] }
+    });
+    expect(observedUsage).toEqual([
+      { inputTokens: 10, outputTokens: 1 },
+      { inputTokens: 20, outputTokens: 2 }
+    ]);
+  });
+
   it("maps a strict user-input request and its answer continuation", async () => {
     const requests: OpenAiResponsesRequest[] = [];
     const model = createOpenAiResponsesAgentModel({
@@ -178,6 +219,119 @@ describe("createOpenAiResponsesAgentModel", () => {
       requestId: "question-chat",
       prompt: "Which target?"
     });
+  });
+
+  it("retries malformed Chat Completions tool JSON once before exposing an action", async () => {
+    let requestCount = 0;
+    const model = createOpenAiChatCompletionsAgentModel({
+      model: "chat-test",
+      client: {
+        async create() {
+          requestCount += 1;
+          return {
+            choices: [
+              {
+                message: {
+                  content: null,
+                  tool_calls: [
+                    {
+                      id: `call-${requestCount}`,
+                      type: "function",
+                      function: {
+                        name: "execute_command",
+                        arguments:
+                          requestCount === 1
+                            ? '{"argv":["pnpm","test"]'
+                            : '{"argv":["pnpm","test"]}'
+                      }
+                    }
+                  ]
+                }
+              }
+            ]
+          };
+        }
+      }
+    });
+
+    await expect(model.next(baseInput([]))).resolves.toMatchObject({
+      type: "tool_call",
+      callId: "call-2",
+      arguments: { argv: ["pnpm", "test"] }
+    });
+    expect(requestCount).toBe(2);
+  });
+
+  it("fails closed after the single malformed tool JSON retry is exhausted", async () => {
+    let requestCount = 0;
+    const model = createOpenAiChatCompletionsAgentModel({
+      model: "chat-test",
+      client: {
+        async create() {
+          requestCount += 1;
+          return {
+            choices: [
+              {
+                message: {
+                  content: null,
+                  tool_calls: [
+                    {
+                      id: `call-${requestCount}`,
+                      type: "function",
+                      function: {
+                        name: "execute_command",
+                        arguments: '{"argv":["pnpm","test"]'
+                      }
+                    }
+                  ]
+                }
+              }
+            ]
+          };
+        }
+      }
+    });
+
+    await expect(model.next(baseInput([]))).rejects.toThrow(
+      "OpenAI execute_command arguments are invalid JSON"
+    );
+    expect(requestCount).toBe(2);
+  });
+
+  it("does not retry syntactically valid tool JSON that violates the command schema", async () => {
+    let requestCount = 0;
+    const model = createOpenAiChatCompletionsAgentModel({
+      model: "chat-test",
+      client: {
+        async create() {
+          requestCount += 1;
+          return {
+            choices: [
+              {
+                message: {
+                  content: null,
+                  tool_calls: [
+                    {
+                      id: "call-invalid-schema",
+                      type: "function",
+                      function: {
+                        name: "execute_command",
+                        arguments: '{"argv":"pnpm test"}'
+                      }
+                    }
+                  ]
+                }
+              }
+            ]
+          };
+        }
+      }
+    });
+
+    await expect(model.next(baseInput([]))).rejects.toThrow(
+      "OpenAI execute_command arguments must contain only non-empty argv"
+    );
+    expect(requestCount).toBe(1);
   });
 
   it("forwards staged steering to Responses continuation input", async () => {

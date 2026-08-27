@@ -1,0 +1,136 @@
+{
+  "schemaVersion": 1,
+  "createdAt": "2026-08-27T08:10:18.012Z",
+  "results": [
+    {
+      "taskId": "ts-fix-boundary",
+      "category": "bugfix",
+      "modelId": "deepseek-v4-flash-0731",
+      "outcome": "passed",
+      "inputTokens": 3957,
+      "outputTokens": 670,
+      "costUsd": 0.000742,
+      "durationMs": 6492
+    },
+    {
+      "taskId": "js-fix-async-race",
+      "category": "bugfix",
+      "modelId": "deepseek-v4-flash-0731",
+      "outcome": "passed",
+      "inputTokens": 6251,
+      "outputTokens": 818,
+      "costUsd": 0.001104,
+      "durationMs": 8149
+    },
+    {
+      "taskId": "python-fix-parser",
+      "category": "bugfix",
+      "modelId": "deepseek-v4-flash-0731",
+      "outcome": "passed",
+      "inputTokens": 5407,
+      "outputTokens": 710,
+      "costUsd": 0.000956,
+      "durationMs": 7106
+    },
+    {
+      "taskId": "ts-add-required-field",
+      "category": "feature",
+      "modelId": "deepseek-v4-flash-0731",
+      "outcome": "passed",
+      "inputTokens": 10751,
+      "outputTokens": 800,
+      "costUsd": 0.001729,
+      "durationMs": 9564
+    },
+    {
+      "taskId": "python-add-validation",
+      "category": "feature",
+      "modelId": "deepseek-v4-flash-0731",
+      "outcome": "passed",
+      "inputTokens": 4540,
+      "outputTokens": 575,
+      "costUsd": 0.000797,
+      "durationMs": 5813
+    },
+    {
+      "taskId": "ui-empty-state",
+      "category": "feature",
+      "modelId": "deepseek-v4-flash-0731",
+      "outcome": "passed",
+      "inputTokens": 7143,
+      "outputTokens": 760,
+      "costUsd": 0.001213,
+      "durationMs": 8157
+    },
+    {
+      "taskId": "security-path-traversal",
+      "category": "security",
+      "modelId": "deepseek-v4-flash-0731",
+      "outcome": "passed",
+      "inputTokens": 9063,
+      "outputTokens": 1899,
+      "costUsd": 0.001801,
+      "durationMs": 14524
+    },
+    {
+      "taskId": "schema-unique-call-id",
+      "category": "security",
+      "modelId": "deepseek-v4-flash-0731",
+      "outcome": "passed",
+      "inputTokens": 5257,
+      "outputTokens": 388,
+      "costUsd": 0.000845,
+      "durationMs": 5557
+    },
+    {
+      "taskId": "docs-quickstart",
+      "category": "docs",
+      "modelId": "deepseek-v4-flash-0731",
+      "outcome": "passed",
+      "inputTokens": 8360,
+      "outputTokens": 639,
+      "costUsd": 0.001349,
+      "durationMs": 8158
+    },
+    {
+      "taskId": "docs-error-reference",
+      "category": "docs",
+      "modelId": "deepseek-v4-flash-0731",
+      "outcome": "passed",
+      "inputTokens": 7582,
+      "outputTokens": 709,
+      "costUsd": 0.00126,
+      "durationMs": 7624
+    },
+    {
+      "taskId": "performance-deduplicate",
+      "category": "performance",
+      "modelId": "deepseek-v4-flash-0731",
+      "outcome": "passed",
+      "inputTokens": 11640,
+      "outputTokens": 1104,
+      "costUsd": 0.001939,
+      "durationMs": 12197
+    },
+    {
+      "taskId": "performance-bounded-log",
+      "category": "performance",
+      "modelId": "deepseek-v4-flash-0731",
+      "outcome": "passed",
+      "inputTokens": 6174,
+      "outputTokens": 617,
+      "costUsd": 0.001037,
+      "durationMs": 7743
+    }
+  ],
+  "summary": {
+    "taskCount": 12,
+    "passed": 12,
+    "failed": 0,
+    "passRate": 1,
+    "inputTokens": 86125,
+    "outputTokens": 9689,
+    "costUsd": 0.014772,
+    "durationMs": 101084
+  }
+}
