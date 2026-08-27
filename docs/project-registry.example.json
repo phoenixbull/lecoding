@@ -1,0 +1,15 @@
+{
+  "version": 1,
+  "projects": [
+    {
+      "id": "project-a",
+      "configPath": "/absolute/path/to/project-a/.ai-agent/project.yaml",
+      "worktreeRoot": "/absolute/path/to/managed-worktrees/project-a"
+    },
+    {
+      "id": "project-b",
+      "configPath": "/absolute/path/to/project-b/.ai-agent/project.yaml",
+      "worktreeRoot": "/absolute/path/to/managed-worktrees/project-b"
+    }
+  ]
+}

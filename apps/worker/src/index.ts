@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
-import { dirname, isAbsolute, join, resolve } from "node:path";
+import { readFile, realpath, stat } from "node:fs/promises";
+import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import {
   createOpenAiCompatibleAgentModel,
   loadOpenAiCompatibleModelConfig,
@@ -40,7 +41,8 @@ import {
 } from "@lecoding/run-events";
 import {
   createProjectYamlVerificationPlanProvider,
-  createProductionVerifier
+  createProductionVerifier,
+  type Verifier
 } from "@lecoding/verifier";
 import {
   createGitRunChangesReader,
@@ -62,23 +64,21 @@ export interface WorkerDatabase {
 /** Validated process settings needed to construct the production Worker. */
 export interface WorkerConfig {
   workerId: string;
-  projectId: string;
-  projectConfigPath: string;
-  projectSourcePath: string;
-  worktreeRoot: string;
   dockerImage: string;
   verificationImage: string;
   recoveryIntervalMs: number;
   eventDispatchIntervalMs: number;
 }
 
-/** Trusted single-project registration resolved before composing the Worker. */
+/** Trusted project registration resolved before composing the Worker. */
 export interface WorkerProjectRegistration {
   projectId: string;
   projectConfigPath: string;
   projectSourcePath: string;
   worktreeRoot: string;
 }
+
+const MAX_PROJECT_REGISTRY_BYTES = 64 * 1024;
 
 /** Inputs whose concrete implementations belong to the deployment host. */
 export interface ProductionWorkerOptions {
@@ -108,7 +108,8 @@ export function formatModelRetryLog(event: OpenAiMalformedJsonRetryEvent): strin
 
 /** HTTP-facing seams exposed only after production composition succeeds. */
 export interface WorkerControlPlane {
-  projectId: string;
+  defaultProjectId: string;
+  projectIds: readonly string[];
   runs: Engine;
   history: RunHistory;
   changes: RunChangesReader;
@@ -138,7 +139,6 @@ export interface WorkerRuntime {
 /** Reads and validates security-sensitive Worker process settings. */
 export function loadWorkerConfig(environment: ModelEnvironment): WorkerConfig {
   const workerId = requireSetting(environment, "LECODING_WORKER_ID");
-  const project = loadWorkerProjectRegistration(environment);
   const dockerImage = requireSetting(environment, "LECODING_DOCKER_IMAGE");
   if (!isImmutableDockerImageReference(dockerImage)) {
     throw new Error(
@@ -156,7 +156,6 @@ export function loadWorkerConfig(environment: ModelEnvironment): WorkerConfig {
   }
   return {
     workerId,
-    ...project,
     dockerImage,
     verificationImage,
     recoveryIntervalMs: readPositiveInteger(
@@ -180,9 +179,8 @@ function isImmutableDockerImageReference(value: string): boolean {
 }
 
 /**
- * Loads the administrator-controlled project registry entry for this process.
- * Phase 1 intentionally permits exactly one project per Worker; a future
- * multi-project host can replace this seam without weakening config ownership.
+ * Loads the legacy administrator-controlled project tuple used when no registry
+ * path is configured.
  */
 export function loadWorkerProjectRegistration(
   environment: ModelEnvironment
@@ -199,6 +197,142 @@ export function loadWorkerProjectRegistration(
   // The reviewed config is fixed at <source>/.ai-agent/project.yaml.
   const projectSourcePath = dirname(dirname(projectConfigPath));
   return { projectId, projectConfigPath, projectSourcePath, worktreeRoot };
+}
+
+/**
+ * Loads the administrator-owned project allowlist, falling back to the legacy
+ * single-project variables when no registry path is configured.
+ */
+export async function loadWorkerProjectRegistry(
+  environment: ModelEnvironment
+): Promise<WorkerProjectRegistration[]> {
+  const registryPath = environment.LECODING_PROJECT_REGISTRY_PATH?.trim();
+  if (!registryPath) {
+    return [loadWorkerProjectRegistration(environment)];
+  }
+  if (!isAbsolute(registryPath) || resolve(registryPath) !== registryPath) {
+    throw new Error("LECODING_PROJECT_REGISTRY_PATH must be a canonical absolute path");
+  }
+  const registryStat = await stat(registryPath);
+  if (!registryStat.isFile() || registryStat.size > MAX_PROJECT_REGISTRY_BYTES) {
+    throw new Error("Project registry exceeds 64 KiB or is not a file");
+  }
+  const source = await readFile(registryPath, "utf8");
+  if (Buffer.byteLength(source, "utf8") > MAX_PROJECT_REGISTRY_BYTES) {
+    throw new Error("Project registry exceeds 64 KiB");
+  }
+  let decoded: unknown;
+  try {
+    decoded = JSON.parse(source) as unknown;
+  } catch {
+    throw new Error("Project registry contains invalid JSON");
+  }
+  const root = requireRegistryRecord(decoded);
+  requireRegistryKeys(root, ["version", "projects"]);
+  if (root.version !== 1 || !Array.isArray(root.projects) || root.projects.length === 0) {
+    throw new Error("Project registry requires version 1 and at least one project");
+  }
+  const registrations = root.projects.map((value) => {
+    const entry = requireRegistryRecord(value);
+    requireRegistryKeys(entry, ["id", "configPath", "worktreeRoot"]);
+    if (
+      typeof entry.id !== "string" ||
+      !/^[a-zA-Z0-9_-]{1,128}$/u.test(entry.id) ||
+      typeof entry.configPath !== "string" ||
+      !isAbsolute(entry.configPath) ||
+      resolve(entry.configPath) !== entry.configPath ||
+      typeof entry.worktreeRoot !== "string" ||
+      !isAbsolute(entry.worktreeRoot) ||
+      resolve(entry.worktreeRoot) !== entry.worktreeRoot
+    ) {
+      throw new Error("Project registry contains an invalid project entry");
+    }
+    return {
+      projectId: entry.id,
+      projectConfigPath: entry.configPath,
+      projectSourcePath: dirname(dirname(entry.configPath)),
+      worktreeRoot: entry.worktreeRoot
+    };
+  });
+  for (let index = 0; index < registrations.length; index += 1) {
+    const current = registrations[index]!;
+    for (let peerIndex = 0; peerIndex < index; peerIndex += 1) {
+      const peer = registrations[peerIndex]!;
+      if (
+        current.projectId === peer.projectId ||
+        current.projectConfigPath === peer.projectConfigPath ||
+        pathsOverlap(current.worktreeRoot, peer.worktreeRoot)
+      ) {
+        throw new Error("Project registry contains duplicate or overlapping entries");
+      }
+    }
+  }
+  let canonicalRegistrations: WorkerProjectRegistration[];
+  try {
+    canonicalRegistrations = await Promise.all(
+      registrations.map(async (registration) => {
+        // Canonical paths prevent two lexical aliases from sharing a trust boundary.
+        const [projectConfigPath, worktreeRoot] = await Promise.all([
+          realpath(registration.projectConfigPath),
+          realpath(registration.worktreeRoot)
+        ]);
+        return {
+          ...registration,
+          projectConfigPath,
+          projectSourcePath: dirname(dirname(projectConfigPath)),
+          worktreeRoot
+        };
+      })
+    );
+  } catch {
+    throw new Error("Project registry paths must reference existing trusted resources");
+  }
+  for (let index = 0; index < canonicalRegistrations.length; index += 1) {
+    const current = canonicalRegistrations[index]!;
+    for (let peerIndex = 0; peerIndex < index; peerIndex += 1) {
+      const peer = canonicalRegistrations[peerIndex]!;
+      if (
+        current.projectId === peer.projectId ||
+        current.projectConfigPath === peer.projectConfigPath ||
+        current.projectSourcePath === peer.projectSourcePath ||
+        pathsOverlap(current.worktreeRoot, peer.worktreeRoot)
+      ) {
+        throw new Error("Project registry contains duplicate or overlapping entries");
+      }
+    }
+    for (const registration of canonicalRegistrations) {
+      // No project's mutable worktrees may contain or sit within a trusted source.
+      if (pathsOverlap(current.projectSourcePath, registration.worktreeRoot)) {
+        throw new Error("Project registry contains duplicate or overlapping entries");
+      }
+    }
+  }
+  return canonicalRegistrations;
+}
+
+function requireRegistryRecord(value: unknown): Record<string, unknown> {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    throw new Error("Project registry contains an invalid object");
+  }
+  return value as Record<string, unknown>;
+}
+
+function requireRegistryKeys(
+  value: Record<string, unknown>,
+  allowed: readonly string[]
+): void {
+  if (Object.keys(value).some((key) => !allowed.includes(key))) {
+    throw new Error("Project registry contains an unknown field");
+  }
+}
+
+function pathsOverlap(first: string, second: string): boolean {
+  return isPathWithin(first, second) || isPathWithin(second, first);
+}
+
+function isPathWithin(root: string, candidate: string): boolean {
+  const path = relative(root, candidate);
+  return path === "" || (path !== ".." && !path.startsWith(`..${sep}`) && !isAbsolute(path));
 }
 
 export {
@@ -245,14 +379,68 @@ export async function composeProductionWorker(
 ): Promise<WorkerRuntime> {
   try {
     const config = loadWorkerConfig(options.environment);
+    const projects = await loadWorkerProjectRegistry(options.environment);
+    const projectById = new Map(
+      projects.map((project) => [project.projectId, project] as const)
+    );
     const modelConfig = loadOpenAiCompatibleModelConfig(options.environment);
     const now = options.now ?? (() => new Date().toISOString());
-    const verificationPlans =
-      await createProjectYamlVerificationPlanProvider({
-        projectId: config.projectId,
-        configPath: config.projectConfigPath,
-        mutableWorktreeRoot: config.worktreeRoot
+    const runtimeFactories = new Map(
+      projects.map((project) => {
+        const workspace = createGitWorkspace({ worktreeRoot: project.worktreeRoot });
+        return [
+          project.projectId,
+          createGitWorktreeRunEnvironmentFactory({
+            workspace,
+            sourceRepo: project.projectSourcePath,
+            baseRef: "HEAD",
+            createEnvironment: (workspacePath) =>
+              createDockerRunEnvironment({
+                image: config.dockerImage,
+                worktreeRoot: project.worktreeRoot,
+                workspacePath,
+                network: "none"
+              })
+          })
+        ] as const;
+      })
+    );
+    const verifiers = new Map<string, Verifier>();
+    for (const project of projects) {
+      const plans = await createProjectYamlVerificationPlanProvider({
+        projectId: project.projectId,
+        configPath: project.projectConfigPath,
+        mutableWorktreeRoot: project.worktreeRoot
       });
+      const verificationEnvironment = createRoutedRunEnvironment({
+        create(spec) {
+          if (spec.projectId !== project.projectId) {
+            throw new Error("Verification environment received a mismatched project");
+          }
+          /* Verification reuses only this project's exact managed Run worktree. */
+          const workspacePath = join(project.worktreeRoot, spec.runId);
+          return createDockerRunEnvironment({
+            image: config.verificationImage,
+            worktreeRoot: project.worktreeRoot,
+            workspacePath,
+            containerWorkspacePath: "/workspace/project",
+            dependencyVolumePath: "/workspace/project/node_modules",
+            network: "none"
+          });
+        }
+      });
+      verifiers.set(
+        project.projectId,
+        createProductionVerifier({
+          plans,
+          environment: verificationEnvironment,
+          diffSafety: createGitRunDiffSafetyChecker({
+            sourceRepo: project.projectSourcePath,
+            worktreeRoot: project.worktreeRoot
+          })
+        })
+      );
+    }
     /* Initialize schemas before accepting work, so startup fails as one unit. */
     const store = await createPostgresRunStore(options.database.executor);
     const transitions = await createPostgresRunTransitionWriter({
@@ -278,35 +466,33 @@ export async function composeProductionWorker(
     const cancelBus = createPostgresRunCancelBus(
       options.database.notifications
     );
-    const workspace = createGitWorkspace({ worktreeRoot: config.worktreeRoot });
-    const runtimeEnvironment = createRoutedRunEnvironment(
-      createGitWorktreeRunEnvironmentFactory({
-        workspace,
-        sourceRepo: config.projectSourcePath,
-        baseRef: "HEAD",
-        createEnvironment: (workspacePath) =>
-          createDockerRunEnvironment({
-            image: config.dockerImage,
-            worktreeRoot: config.worktreeRoot,
-            workspacePath,
-            network: "none"
-          })
-      })
-    );
-    const verificationEnvironment = createRoutedRunEnvironment({
+    const runtimeEnvironment = createRoutedRunEnvironment({
       create(spec) {
-        /* Verification reuses the exact Run worktree but an independent container. */
-        const workspacePath = join(config.worktreeRoot, spec.runId);
-        return createDockerRunEnvironment({
-          image: config.verificationImage,
-          worktreeRoot: config.worktreeRoot,
-          workspacePath,
-          containerWorkspacePath: "/workspace/project",
-          dependencyVolumePath: "/workspace/project/node_modules",
-          network: "none"
-        });
+        const factory = runtimeFactories.get(spec.projectId);
+        if (!factory) {
+          throw new Error("Run requested an unregistered project");
+        }
+        return factory.create(spec);
       }
     });
+    const verifier: Verifier = {
+      verify(input, signal) {
+        const selected = verifiers.get(input.run.projectId);
+        if (!selected) {
+          return Promise.resolve({
+            outcome: "inconclusive",
+            checks: [
+              {
+                name: "project registration",
+                outcome: "inconclusive",
+                detail: "Run project is not registered by this Worker"
+              }
+            ]
+          });
+        }
+        return selected.verify(input, signal);
+      }
+    };
     const engine = await createRunEngine({
       store,
       transitions,
@@ -325,15 +511,7 @@ export async function composeProductionWorker(
       }),
       policy: createPolicyEngine(),
       events,
-      verifier: createProductionVerifier({
-        plans: verificationPlans,
-        environment: verificationEnvironment,
-        // Git metadata stays host-owned while the verifier reuses the isolated patch.
-        diffSafety: createGitRunDiffSafetyChecker({
-          sourceRepo: config.projectSourcePath,
-          worktreeRoot: config.worktreeRoot
-        })
-      }),
+      verifier,
       workerId: config.workerId,
       now,
       createId: options.createId ?? randomUUID
@@ -363,13 +541,23 @@ export async function composeProductionWorker(
       recovery,
       eventDispatch,
       control: {
-        projectId: config.projectId,
+        defaultProjectId: projects[0]!.projectId,
+        projectIds: projects.map((project) => project.projectId),
         runs: engine,
         history: store,
-        changes: createGitRunChangesReader({
-          sourceRepo: config.projectSourcePath,
-          worktreeRoot: config.worktreeRoot
-        }),
+        changes: {
+          async read(runId) {
+            const run = await engine.inspect(runId);
+            const project = projectById.get(run.projectId);
+            if (!project) {
+              throw new Error("Run project is not registered by this Worker");
+            }
+            return createGitRunChangesReader({
+              sourceRepo: project.projectSourcePath,
+              worktreeRoot: project.worktreeRoot
+            }).read(runId);
+          }
+        },
         eventStream: createRunEventSseHandler({
           journal: events,
           broadcaster: eventBroadcaster

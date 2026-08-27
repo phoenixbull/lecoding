@@ -113,6 +113,20 @@ button:disabled {
   box-shadow: 0 0 12px rgba(79, 208, 143, 0.7);
 }
 
+.project-chip select {
+  max-width: 220px;
+  border: 0;
+  outline: 0;
+  background: transparent;
+  color: #d9e7e0;
+  font: inherit;
+  font-weight: 700;
+}
+
+.project-chip select:disabled {
+  opacity: 0.8;
+}
+
 .workspace-grid {
   display: grid;
   grid-template-columns: minmax(300px, 0.78fr) minmax(520px, 1.55fr);

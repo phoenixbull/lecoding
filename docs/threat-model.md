@@ -37,6 +37,7 @@ Hard denies apply in every approval mode, including `full_access`:
 | Full-access Run requests Docker socket | PolicyEngine returns fixed deny |
 | Concurrent task modifies source checkout | Change exists only inside the Run worktree |
 | Path contains `/var` versus `/private/var` alias | Repository identity uses filesystem `realpath` |
+| Two registry entries alias one mutable root or place trusted source below another project's worktree | Registry startup canonicalizes all paths and rejects duplicate source/config identities, overlapping worktree roots, and every source/worktree overlap before composing project runtimes |
 | Worktree patch uses `../` or an absolute path | Workspace rejects before write |
 | Worker retries a side-effecting call | The model-issued call is persisted before execution; its durable `call_id` completion is reused, while an unfinished claim stops for reconciliation instead of invoking the model or command again |
 | Model provider returns malformed JSON or multiple/invalid function calls | Before exposing an action, the gateway replays the identical request at most once only for malformed HTTP/tool JSON; exhaustion and every semantic/schema violation fail closed before PolicyEngine or RunEnvironment |
@@ -58,7 +59,7 @@ Hard denies apply in every approval mode, including `full_access`:
 | Client retries a waiting-user answer after the Run advances | The Run snapshot retains the command receipt; exact answer/steer retries succeed after completion, while changed type, request ID, or content fails closed |
 | Conversation event contains model/user markup | Event payloads pass the strict JSON envelope and Web renders titles from a closed local map plus details with `textContent`; replay never evaluates payload HTML |
 | SSE reconnect redelivers conversation history | Web deduplicates by the stable per-Run event sequence and stops only on the terminal status event, preserving ordered full-history replay |
-| Browser requests or commands another project's Run | Every history, inspect, SSE, and command route verifies the administrator-registered project; history also returns only a bounded summary projection |
+| Browser requests or commands an unregistered project's Run | Every history, inspect, changes, SSE, and command route verifies the administrator-owned project allowlist; history also returns only a bounded summary projection |
 | Browser turns a Run ID into an arbitrary filesystem Diff | Change reader accepts identity-safe Run IDs only, derives the path below the managed root, verifies Git ownership, bounds output, and renders it as text |
 | Verification container cannot access Git metadata | Git metadata remains host-owned; Diff Safety revalidates the managed worktree identity and checks tracked plus untracked changes through fixed argv |
 | Terminal Run leaves a writable container alive | RunEngine removes runtime and verification containers plus anonymous dependency volumes while retaining only the managed evidence worktree |

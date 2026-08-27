@@ -6,11 +6,35 @@ import {
   formatRunEventDetail,
   isTerminalStatus,
   isTerminalRunEvent,
+  resolveProjectSelection,
   statusLabel,
   verificationTone
 } from "../src/presentation.js";
 
 describe("Web Run presentation", () => {
+  it("preserves a registered project selection and falls back to the server default", () => {
+    const config = {
+      projectId: "project-a",
+      projects: [{ id: "project-a" }, { id: "project-b" }],
+      defaultEnvironmentId: "local"
+    };
+
+    expect(resolveProjectSelection(config, "project-b")).toEqual({
+      projectIds: ["project-a", "project-b"],
+      selectedProjectId: "project-b"
+    });
+    expect(resolveProjectSelection(config, "removed-project")).toEqual({
+      projectIds: ["project-a", "project-b"],
+      selectedProjectId: "project-a"
+    });
+    expect(
+      resolveProjectSelection({ ...config, projectId: "stale-default" }, undefined)
+    ).toEqual({
+      projectIds: ["project-a", "project-b"],
+      selectedProjectId: "project-a"
+    });
+  });
+
   it("maps terminal and verification states without treating inconclusive as pass", () => {
     expect(isTerminalStatus("succeeded")).toBe(true);
     expect(isTerminalStatus("cancelled")).toBe(true);

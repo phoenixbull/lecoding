@@ -1,9 +1,28 @@
 import type {
+  ControlPlaneConfig,
   RunEventV1,
   RunEventType,
   RunStatus,
   VerificationOutcome
 } from "@lecoding/contracts";
+
+/** Resolves the visible project allowlist while retaining a still-valid choice. */
+export function resolveProjectSelection(
+  config: ControlPlaneConfig,
+  previousProjectId: string | undefined
+): { projectIds: string[]; selectedProjectId: string } {
+  const projectIds = config.projects.map((project) => project.id);
+  if (projectIds.length === 0) {
+    throw new Error("Control plane returned no registered projects");
+  }
+  const defaultProjectId = projectIds.includes(config.projectId)
+    ? config.projectId
+    : projectIds[0]!;
+  const selectedProjectId = projectIds.includes(previousProjectId ?? "")
+    ? previousProjectId!
+    : defaultProjectId;
+  return { projectIds, selectedProjectId };
+}
 
 const STATUS_LABELS: Record<RunStatus, string> = {
   queued: "已排队",

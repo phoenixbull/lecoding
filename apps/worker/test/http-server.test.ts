@@ -60,7 +60,8 @@ describe("Worker HTTP server", () => {
       auth: { mode: "bearer", token: "secret-token-that-is-at-least-32-chars" },
       webRoot,
       control: {
-        projectId: "project-1",
+        defaultProjectId: "project-1",
+        projectIds: ["project-1"],
         runs: {
           start: vi.fn(),
           resume: vi.fn(),
@@ -138,7 +139,8 @@ describe("Worker HTTP server", () => {
       auth: { mode: "none" },
       webRoot,
       control: {
-        projectId: "project-1",
+        defaultProjectId: "project-1",
+        projectIds: ["project-1"],
         runs: runs as unknown as Engine,
         history: { list: vi.fn(async () => []) },
         changes: { read: vi.fn(async () => ({ changedFiles: [], unifiedDiff: "", truncated: false })) },
@@ -210,7 +212,8 @@ describe("Worker HTTP server", () => {
       auth: { mode: "none" },
       webRoot,
       control: {
-        projectId: "project-1",
+        defaultProjectId: "project-1",
+        projectIds: ["project-1"],
         runs: runs as unknown as Engine,
         history: { list: vi.fn(async () => []) },
         changes: { read: vi.fn(async () => ({ changedFiles: [], unifiedDiff: "", truncated: false })) },

@@ -1,6 +1,6 @@
 # Worker deployment contract
 
-`apps/worker` is now an executable, single-project Phase 1 process. The host owns
+`apps/worker` is now an executable, multi-project Phase 1 process. The host owns
 one bounded PostgreSQL Pool for ordinary queries and one dedicated Client for
 LISTEN/NOTIFY. If the listener disconnects, the cancellation bus reconnects
 through a newly created Client rather than trying to reuse the failed session.
@@ -35,16 +35,23 @@ Any failure aborts startup and closes both resources.
 
 ## Project registration boundary
 
-Each process accepts exactly one administrator-controlled tuple:
+Prefer a versioned administrator-controlled registry:
+
+- `LECODING_PROJECT_REGISTRY_PATH`: canonical absolute path to a strict JSON file shaped like [`project-registry.example.json`](project-registry.example.json).
+- The first entry is the default project returned for backward-compatible clients.
+- Each entry supplies a stable `id`, canonical `configPath`, and canonical `worktreeRoot`.
+
+When no registry path is set, the process accepts the legacy single-project tuple:
 
 - `LECODING_PROJECT_ID`: stable application identifier, not discovered from Agent input.
 - `LECODING_PROJECT_CONFIG_PATH`: canonical absolute path to the reviewed source repository's `.ai-agent/project.yaml`.
 - `LECODING_WORKTREE_ROOT`: canonical absolute root reserved for managed Run worktrees.
 
-The Worker derives the trusted source repository from the config path and creates
-one worktree per Run. Supporting several projects in one process remains a later
-registry/scheduler feature; deploy separate Worker processes for separate projects
-until that boundary is implemented.
+The Worker resolves every configured path through filesystem realpath before
+accepting work. Duplicate IDs/configs/sources, aliased or nested worktree roots,
+and any source/worktree overlap fail startup. It then derives each trusted source
+repository from its config path and routes every Run to that project's own
+worktree factory, verification plan, Diff Safety checker, and change reader.
 
 ## Shutdown and evidence
 
@@ -83,7 +90,7 @@ real PostgreSQL startup smoke before claiming the expanded schema on that servic
 Run `pnpm build` before starting the Worker so `apps/web/dist` is available. The
 same loopback listener then serves the Web console and these versioned endpoints:
 
-- `GET /api/v1/config` returns the server-owned project and default environment.
+- `GET /api/v1/config` returns the server-owned default project, registered project allowlist, and default environment.
 - `GET /api/v1/projects/:projectId/runs?limit=20` returns up to 50 newest summaries for refresh recovery.
 - `POST /api/v1/projects/:projectId/runs` persists a queued Run and detaches resume.
 - `GET /api/v1/runs/:runId` returns current status and verification evidence.
@@ -120,11 +127,12 @@ terminal status event that closes replay. Browser disconnection never owns Run
 execution.
 
 History is a bounded read-only projection from durable Run snapshots. The path
-project must equal the single project registered by the Worker. Responses contain
+project must belong to the Worker registry. Responses contain
 task/status metadata only, never model continuation, tool results, approval
-internals, or provider data. Inspect, SSE, and command routes independently check
-the resolved Run's project before returning data or changing state, so a shared
-database does not turn knowledge of another Run ID into access.
+internals, or provider data. Inspect, SSE, changes, and command routes independently
+check that the resolved Run belongs to this Worker's allowlist before returning data
+or changing state. The Web selector is populated only from the same bootstrap list
+and aborts the previous project's SSE before loading another project's history.
 
 Model questions are persisted as a minimal `{id, prompt}` projection and survive
 Worker replacement. The provider continuation stays server-side. Answering or

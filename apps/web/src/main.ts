@@ -13,6 +13,7 @@ import {
   formatRunEventDetail,
   isTerminalStatus,
   isTerminalRunEvent,
+  resolveProjectSelection,
   statusLabel,
   verificationTone
 } from "./presentation.js";
@@ -37,7 +38,7 @@ const userRequestPrompt = requiredElement<HTMLElement>("#user-request-prompt");
 const userResponse = requiredElement<HTMLTextAreaElement>("#user-response");
 const answerButton = requiredElement<HTMLButtonElement>("#answer-run");
 const steerButton = requiredElement<HTMLButtonElement>("#steer-run");
-const projectValue = requiredElement<HTMLElement>("#project-value");
+const projectValue = requiredElement<HTMLSelectElement>("#project-value");
 const runIdValue = requiredElement<HTMLElement>("#run-id-value");
 const statusBadge = requiredElement<HTMLElement>("#status-badge");
 const streamState = requiredElement<HTMLElement>("#stream-state");
@@ -58,6 +59,7 @@ let streamController: AbortController | undefined;
 let approvalCommandPending = false;
 let userCommandPending = false;
 let selectedRunId: string | undefined;
+let selectedProjectId: string | undefined;
 let recentRuns: RunSummary[] = [];
 
 void initialize();
@@ -124,6 +126,22 @@ runHistory.addEventListener("click", (event) => {
   }
 });
 
+projectValue.addEventListener("change", () => {
+  if (
+    !bootstrap ||
+    !bootstrap.projects.some((project) => project.id === projectValue.value) ||
+    selectedProjectId === projectValue.value
+  ) {
+    return;
+  }
+  // Switching projects severs the old SSE/read model before loading the new scope.
+  selectedProjectId = projectValue.value;
+  clearProjectView("正在加载所选项目的 Run…");
+  void loadHistory(true).catch(() => {
+    showError("所选项目的 Run 历史暂时不可用；仍可创建新的 Run。");
+  });
+});
+
 async function initialize(): Promise<void> {
   try {
     bootstrap = await client.getControlPlaneConfig();
@@ -131,7 +149,9 @@ async function initialize(): Promise<void> {
     clearAuthButton.hidden = readSessionToken() === undefined;
     submitButton.disabled = false;
     hideError();
-    projectValue.textContent = bootstrap.projectId;
+    const selection = resolveProjectSelection(bootstrap, selectedProjectId);
+    selectedProjectId = selection.selectedProjectId;
+    renderProjectOptions(selection.projectIds, selectedProjectId);
     environmentInput.value = bootstrap.defaultEnvironmentId;
     setStreamState("就绪", "idle");
   } catch (error) {
@@ -186,7 +206,7 @@ function requireAuthentication(): void {
   bootstrap = undefined;
   authPanel.hidden = false;
   clearAuthButton.hidden = true;
-  projectValue.textContent = "需要认证";
+  renderProjectOptions([], undefined, "需要认证");
   submitButton.disabled = true;
   showError("控制面需要访问令牌，请完成认证后继续。");
   setStreamState("需要认证", "warning");
@@ -195,12 +215,25 @@ function requireAuthentication(): void {
 
 function clearAuthenticatedView(): void {
   // Logout removes already-rendered task and evidence text before any network retry.
+  clearProjectView("认证后显示受管工作区变更。");
+  selectedProjectId = undefined;
+  renderProjectOptions([], undefined, "连接中…");
+}
+
+function clearProjectView(changesMessage = "选择 Run 后显示其受管工作区变更。"): void {
   streamController?.abort();
+  streamController = undefined;
   currentRun = undefined;
   selectedRunId = undefined;
   recentRuns = [];
+  approvalCommandPending = false;
+  userCommandPending = false;
   timeline.replaceChildren();
   runHistory.replaceChildren();
+  const historyPlaceholder = document.createElement("p");
+  historyPlaceholder.className = "empty-state";
+  historyPlaceholder.textContent = "正在加载最近 Run…";
+  runHistory.append(historyPlaceholder);
   verification.replaceChildren();
   verification.append(emptyVerification);
   emptyVerification.hidden = false;
@@ -209,11 +242,37 @@ function clearAuthenticatedView(): void {
   cancelButton.hidden = true;
   runIdValue.textContent = "—";
   statusBadge.textContent = "尚未创建";
-  resetChanges("认证后显示受管工作区变更。");
+  delete statusBadge.dataset.status;
+  setStreamState("就绪", "idle");
+  resetChanges(changesMessage);
+}
+
+function renderProjectOptions(
+  projectIds: readonly string[],
+  selected: string | undefined,
+  emptyLabel = "没有可用项目"
+): void {
+  projectValue.replaceChildren();
+  if (projectIds.length === 0) {
+    const option = document.createElement("option");
+    option.textContent = emptyLabel;
+    projectValue.append(option);
+    projectValue.disabled = true;
+    return;
+  }
+  for (const projectId of projectIds) {
+    const option = document.createElement("option");
+    option.value = projectId;
+    option.textContent = projectId;
+    option.selected = projectId === selected;
+    projectValue.append(option);
+  }
+  // A single registration remains visible but does not imply a false choice.
+  projectValue.disabled = projectIds.length === 1;
 }
 
 async function createRun(): Promise<void> {
-  if (!bootstrap) {
+  if (!bootstrap || !selectedProjectId) {
     return;
   }
   hideError();
@@ -232,7 +291,7 @@ async function createRun(): Promise<void> {
     .map((criterion) => criterion.trim())
     .filter(Boolean);
   try {
-    const { runId } = await client.createRun(bootstrap.projectId, {
+    const { runId } = await client.createRun(selectedProjectId, {
       environmentId: String(data.get("environmentId") ?? "").trim(),
       task: String(data.get("task") ?? "").trim(),
       acceptanceCriteria,
@@ -337,10 +396,10 @@ async function refreshRun(runId: string): Promise<RunView | undefined> {
 }
 
 async function loadHistory(restoreLatest: boolean): Promise<void> {
-  if (!bootstrap) {
+  if (!bootstrap || !selectedProjectId) {
     return;
   }
-  const result = await client.listRuns(bootstrap.projectId, 20);
+  const result = await client.listRuns(selectedProjectId, 20);
   recentRuns = result.runs;
   renderHistory();
   if (restoreLatest && !selectedRunId && recentRuns[0]) {

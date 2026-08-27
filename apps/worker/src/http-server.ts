@@ -81,7 +81,8 @@ export async function startWorkerHttpServer(
     throw new Error("Worker Web root must be a canonical absolute path");
   }
   const api = createRunApiHandler({
-    projectId: options.control.projectId,
+    defaultProjectId: options.control.defaultProjectId,
+    projectIds: options.control.projectIds,
     runs: options.control.runs,
     history: options.control.history,
     changes: options.control.changes,

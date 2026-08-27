@@ -8,13 +8,14 @@ import {
 import { createRunApiHandler } from "../src/api.js";
 
 describe("createRunApiHandler", () => {
-  it("exposes only non-secret single-project bootstrap configuration", async () => {
+  it("exposes only non-secret registered-project bootstrap configuration", async () => {
     const response = await createHandler(createRuns([])).handle(
       new Request("http://127.0.0.1:8787/api/v1/config")
     );
 
     await expect(response.json()).resolves.toEqual({
       projectId: "project-1",
+      projects: [{ id: "project-1" }, { id: "project-2" }],
       defaultEnvironmentId: "server-docker"
     });
   });
@@ -48,6 +49,35 @@ describe("createRunApiHandler", () => {
       approvalMode: "manual",
       fileAccessScope: "workspace_only"
     });
+  });
+
+  it("creates a Run for another registered project without accepting unknown identities", async () => {
+    const runs = createRuns([]);
+    const handler = createHandler(runs);
+    const create = (projectId: string) =>
+      handler.handle(
+        new Request(`http://127.0.0.1:8787/api/v1/projects/${projectId}/runs`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            environmentId: "server-docker",
+            task: "Route project",
+            acceptanceCriteria: ["Correct repository"],
+            approvalMode: "manual",
+            fileAccessScope: "workspace_only"
+          })
+        })
+      );
+
+    const registered = await create("project-2");
+    const unknown = await create("project-3");
+
+    expect(registered.status).toBe(202);
+    expect(unknown.status).toBe(404);
+    expect(runs.start).toHaveBeenCalledTimes(1);
+    expect(runs.start).toHaveBeenCalledWith(
+      expect.objectContaining({ projectId: "project-2" })
+    );
   });
 
   it("lists a bounded history only for the configured project", async () => {
@@ -246,7 +276,7 @@ describe("createRunApiHandler", () => {
     const runs = createRuns([]);
     runs.inspect.mockResolvedValue({
       id: "run-other",
-      projectId: "project-2",
+      projectId: "project-3",
       environmentId: "server-docker",
       task: "Secret task",
       status: "running"
@@ -287,7 +317,8 @@ describe("createRunApiHandler", () => {
       broadcaster: createRunEventLiveBroadcaster()
     });
     const handler = createRunApiHandler({
-      projectId: "project-1",
+      defaultProjectId: "project-1",
+      projectIds: ["project-1", "project-2"],
       runs: createRuns([]),
       history: { list: vi.fn(async () => []) },
       changes: { read: vi.fn(async () => ({ changedFiles: [], unifiedDiff: "", truncated: false })) },
@@ -331,7 +362,8 @@ function createHandler(
   changes = { read: vi.fn(async () => ({ changedFiles: [], unifiedDiff: "", truncated: false })) }
 ) {
   return createRunApiHandler({
-    projectId: "project-1",
+    defaultProjectId: "project-1",
+    projectIds: ["project-1", "project-2"],
     runs,
     history,
     changes,

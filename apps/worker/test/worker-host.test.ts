@@ -122,7 +122,8 @@ function createDatabase(): WorkerDatabase {
 
 function createControlPlane() {
   return {
-    projectId: "project-1",
+    defaultProjectId: "project-1",
+    projectIds: ["project-1"],
     runs: {} as never,
     history: { list: vi.fn(async () => []) },
     changes: { read: vi.fn(async () => ({ changedFiles: [], unifiedDiff: "", truncated: false })) },

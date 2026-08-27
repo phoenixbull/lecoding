@@ -45,9 +45,16 @@ export interface CreateRunResult {
   runId: RunId;
 }
 
-/** Non-secret bootstrap values required by the single-project Web client. */
+/** Non-secret registered project exposed to authenticated control-plane clients. */
+export interface ControlPlaneProject {
+  id: ProjectId;
+}
+
+/** Non-secret bootstrap values required by the Web client. */
 export interface ControlPlaneConfig {
+  /** Backward-compatible default project identity. */
   projectId: ProjectId;
+  projects: ControlPlaneProject[];
   defaultEnvironmentId: EnvironmentId;
 }
 

@@ -32,7 +32,9 @@ export type RunApiOperations = Pick<
 
 /** Dependencies for the versioned Run API router. */
 export interface RunApiHandlerOptions {
-  projectId: string;
+  defaultProjectId: string;
+  /** Complete administrator-registered allowlist; source paths never cross this seam. */
+  projectIds: readonly string[];
   runs: RunApiOperations;
   history: RunHistory;
   changes: RunChangesReader;
@@ -50,20 +52,25 @@ export interface RunApiHandler {
 export function createRunApiHandler(
   options: RunApiHandlerOptions
 ): RunApiHandler {
+  const projectIds = new Set(options.projectIds);
+  if (!projectIds.has(options.defaultProjectId) || projectIds.size === 0) {
+    throw new Error("Run API requires a registered default project");
+  }
   return {
     async handle(request) {
       const url = new URL(request.url);
       const path = url.pathname;
       if (request.method === "GET" && path === "/api/v1/config") {
         return jsonResponse({
-          projectId: options.projectId,
+          projectId: options.defaultProjectId,
+          projects: options.projectIds.map((id) => ({ id })),
           defaultEnvironmentId: "server-docker"
         });
       }
       const createMatch = path.match(/^\/api\/v1\/projects\/([^/]+)\/runs$/);
       if (request.method === "GET" && createMatch) {
         const projectId = decodePathSegment(createMatch[1]!);
-        if (projectId !== options.projectId) {
+        if (!projectIds.has(projectId)) {
           return errorResponse(404, "project_not_found", "Project was not found");
         }
         try {
@@ -75,7 +82,7 @@ export function createRunApiHandler(
       }
       if (request.method === "POST" && createMatch) {
         const projectId = decodePathSegment(createMatch[1]!);
-        if (projectId !== options.projectId) {
+        if (!projectIds.has(projectId)) {
           return errorResponse(404, "project_not_found", "Project was not found");
         }
         try {
@@ -155,7 +162,7 @@ async function inspectProjectRun(
   runId: RunId
 ) {
   const run = await options.runs.inspect(runId);
-  if (run.projectId !== options.projectId) {
+  if (!options.projectIds.includes(run.projectId)) {
     // Return the same not-found surface so cross-project identities are not disclosed.
     throw new Error("Run is outside the registered project");
   }
