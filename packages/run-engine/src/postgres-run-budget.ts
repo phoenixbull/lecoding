@@ -30,6 +30,7 @@ export interface RunBudgetSnapshot {
   userId: string;
   inputTokens: number;
   outputTokens: number;
+  cachedInputTokens: number;
   totalTokens: number;
   costUsd: number;
   toolCalls: number;
@@ -111,6 +112,7 @@ export interface RunBudgetManager {
     requestId: string;
     inputTokens: number;
     outputTokens: number;
+    cachedInputTokens?: number;
   }): Promise<RunBudgetDecision>;
   /** Charges the full reservation when actual provider usage is unknowable. */
   forfeitModelRequest(input: {
@@ -138,6 +140,7 @@ CREATE TABLE IF NOT EXISTS run_engine_budgets (
   user_id text NOT NULL,
   input_tokens bigint NOT NULL DEFAULT 0 CHECK (input_tokens >= 0),
   output_tokens bigint NOT NULL DEFAULT 0 CHECK (output_tokens >= 0),
+  cached_input_tokens bigint NOT NULL DEFAULT 0 CHECK (cached_input_tokens >= 0),
   cost_microusd bigint NOT NULL DEFAULT 0 CHECK (cost_microusd >= 0),
   tool_calls integer NOT NULL DEFAULT 0 CHECK (tool_calls >= 0),
   max_total_tokens bigint NOT NULL CHECK (max_total_tokens > 0),
@@ -170,6 +173,9 @@ const RUN_BUDGET_MODEL_RETRIES_MIGRATION_SQL = `ALTER TABLE run_engine_budgets
 const RUN_BUDGET_MAX_MODEL_RETRIES_MIGRATION_SQL = `ALTER TABLE run_engine_budgets
   ADD COLUMN IF NOT EXISTS max_model_retries integer NOT NULL DEFAULT 3
   CHECK (max_model_retries >= 0);`;
+const RUN_BUDGET_CACHED_INPUT_MIGRATION_SQL = `ALTER TABLE run_engine_budgets
+  ADD COLUMN IF NOT EXISTS cached_input_tokens bigint NOT NULL DEFAULT 0
+  CHECK (cached_input_tokens >= 0);`;
 
 const RUN_MODEL_RESERVATION_SCHEMA_SQL = `
 CREATE TABLE IF NOT EXISTS run_engine_model_reservations (
@@ -181,10 +187,14 @@ CREATE TABLE IF NOT EXISTS run_engine_model_reservations (
   status text NOT NULL CHECK (status IN ('active', 'settled', 'forfeited')),
   actual_input_tokens bigint CHECK (actual_input_tokens >= 0),
   actual_output_tokens bigint CHECK (actual_output_tokens >= 0),
+  actual_cached_input_tokens bigint CHECK (actual_cached_input_tokens >= 0),
   created_at timestamptz NOT NULL,
   settled_at timestamptz
 );
 `;
+const RUN_MODEL_RESERVATION_CACHED_INPUT_MIGRATION_SQL = `ALTER TABLE run_engine_model_reservations
+  ADD COLUMN IF NOT EXISTS actual_cached_input_tokens bigint
+  CHECK (actual_cached_input_tokens >= 0);`;
 const RUN_MODEL_RESERVATION_ACTIVE_INDEX_SQL = `CREATE UNIQUE INDEX IF NOT EXISTS
   run_engine_model_reservations_one_active_run_idx
   ON run_engine_model_reservations(run_id) WHERE status = 'active';`;
@@ -205,7 +215,9 @@ export async function createPostgresRunBudgetManager(
   await database.query(RUN_BUDGET_ACTIVE_PROJECT_INDEX_SQL);
   await database.query(RUN_BUDGET_MODEL_RETRIES_MIGRATION_SQL);
   await database.query(RUN_BUDGET_MAX_MODEL_RETRIES_MIGRATION_SQL);
+  await database.query(RUN_BUDGET_CACHED_INPUT_MIGRATION_SQL);
   await database.query(RUN_MODEL_RESERVATION_SCHEMA_SQL);
+  await database.query(RUN_MODEL_RESERVATION_CACHED_INPUT_MIGRATION_SQL);
   await database.query(RUN_MODEL_RESERVATION_ACTIVE_INDEX_SQL);
   const now = options.now ?? (() => new Date().toISOString());
   const warningCostMicrousd = usdToMicrousd(options.limits.warningCostUsd);
@@ -500,6 +512,11 @@ export async function createPostgresRunBudgetManager(
       validateIdentifier(input.requestId, "Model request ID");
       validateTokenCount(input.inputTokens, "Input token count");
       validateTokenCount(input.outputTokens, "Output token count");
+      const cachedInputTokens = input.cachedInputTokens ?? 0;
+      validateTokenCount(cachedInputTokens, "Cached input token count");
+      if (cachedInputTokens > input.inputTokens) {
+        throw new Error("Cached input tokens must be a subset of input tokens");
+      }
       const costMicrousd = Math.ceil(
         input.inputTokens * options.pricing.inputUsdPerMillion +
           input.outputTokens * options.pricing.outputUsdPerMillion
@@ -511,14 +528,16 @@ export async function createPostgresRunBudgetManager(
               SET status = 'settled',
                   actual_input_tokens = $3::bigint,
                   actual_output_tokens = $4::bigint,
-                  settled_at = $6::timestamptz
+                  actual_cached_input_tokens = $5::bigint,
+                  settled_at = $7::timestamptz
             WHERE request_id = $2 AND run_id = $1 AND status = 'active'
             RETURNING run_id
          )
          UPDATE run_engine_budgets budget
             SET input_tokens = input_tokens + $3::bigint,
                 output_tokens = output_tokens + $4::bigint,
-                cost_microusd = cost_microusd + $5::bigint
+                cached_input_tokens = cached_input_tokens + $5::bigint,
+                cost_microusd = cost_microusd + $6::bigint
            FROM settled
           WHERE budget.run_id = settled.run_id AND budget.finished_at IS NULL
          RETURNING budget.*`,
@@ -527,6 +546,7 @@ export async function createPostgresRunBudgetManager(
           input.requestId,
           input.inputTokens,
           input.outputTokens,
+          cachedInputTokens,
           costMicrousd,
           settledAt
         ]
@@ -540,7 +560,11 @@ export async function createPostgresRunBudgetManager(
           safeInteger(existing.actual_input_tokens ?? -1, "settled input tokens") !==
             input.inputTokens ||
           safeInteger(existing.actual_output_tokens ?? -1, "settled output tokens") !==
-            input.outputTokens
+            input.outputTokens ||
+          safeInteger(
+              existing.actual_cached_input_tokens ?? -1,
+              "settled cached input tokens"
+            ) !== cachedInputTokens
         ) {
           throw new Error("Model request reservation is not active");
         }
@@ -699,6 +723,7 @@ interface RunBudgetRow extends Record<string, unknown> {
   user_id: string;
   input_tokens: string | number;
   output_tokens: string | number;
+  cached_input_tokens: string | number;
   cost_microusd: string | number;
   tool_calls: string | number;
   model_retries: string | number;
@@ -726,6 +751,7 @@ interface ModelReservationRow extends Record<string, unknown> {
   status: "active" | "settled" | "forfeited";
   actual_input_tokens: string | number | null;
   actual_output_tokens: string | number | null;
+  actual_cached_input_tokens: string | number | null;
 }
 
 function mapSnapshot(row: RunBudgetRow, observedAt: string): RunBudgetSnapshot {
@@ -738,6 +764,7 @@ function mapSnapshot(row: RunBudgetRow, observedAt: string): RunBudgetSnapshot {
     userId: row.user_id,
     inputTokens,
     outputTokens,
+    cachedInputTokens: safeInteger(row.cached_input_tokens, "cached input tokens"),
     totalTokens: inputTokens + outputTokens,
     costUsd: microusdToUsd(safeInteger(row.cost_microusd, "cost")),
     toolCalls: safeInteger(row.tool_calls, "tool calls"),

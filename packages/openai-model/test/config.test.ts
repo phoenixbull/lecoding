@@ -356,6 +356,7 @@ describe("loadOpenAiCompatibleModelConfig", () => {
       runId: string;
       inputTokens: number;
       outputTokens: number;
+      cachedInputTokens: number;
     }> = [];
     const model = createOpenAiCompatibleAgentModel({
       config: {
@@ -379,7 +380,11 @@ describe("loadOpenAiCompatibleModelConfig", () => {
                 message: { role: "assistant", content: "Done" }
               }
             ],
-            usage: { prompt_tokens: 123, completion_tokens: 45 }
+            usage: {
+              prompt_tokens: 123,
+              completion_tokens: 45,
+              prompt_tokens_details: { cached_tokens: 100 }
+            }
           };
         }
       })
@@ -400,7 +405,12 @@ describe("loadOpenAiCompatibleModelConfig", () => {
       })
     ).resolves.toEqual({ type: "completed", summary: "Done" });
     expect(observedUsage).toEqual([
-      { runId: "run-usage", inputTokens: 123, outputTokens: 45 }
+      {
+        runId: "run-usage",
+        inputTokens: 123,
+        outputTokens: 45,
+        cachedInputTokens: 100
+      }
     ]);
   });
 

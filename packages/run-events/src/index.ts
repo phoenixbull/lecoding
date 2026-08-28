@@ -112,3 +112,4 @@ export * from "./postgres.js";
 export * from "./dispatcher.js";
 export * from "./sse-codec.js";
 export * from "./sse.js";
+export * from "./operational-metrics.js";

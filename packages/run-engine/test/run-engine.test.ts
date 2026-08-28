@@ -207,7 +207,8 @@ describe("RunEngine", () => {
           callId: "call-1",
           outcome: "executed",
           exitCode: 0,
-          recovered: false
+          recovered: false,
+          outputTruncated: false
         }
       }),
       expect.objectContaining({

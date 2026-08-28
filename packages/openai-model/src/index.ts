@@ -177,6 +177,8 @@ export interface OpenAiModelUsage {
   requestId?: string;
   inputTokens: number;
   outputTokens: number;
+  /** Provider-reported cached subset of inputTokens; zero when unavailable. */
+  cachedInputTokens: number;
 }
 
 /** Worst-case token envelope reserved before one provider HTTP request. */
@@ -831,15 +833,29 @@ function parseModelUsage(
     protocol === "openai_responses"
       ? value.usage.output_tokens
       : value.usage.completion_tokens;
+  const details =
+    protocol === "openai_responses"
+      ? value.usage.input_tokens_details
+      : value.usage.prompt_tokens_details;
+  const cached = isRecord(details) && details.cached_tokens !== undefined
+    ? details.cached_tokens
+    : 0;
   if (
     !Number.isSafeInteger(input) ||
     Number(input) < 0 ||
     !Number.isSafeInteger(output) ||
-    Number(output) < 0
+    Number(output) < 0 ||
+    !Number.isSafeInteger(cached) ||
+    Number(cached) < 0 ||
+    Number(cached) > Number(input)
   ) {
     throw new Error("OpenAI response contains invalid token usage");
   }
-  return { inputTokens: Number(input), outputTokens: Number(output) };
+  return {
+    inputTokens: Number(input),
+    outputTokens: Number(output),
+    cachedInputTokens: Number(cached)
+  };
 }
 
 function buildInitialChatMessages(

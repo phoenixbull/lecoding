@@ -12,6 +12,7 @@ import {
   type RunChanges,
   type RunHistoryResult,
   type RunId,
+  type RunOperationalMetrics,
   type RunView
 } from "@lecoding/contracts";
 
@@ -35,6 +36,8 @@ export interface LeCodingClient {
   listProjectPolicyRules(projectId: ProjectId): Promise<ProjectPolicyRuleResult>;
   revokeProjectPolicyRule(projectId: ProjectId, ruleId: string): Promise<void>;
   getRunChanges(runId: RunId): Promise<RunChanges>;
+  /** Loads content-free durations and outcome counters from durable Run events. */
+  getRunMetrics(runId: RunId): Promise<RunOperationalMetrics>;
   /** Loads hash-verified, redacted command output through its owning Run scope. */
   getRunArtifact(runId: RunId, artifactId: string): Promise<string>;
   /** Keeps or discards the isolated worktree only after the Run reaches a terminal state. */
@@ -316,6 +319,17 @@ export function createClient(options: ClientOptions): LeCodingClient {
         throw new LeCodingHttpError("Failed to load Run changes", response.status);
       }
       return (await response.json()) as RunChanges;
+    },
+
+    async getRunMetrics(runId: RunId): Promise<RunOperationalMetrics> {
+      const response = await authenticatedFetch(
+        `${baseUrl}/api/v1/runs/${encodeURIComponent(runId)}/metrics`,
+        { method: "GET", headers: { accept: "application/json" } }
+      );
+      if (!response.ok) {
+        throw new LeCodingHttpError("Failed to load Run metrics", response.status);
+      }
+      return (await response.json()) as RunOperationalMetrics;
     },
 
     async getRunArtifact(runId: RunId, artifactId: string): Promise<string> {

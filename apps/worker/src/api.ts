@@ -13,7 +13,11 @@ import type {
   RunHistory
 } from "@lecoding/run-engine";
 import { RunAdmissionError } from "@lecoding/run-engine";
-import type { RunEventSseHandler } from "@lecoding/run-events";
+import type {
+  RunEventSseHandler,
+  RunOperationalActionRecorder,
+  RunOperationalMetricsReader
+} from "@lecoding/run-events";
 import type { RunChangesReader, RunResultManager } from "@lecoding/workspace";
 
 const MAX_JSON_BODY_BYTES = 64 * 1024;
@@ -94,6 +98,10 @@ export interface RunApiHandlerOptions {
   access: RunApiAccessControl;
   memberships?: RunApiMembershipAdministration;
   projectPolicy?: RunApiProjectPolicyAdministration;
+  /** Content-free operational projection, still protected by Run membership. */
+  metrics?: RunOperationalMetricsReader;
+  /** Records content-free keep/discard outcomes and failed resolution signals. */
+  actions?: RunOperationalActionRecorder;
   eventStream: RunEventSseHandler;
   /** Observes detached resume failures without exposing them to HTTP clients. */
   onBackgroundError?: (error: unknown) => void;
@@ -318,6 +326,21 @@ export function createRunApiHandler(
         }
       }
 
+      const metricsMatch = path.match(/^\/api\/v1\/runs\/([^/]+)\/metrics$/);
+      if (request.method === "GET" && metricsMatch) {
+        try {
+          const runId = decodePathSegment(metricsMatch[1]!) as RunId;
+          await inspectProjectRun(options, principal, runId, "viewer");
+          const metrics = await options.metrics?.read(runId);
+          if (!metrics) {
+            throw new Error("Run metrics were not found");
+          }
+          return jsonResponse(metrics);
+        } catch {
+          return errorResponse(404, "metrics_not_found", "Run metrics were not found");
+        }
+      }
+
       const changesMatch = path.match(/^\/api\/v1\/runs\/([^/]+)\/changes$/);
       if (request.method === "GET" && changesMatch) {
         try {
@@ -392,9 +415,19 @@ export function createRunApiHandler(
         }
         try {
           await options.results.resolve(runId, outcome);
+        } catch {
+          // Failure is content-free and best-effort; the primary 409 must survive
+          // even when the metrics backend is independently unavailable.
+          await options.actions?.recordResultFailure(runId, outcome).catch(() => undefined);
+          return errorResponse(409, "result_rejected", "Run result was rejected");
+        }
+        try {
+          // A failed audit write keeps the HTTP result retryable; result resolution
+          // and the recorder are both idempotent for the same Run/outcome.
+          await options.actions?.recordResult(runId, outcome);
           return new Response(null, { status: 204 });
         } catch {
-          return errorResponse(409, "result_rejected", "Run result was rejected");
+          return errorResponse(409, "result_audit_failed", "Run result audit failed");
         }
       }
 

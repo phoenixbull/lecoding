@@ -23,6 +23,7 @@ describe("Web Run presentation", () => {
       formatRunBudget({
         inputTokens: 180_000,
         outputTokens: 20_000,
+        cachedInputTokens: 120_000,
         totalTokens: 200_000,
         costUsd: 1.25,
         toolCalls: 48,
@@ -49,7 +50,7 @@ describe("Web Run presentation", () => {
       })
     ).toEqual({
       model: "vendor-model-v1 · pricing-2026-08-28",
-      tokens: "200,000 / 1,000,000（输入 180,000 · 输出 20,000）",
+      tokens: "200,000 / 1,000,000（输入 180,000 · 缓存命中 120,000 · 输出 20,000）",
       cost: "$1.25 / $2.00（$1.00 起预警）",
       wallTime: "25分 / 30分",
       toolCalls: "48 / 60",

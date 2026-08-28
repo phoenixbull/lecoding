@@ -131,6 +131,7 @@ export interface RunView {
 export interface RunBudgetView {
   inputTokens: number;
   outputTokens: number;
+  cachedInputTokens: number;
   totalTokens: number;
   costUsd: number;
   toolCalls: number;
@@ -155,6 +156,44 @@ export interface RunBudgetView {
     | "retry_warning"
     | "team_monthly_cost_warning"
   >;
+}
+
+/** Content-free operational projection derived from one Run's durable timeline. */
+export interface RunOperationalMetrics {
+  runId: RunId;
+  observedAt: string;
+  statusDwellMs: Partial<Record<RunStatus, number>>;
+  tools: {
+    total: number;
+    failed: number;
+    totalDurationMs: number;
+    outputTruncated: number;
+  };
+  approvals: {
+    requested: number;
+    decided: number;
+    denied: number;
+    totalWaitMs: number;
+  };
+  userActions: {
+    steers: number;
+    answers: number;
+    cancellations: number;
+    keeps: number;
+    discards: number;
+  };
+  worktree: {
+    created: boolean;
+    disposition: "unresolved" | "retained" | "discarded";
+    cleanupFailures: number;
+  };
+  verification: {
+    attempts: number;
+    passed: number;
+    failed: number;
+    inconclusive: number;
+  };
+  failures: Partial<Record<RunFailure["code"], number>>;
 }
 
 /** Durable model question that must be answered before the Run can continue. */

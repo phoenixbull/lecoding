@@ -44,13 +44,24 @@ describe("createRunApiHandler", () => {
       read: vi.fn(async () => ({ changedFiles: [], unifiedDiff: "", truncated: false }))
     };
     const results = { resolve: vi.fn(async () => undefined) };
+    const metrics = { read: vi.fn(async () => undefined) };
     const access = {
       authenticate: vi.fn(async () => ({ userId: "user-alice" })),
       roleFor: vi.fn(async (_userId: string, projectId: string) =>
         projectId === "project-1" ? ("developer" as const) : undefined
       )
     };
-    const handler = createHandler(runs, history, changes, results, access);
+    const handler = createHandler(
+      runs,
+      history,
+      changes,
+      results,
+      access,
+      undefined,
+      undefined,
+      undefined,
+      metrics
+    );
     const request = (path: string, init?: RequestInit) =>
       handler.handle(new Request(`http://127.0.0.1:8787${path}`, init));
 
@@ -69,6 +80,7 @@ describe("createRunApiHandler", () => {
     });
     const inspectIdor = await request("/api/v1/runs/run-project-2");
     const eventsIdor = await request("/api/v1/runs/run-project-2/events");
+    const metricsIdor = await request("/api/v1/runs/run-project-2/metrics");
     const changesIdor = await request("/api/v1/runs/run-project-2/changes");
     const resultIdor = await request("/api/v1/runs/run-project-2/result", {
       method: "POST",
@@ -90,15 +102,17 @@ describe("createRunApiHandler", () => {
       createIdor.status,
       inspectIdor.status,
       eventsIdor.status,
+      metricsIdor.status,
       changesIdor.status,
       resultIdor.status,
       commandIdor.status
-    ]).toEqual([404, 404, 404, 404, 404, 404, 404]);
+    ]).toEqual([404, 404, 404, 404, 404, 404, 404, 404]);
     expect(history.list).not.toHaveBeenCalled();
     expect(runs.start).not.toHaveBeenCalled();
     expect(runs.command).not.toHaveBeenCalled();
     expect(changes.read).not.toHaveBeenCalled();
     expect(results.resolve).not.toHaveBeenCalled();
+    expect(metrics.read).not.toHaveBeenCalled();
   });
 
   it("creates a configured-project Run and resumes it after returning 202", async () => {
@@ -133,6 +147,47 @@ describe("createRunApiHandler", () => {
       },
       { actorId: "local-user" }
     );
+  });
+
+  it("returns authenticated content-free operational metrics for the owning Run", async () => {
+    const metrics = {
+      read: vi.fn(async () => ({
+        runId: "run-1",
+        observedAt: "2026-08-28T08:00:10.000Z",
+        statusDwellMs: { queued: 1_000, running: 9_000 },
+        tools: { total: 2, failed: 1, totalDurationMs: 3_000, outputTruncated: 1 },
+        approvals: { requested: 1, decided: 1, denied: 0, totalWaitMs: 2_000 },
+        userActions: { steers: 0, answers: 0, cancellations: 0, keeps: 0, discards: 0 },
+        worktree: { created: true, disposition: "unresolved" as const, cleanupFailures: 0 },
+        verification: { attempts: 0, passed: 0, failed: 0, inconclusive: 0 },
+        failures: {}
+      }))
+    };
+    const response = await createHandler(
+      createRuns([]),
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      metrics
+    ).handle(new Request("http://127.0.0.1:8787/api/v1/runs/run-1/metrics"));
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toEqual({
+      runId: "run-1",
+      observedAt: "2026-08-28T08:00:10.000Z",
+      statusDwellMs: { queued: 1_000, running: 9_000 },
+      tools: { total: 2, failed: 1, totalDurationMs: 3_000, outputTruncated: 1 },
+      approvals: { requested: 1, decided: 1, denied: 0, totalWaitMs: 2_000 },
+      userActions: { steers: 0, answers: 0, cancellations: 0, keeps: 0, discards: 0 },
+      worktree: { created: true, disposition: "unresolved", cleanupFailures: 0 },
+      verification: { attempts: 0, passed: 0, failed: 0, inconclusive: 0 },
+      failures: {}
+    });
+    expect(metrics.read).toHaveBeenCalledWith("run-1");
   });
 
   it("returns a stable 429 when durable Run admission rejects the caller", async () => {
@@ -537,7 +592,22 @@ describe("createRunApiHandler", () => {
       status: "succeeded"
     });
     const results = { resolve: vi.fn(async () => undefined) };
-    const handler = createHandler(runs, undefined, undefined, results);
+    const actions = {
+      recordResult: vi.fn(async () => undefined),
+      recordResultFailure: vi.fn(async () => undefined)
+    };
+    const handler = createHandler(
+      runs,
+      undefined,
+      undefined,
+      results,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      actions
+    );
 
     const response = await handler.handle(
       new Request("http://127.0.0.1:8787/api/v1/runs/run-1/result", {
@@ -549,6 +619,7 @@ describe("createRunApiHandler", () => {
 
     expect(response.status).toBe(204);
     expect(results.resolve).toHaveBeenCalledWith("run-1", "discard");
+    expect(actions.recordResult).toHaveBeenCalledWith("run-1", "discard");
   });
 
   it("rejects result resolution before the Run reaches a terminal state", async () => {
@@ -565,6 +636,50 @@ describe("createRunApiHandler", () => {
 
     expect(response.status).toBe(409);
     expect(results.resolve).not.toHaveBeenCalled();
+  });
+
+  it("records a residual-risk signal when terminal worktree disposal fails", async () => {
+    const runs = createRuns([]);
+    runs.inspect.mockResolvedValue({
+      id: "run-1",
+      projectId: "project-1",
+      environmentId: "server-docker",
+      task: "Finished task",
+      status: "failed"
+    });
+    const results = {
+      resolve: vi.fn(async () => {
+        throw new Error("worktree busy");
+      })
+    };
+    const actions = {
+      recordResult: vi.fn(async () => undefined),
+      recordResultFailure: vi.fn(async () => undefined)
+    };
+    const handler = createHandler(
+      runs,
+      undefined,
+      undefined,
+      results,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      actions
+    );
+
+    const response = await handler.handle(
+      new Request("http://127.0.0.1:8787/api/v1/runs/run-1/result", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ outcome: "discard" })
+      })
+    );
+
+    expect(response.status).toBe(409);
+    expect(actions.recordResultFailure).toHaveBeenCalledWith("run-1", "discard");
+    expect(actions.recordResult).not.toHaveBeenCalled();
   });
 
   it("accepts strict once/run approval and rejection commands", async () => {
@@ -867,7 +982,9 @@ function createHandler(
   },
   memberships?: RunApiMembershipAdministration,
   projectPolicy?: RunApiProjectPolicyAdministration,
-  artifacts?: RunApiArtifactReader
+  artifacts?: RunApiArtifactReader,
+  metrics?: import("@lecoding/run-events").RunOperationalMetricsReader,
+  actions?: import("@lecoding/run-events").RunOperationalActionRecorder
 ) {
   return createRunApiHandler({
     defaultProjectId: "project-1",
@@ -880,6 +997,8 @@ function createHandler(
     ...(memberships ? { memberships } : {}),
     ...(projectPolicy ? { projectPolicy } : {}),
     ...(artifacts ? { artifacts } : {}),
+    ...(metrics ? { metrics } : {}),
+    ...(actions ? { actions } : {}),
     eventStream: {
       handle: vi.fn(async () => new Response("", { status: 200 }))
     }

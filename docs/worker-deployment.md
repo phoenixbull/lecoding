@@ -162,6 +162,9 @@ same loopback listener then serves the Web console and these versioned endpoints
 - `GET /api/v1/projects/:projectId/runs?limit=20` returns up to 50 newest summaries for refresh recovery.
 - `POST /api/v1/projects/:projectId/runs` persists a queued Run and detaches resume.
 - `GET /api/v1/runs/:runId` returns current status and verification evidence.
+- `GET /api/v1/runs/:runId/metrics` returns content-free status dwell, tool,
+  approval, verification, user-action, and worktree disposition aggregates after
+  the same project-membership check. The Client SDK owns this endpoint.
 - `GET /api/v1/runs/:runId/changes` returns a bounded file list and unified Git Diff from the managed worktree.
 - `GET /api/v1/runs/:runId/events` streams durable, resumable SSE events.
 - `POST /api/v1/runs/:runId/result` accepts exactly `{ "outcome": "keep" | "discard" }` for a terminal Run. `discard` immediately removes the revalidated managed worktree and is idempotent for safe retries; neither outcome accepts a caller-controlled filesystem path.

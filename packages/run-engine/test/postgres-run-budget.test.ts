@@ -43,11 +43,12 @@ describe("PostgreSQL Run budget manager", () => {
         runId: "run-reserve",
         requestId: "request-1",
         inputTokens: 10,
-        outputTokens: 5
+        outputTokens: 5,
+        cachedInputTokens: 8
       })
     ).resolves.toMatchObject({
       allowed: true,
-      snapshot: { totalTokens: 15 }
+      snapshot: { totalTokens: 15, cachedInputTokens: 8 }
     });
     await expect(
       budgets.reserveModelRequest({

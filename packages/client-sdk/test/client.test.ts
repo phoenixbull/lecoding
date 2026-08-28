@@ -224,6 +224,32 @@ describe("LeCodingClient", () => {
     );
   });
 
+  it("loads the content-free operational projection for a Run", async () => {
+    const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(
+      Response.json({
+        runId: "run/1",
+        observedAt: "2026-08-28T08:00:10.000Z",
+        statusDwellMs: { running: 9_000 },
+        tools: { total: 2, failed: 1, totalDurationMs: 3_000, outputTruncated: 1 },
+        approvals: { requested: 1, decided: 1, denied: 0, totalWaitMs: 2_000 },
+        userActions: { steers: 0, answers: 0, cancellations: 0, keeps: 0, discards: 0 },
+        worktree: { created: true, disposition: "unresolved", cleanupFailures: 0 },
+        verification: { attempts: 0, passed: 0, failed: 0, inconclusive: 0 },
+        failures: {}
+      })
+    );
+    const client = createClient({ baseUrl: "https://agent.example", fetch });
+
+    await expect(client.getRunMetrics("run/1")).resolves.toMatchObject({
+      runId: "run/1",
+      tools: { total: 2, failed: 1 }
+    });
+    expect(fetch).toHaveBeenCalledWith(
+      "https://agent.example/api/v1/runs/run%2F1/metrics",
+      expect.objectContaining({ method: "GET" })
+    );
+  });
+
   it("loads retained command output through the owning Run path", async () => {
     const fetch = vi
       .fn<typeof globalThis.fetch>()

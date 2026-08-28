@@ -1803,7 +1803,10 @@ class DefaultRunEngine implements RunEngine, RunResumer, DisposableEngine {
             callId: turn.callId,
             outcome: "executed",
             exitCode: result.exitCode,
-            recovered: claim.status === "completed"
+            recovered: claim.status === "completed",
+            // Only the truncation fact is observable; retained output remains protected.
+            outputTruncated:
+              result.stdoutTruncated === true || result.stderrTruncated === true
           }
         }
       ],
@@ -2611,6 +2614,7 @@ function toRunBudgetView(
   return {
     inputTokens: snapshot.inputTokens,
     outputTokens: snapshot.outputTokens,
+    cachedInputTokens: snapshot.cachedInputTokens,
     totalTokens: snapshot.totalTokens,
     costUsd: snapshot.costUsd,
     toolCalls: snapshot.toolCalls,

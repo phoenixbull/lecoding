@@ -78,7 +78,8 @@ describe("createOpenAiResponsesAgentModel", () => {
         runId: "run-1",
         requestId: "request-settle",
         inputTokens: 12,
-        outputTokens: 3
+        outputTokens: 3,
+        cachedInputTokens: 0
       }
     ]);
   });
@@ -286,8 +287,8 @@ describe("createOpenAiResponsesAgentModel", () => {
       arguments: { argv: ["node", "--test"] }
     });
     expect(observedUsage).toEqual([
-      { runId: "run-1", inputTokens: 10, outputTokens: 1 },
-      { runId: "run-1", inputTokens: 20, outputTokens: 2 }
+      { runId: "run-1", inputTokens: 10, outputTokens: 1, cachedInputTokens: 0 },
+      { runId: "run-1", inputTokens: 20, outputTokens: 2, cachedInputTokens: 0 }
     ]);
     expect(retryEvents).toEqual([
       {

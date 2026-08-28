@@ -112,6 +112,8 @@ export async function startWorkerHttpServer(
     ...(options.control.projectPolicy
       ? { projectPolicy: options.control.projectPolicy }
       : {}),
+    ...(options.control.metrics ? { metrics: options.control.metrics } : {}),
+    ...(options.control.actions ? { actions: options.control.actions } : {}),
     eventStream: options.control.eventStream,
     ...(options.onBackgroundError
       ? { onBackgroundError: options.onBackgroundError }

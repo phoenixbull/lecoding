@@ -48,6 +48,8 @@ import {
   createIntervalRunEventDispatchWorker,
   createPostgresRunEventRepository,
   createPostgresRunEventOutbox,
+  createPostgresRunOperationalActionRecorder,
+  createPostgresRunOperationalMetricsReader,
   createRunEventDispatcher,
   createRunEventJournal,
   createRunEventLiveBroadcaster,
@@ -205,6 +207,10 @@ export interface WorkerControlPlane {
   access: RunApiAccessControl;
   memberships?: RunApiMembershipAdministration;
   projectPolicy?: RunApiProjectPolicyAdministration;
+  /** Content-free operational metrics derived from the durable Run timeline. */
+  metrics?: import("@lecoding/run-events").RunOperationalMetricsReader;
+  /** Durable successful keep/discard outcome recorder. */
+  actions?: import("@lecoding/run-events").RunOperationalActionRecorder;
   login?: GitHubOAuthLogin & {
     revokeRequestSession(request: Request): Promise<void>;
   };
@@ -775,6 +781,14 @@ export async function composeProductionWorker(
     const eventRepository = createPostgresRunEventRepository(
       options.database.executor
     );
+    const metrics = createPostgresRunOperationalMetricsReader(
+      options.database.executor,
+      { now }
+    );
+    const actions = await createPostgresRunOperationalActionRecorder(
+      options.database.executor,
+      { now }
+    );
     const events = createRunEventJournal({
       repository: eventRepository,
       now
@@ -844,7 +858,8 @@ export async function composeProductionWorker(
             runId: usage.runId,
             requestId: usage.requestId,
             inputTokens: usage.inputTokens,
-            outputTokens: usage.outputTokens
+            outputTokens: usage.outputTokens,
+            cachedInputTokens: usage.cachedInputTokens
           });
           if (!decision.allowed) {
             throw new RunBudgetExceededError(decision.reason);
@@ -963,6 +978,8 @@ export async function composeProductionWorker(
           revoke: (projectId, ruleId, revokedBy) =>
             projectRules.revoke(projectId, ruleId, revokedBy)
         },
+        metrics,
+        actions,
         ...(login ? { login } : {}),
         eventStream: createRunEventSseHandler({
           journal: events,

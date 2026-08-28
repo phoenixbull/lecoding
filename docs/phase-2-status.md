@@ -2,7 +2,7 @@
 
 Updated: 2026-08-28
 
-## In progress
+## Complete under the accepted Phase 0 environment exception
 
 | V3 task | Status | Current evidence |
 |---|---|---|
@@ -11,19 +11,20 @@ Updated: 2026-08-28
 | `auto_review` and `full_access` | Complete | `auto_review` uses an independently injected reviewer with validated `allow`/`ask` output and immutable PostgreSQL audit; deterministic fixed/project rules run first. Full access is project-admin-only at Web and API seams and server Runs remain workspace-only. Reads and writes targeting credentials/browser state/container-runtime sockets, private/metadata network targets, and host-control commands are fixed deny across every mode; neither reviewer nor project allow rules can override them. The sandbox stays `--network none` even for an untrusted network override. Evidence is in [`phase-2-security-matrix-audit.md`](phase-2-security-matrix-audit.md). |
 | Lease, heartbeat, idempotency | Complete | Generation-based PostgreSQL leases enforce one active owner and reject stale renewal/writes. Half-interval heartbeats cover long prepare/perform/inspect/verify/cleanup waits and invalidate immediately on renewal loss. pg-boss durably discovers expired non-terminal Runs with singleton claims. The PostgreSQL tool ledger binds exact `(run_id, call_id, action)` identities: completed results are reused, while a crash-window `executing` claim fails closed as `tool_call_outcome_unknown` and is never replayed. Focused takeover/cancellation/idempotency verification passed 28/28; the requirement-by-requirement evidence is in [`phase-2-lease-idempotency-audit.md`](phase-2-lease-idempotency-audit.md). |
 | Artifact and redaction | Complete | Docker capture is hard-bounded to 8 MiB per stream and Run/model/tool-ledger persistence to a 16 KiB UTF-8 prefix. Oversized retained output is redacted before a content-addressed local write; PostgreSQL stores immutable metadata only. Run inspection exposes hash references, while API/SDK/Web reads are bound to the owning Run and project membership and rendered as inert text. Deployment credentials are rejected from original Run/user/tool inputs before persistence, and known credentials plus provider-shaped tokens are redacted from command output. Startup-plus-daily retention removes Artifacts older than seven days and reports deletion/failure counts with residual storage keys. Focused evidence is in [`phase-2-artifact-redaction-audit.md`](phase-2-artifact-redaction-audit.md). |
-| Quotas and monitoring | In progress | PostgreSQL now enforces per-Run token, cost, wall-clock, tool-call, and Run-wide model-retry limits; user/project concurrency; and team monthly cost. Every model request reserves worst-case input/output cost before provider I/O, then settles actual usage or conservatively forfeits unknown usage, including crash recovery and cancellation races. Authenticated API/SDK/Web projections expose current usage, hard limits, model/pricing identity, and stable warnings. Quota evidence is in [`phase-2-quota-monitoring-audit.md`](phase-2-quota-monitoring-audit.md); broader per-Run operational aggregates (tool failure/duration, state dwell, approval latency, worktree residue, and user-action rates) remain. |
+| Quotas and monitoring | Complete | PostgreSQL enforces per-Run token, cost, wall-clock, tool-call and retry limits; user/project concurrency; and team monthly cost. Request exposure is reserved before provider I/O and settled or conservatively forfeited. Provider cache-hit tokens are persisted. A content-free operational projection exposes live status dwell, tool health/duration/truncation, approval latency/rejections, verification outcomes/failure codes, steer/answer/cancel/keep/discard counts, and worktree creation/disposition/cleanup failures through membership-protected API and SDK seams. Evidence is in [`phase-2-quota-monitoring-audit.md`](phase-2-quota-monitoring-audit.md). |
 | Security tests | Complete | The Phase 2 matrix covers path traversal and symlink mount escape, command composition, fixed-deny precedence, offline network containment, bounded output/artifact redaction, container privilege controls, authorization writes, and cross-project IDOR. Requirement-level evidence is in [`phase-2-security-matrix-audit.md`](phase-2-security-matrix-audit.md); target-Linux daemon evidence remains parked under the user-approved Phase 0 exception. |
 
-The Phase 2 goal remains active until every row and its attached V3 operational
-work have direct implementation and verification evidence.
+Every Phase 2 row and its attached V3 operational work now has direct
+implementation and verification evidence. The final mapping is recorded in
+[`phase-2-completion-audit.md`](phase-2-completion-audit.md).
 
 ## Verification baseline
 
 - Current focused quota/retry/UI suite: 63/63 tests passed across the PostgreSQL
   budget manager, OpenAI-compatible adapter, Worker composition, and Web projection.
 - `pnpm typecheck`: 12/12 workspace tasks passed.
-- Repository suite: 330 tests passed, three tests were skipped, and five HTTP
-  cases were blocked only by the workspace network sandbox across 67 files.
+- Repository suite: 338 tests passed, three tests were skipped, and five HTTP
+  cases were blocked only by the workspace network sandbox across 68 files.
   HTTP transport passed 8/8 when rerun with loopback-bind permission;
   Docker adapter tests passed 6/8, while the two daemon-backed cases timed out at
   120/30 seconds because the local daemon remained unresponsive. This is the

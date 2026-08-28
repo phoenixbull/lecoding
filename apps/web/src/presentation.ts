@@ -40,7 +40,7 @@ export function formatRunBudget(budget: RunBudgetView): RunBudgetDetails {
   const warnings = budget.warnings.map((warning) => BUDGET_WARNING_LABELS[warning]);
   return {
     model: `${budget.modelId} · ${budget.pricingVersion}`,
-    tokens: `${formatCount(budget.totalTokens)} / ${formatCount(budget.maxTotalTokens)}（输入 ${formatCount(budget.inputTokens)} · 输出 ${formatCount(budget.outputTokens)}）`,
+    tokens: `${formatCount(budget.totalTokens)} / ${formatCount(budget.maxTotalTokens)}（输入 ${formatCount(budget.inputTokens)} · 缓存命中 ${formatCount(budget.cachedInputTokens)} · 输出 ${formatCount(budget.outputTokens)}）`,
     cost: `${formatUsd(budget.costUsd)} / ${formatUsd(budget.maxCostUsd)}（${formatUsd(budget.warningCostUsd)} 起预警）`,
     wallTime: `${formatDuration(budget.elapsedMs)} / ${formatDuration(budget.maxWallTimeMs)}`,
     toolCalls: `${formatCount(budget.toolCalls)} / ${formatCount(budget.maxToolCalls)}`,

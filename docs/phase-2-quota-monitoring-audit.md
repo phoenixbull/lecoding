@@ -21,11 +21,21 @@ Updated: 2026-08-28
 
 ## Monitoring surface
 
-Authenticated Run reads expose current input/output/total tokens, Run and team
+Authenticated Run reads expose current input/output/cache-hit/total tokens, Run and team
 cost, elapsed wall time, tool calls, model retries, their hard limits, model id,
 and pricing version. Stable 80-percent warning labels are rendered by the Web
 quota card without reflecting provider-controlled content. Retry telemetry uses
 only Run id, protocol, retry count, failure category, and outcome.
+
+`GET /api/v1/runs/:runId/metrics` and `LeCodingClient.getRunMetrics` expose a
+content-free operational projection after the same project-membership check as
+Run inspection. It derives live and completed status dwell times from durable
+events; tool totals, failures, duration, and truncation; approval request,
+decision, denial, and wait aggregates; verification outcomes and stable Run
+failure codes; steer, answer, cancel, keep, and discard counts; plus worktree
+creation, final disposition, and cleanup-failure signals. Successful result
+decisions are recorded after workspace resolution; failed attempts produce a
+separate idempotent residual-risk signal.
 
 Deployment policy is configured through `LECODING_MODEL_MAX_INPUT_TOKENS`,
 `LECODING_MODEL_MAX_OUTPUT_TOKENS`, the `LECODING_RUN_*` limits (including
@@ -37,13 +47,13 @@ documents non-secret defaults.
 
 - Focused quota/retry/Worker/Web tests: 63/63 passed.
 - Workspace typecheck: 12/12 tasks passed.
-- Repository suite: 327 passed and three skipped. Five HTTP cases could not bind
+- Operational metrics/API/SDK/RunEngine focused suite: 96/96 passed.
+- Repository suite: 338 passed and three skipped. Five HTTP cases could not bind
   loopback inside the workspace sandbox and passed 8/8 in the permitted rerun.
 
-## Remaining monitoring work
+## Closure
 
-This audit closes quota enforcement and its live Run projection. The wider V3
-observability inventory remains open: per-tool failure rate and duration, Run
-state dwell time, approval latency/rejection rate, worktree cleanup residue,
-verification failure classification, and aggregated steer/cancel/keep/discard
-rates still need durable records and an operational export surface.
+This audit closes quota enforcement and the V3 per-Run observability inventory.
+The projection intentionally excludes task text, command argv, output, approval
+reasons, provider bodies, paths, and credentials; detailed authorized evidence
+continues to use the existing Run, verification, event, and Artifact surfaces.
