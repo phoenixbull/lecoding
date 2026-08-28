@@ -14,7 +14,9 @@ import type {
   Engine,
   RecoveryJobQueue,
   RunHistory,
-  RunRecoveryWorker
+  RunRecoveryWorker,
+  RunBudgetLimits,
+  RunModelPricing
 } from "@lecoding/run-engine";
 import {
   createInMemoryRunHandleRegistry,
@@ -22,6 +24,7 @@ import {
   createIntervalLeaseHeartbeat,
   createPgBossRecoveryWorker,
   createPostgresRunCancelBus,
+  createPostgresRunBudgetManager,
   createPostgresLocalArtifactStore,
   createPostgresApprovalLedger,
   createPostgresPolicyReviewAudit,
@@ -94,6 +97,8 @@ export interface WorkerConfig {
   verificationImage: string;
   recoveryIntervalMs: number;
   eventDispatchIntervalMs: number;
+  budgetLimits: RunBudgetLimits;
+  pricing: RunModelPricing;
 }
 
 /** Trusted project registration resolved before composing the Worker. */
@@ -239,6 +244,41 @@ export function loadWorkerConfig(environment: ModelEnvironment): WorkerConfig {
       "LECODING_VERIFICATION_IMAGE must use an immutable sha256 digest or image ID"
     );
   }
+  const teamMonthlyMaxUsd = readFiniteAmount(
+    environment,
+    "LECODING_TEAM_MONTHLY_MAX_USD",
+    undefined,
+    true
+  );
+  const warningCostUsd = readFiniteAmount(
+    environment,
+    "LECODING_RUN_COST_WARNING_USD",
+    1
+  );
+  const maxCostUsd = readFiniteAmount(
+    environment,
+    "LECODING_RUN_COST_MAX_USD",
+    2,
+    true
+  );
+  const teamMonthlyWarningUsd = readFiniteAmount(
+    environment,
+    "LECODING_TEAM_MONTHLY_WARNING_USD",
+    teamMonthlyMaxUsd * 0.8
+  );
+  // Warning bands must remain reachable before their corresponding hard stop.
+  assertWarningAtOrBelowMax(
+    "LECODING_RUN_COST_WARNING_USD",
+    warningCostUsd,
+    "LECODING_RUN_COST_MAX_USD",
+    maxCostUsd
+  );
+  assertWarningAtOrBelowMax(
+    "LECODING_TEAM_MONTHLY_WARNING_USD",
+    teamMonthlyWarningUsd,
+    "LECODING_TEAM_MONTHLY_MAX_USD",
+    teamMonthlyMaxUsd
+  );
   return {
     workerId,
     dockerImage,
@@ -253,7 +293,55 @@ export function loadWorkerConfig(environment: ModelEnvironment): WorkerConfig {
       environment,
       "LECODING_EVENT_DISPATCH_INTERVAL_MS",
       100
-    )
+    ),
+    budgetLimits: {
+      maxTotalTokens: readPositiveInteger(
+        environment,
+        "LECODING_RUN_MAX_TOTAL_TOKENS",
+        1_000_000,
+        100_000_000
+      ),
+      warningCostUsd,
+      maxCostUsd,
+      maxWallTimeMs: readPositiveInteger(
+        environment,
+        "LECODING_RUN_MAX_WALL_TIME_MS",
+        30 * 60_000,
+        24 * 60 * 60_000
+      ),
+      maxToolCalls: readPositiveInteger(
+        environment,
+        "LECODING_RUN_MAX_TOOL_CALLS",
+        60,
+        10_000
+      ),
+      maxActiveRunsPerUser: readPositiveInteger(
+        environment,
+        "LECODING_USER_MAX_ACTIVE_RUNS",
+        2,
+        100
+      ),
+      maxActiveRunsPerProject: readPositiveInteger(
+        environment,
+        "LECODING_PROJECT_MAX_ACTIVE_RUNS",
+        5,
+        1_000
+      ),
+      teamMonthlyWarningUsd,
+      teamMonthlyMaxUsd
+    },
+    pricing: {
+      modelId: requireSetting(environment, "LECODING_MODEL_ID"),
+      version: requireSetting(environment, "LECODING_MODEL_PRICING_VERSION"),
+      inputUsdPerMillion: readFiniteAmount(
+        environment,
+        "LECODING_MODEL_INPUT_USD_PER_MILLION"
+      ),
+      outputUsdPerMillion: readFiniteAmount(
+        environment,
+        "LECODING_MODEL_OUTPUT_USD_PER_MILLION"
+      )
+    }
   };
 }
 
@@ -650,6 +738,14 @@ export async function composeProductionWorker(
       now
     });
     const lease = await createPostgresRunLease(options.database.executor);
+    const budgets = await createPostgresRunBudgetManager(
+      options.database.executor,
+      {
+        limits: config.budgetLimits,
+        pricing: config.pricing,
+        now
+      }
+    );
     const eventRepository = createPostgresRunEventRepository(
       options.database.executor
     );
@@ -704,6 +800,10 @@ export async function composeProductionWorker(
       environment: runtimeEnvironment,
       model: createOpenAiCompatibleAgentModel({
         config: modelConfig,
+        // Provider usage is durably charged before RunEngine may consume the turn.
+        onUsage: async (usage) => {
+          await budgets.recordModelUsage(usage);
+        },
         ...(options.onModelRetry
           ? { onMalformedJsonRetry: options.onModelRetry }
           : {})
@@ -713,6 +813,7 @@ export async function composeProductionWorker(
         projectRules
       }),
       events,
+      budgets,
       verifier,
       workerId: config.workerId,
       now,
@@ -927,4 +1028,37 @@ function readPositiveInteger(
     throw new Error(`${name} must be a positive integer`);
   }
   return value;
+}
+
+function readFiniteAmount(
+  environment: ModelEnvironment,
+  name: string,
+  fallback?: number,
+  positive = false
+): number {
+  const raw = environment[name]?.trim();
+  if (!raw) {
+    if (fallback === undefined) {
+      throw new Error(`Missing required Worker setting: ${name}`);
+    }
+    return fallback;
+  }
+  const value = Number(raw);
+  if (!Number.isFinite(value) || (positive ? value <= 0 : value < 0)) {
+    throw new Error(
+      `${name} must be a ${positive ? "positive" : "non-negative"} finite amount`
+    );
+  }
+  return value;
+}
+
+function assertWarningAtOrBelowMax(
+  warningName: string,
+  warning: number,
+  maxName: string,
+  max: number
+): void {
+  if (warning > max) {
+    throw new Error(`${warningName} must not exceed ${maxName}`);
+  }
 }

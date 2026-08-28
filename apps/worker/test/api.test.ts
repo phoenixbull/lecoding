@@ -12,6 +12,7 @@ import {
   type RunApiMembershipAdministration,
   type RunApiProjectPolicyAdministration
 } from "../src/api.js";
+import { RunAdmissionError } from "@lecoding/run-engine";
 
 describe("createRunApiHandler", () => {
   it("exposes only non-secret registered-project bootstrap configuration", async () => {
@@ -121,14 +122,46 @@ describe("createRunApiHandler", () => {
     expect(response.status).toBe(202);
     await expect(response.json()).resolves.toEqual({ runId: "run-1" });
     await vi.waitFor(() => expect(calls).toEqual(["start", "resume:run-1"]));
-    expect(runs.start).toHaveBeenCalledWith({
-      projectId: "project-1",
-      environmentId: "server-docker",
-      task: "Add health endpoint",
-      acceptanceCriteria: ["Tests pass"],
-      approvalMode: "manual",
-      fileAccessScope: "workspace_only"
+    expect(runs.start).toHaveBeenCalledWith(
+      {
+        projectId: "project-1",
+        environmentId: "server-docker",
+        task: "Add health endpoint",
+        acceptanceCriteria: ["Tests pass"],
+        approvalMode: "manual",
+        fileAccessScope: "workspace_only"
+      },
+      { actorId: "local-user" }
+    );
+  });
+
+  it("returns a stable 429 when durable Run admission rejects the caller", async () => {
+    const runs = createRuns([]);
+    runs.start.mockRejectedValueOnce(
+      new RunAdmissionError("user_concurrency_limit")
+    );
+    const response = await createHandler(runs).handle(
+      new Request("http://127.0.0.1:8787/api/v1/projects/project-1/runs", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          environmentId: "server-docker",
+          task: "Add health endpoint",
+          acceptanceCriteria: ["Tests pass"],
+          approvalMode: "manual",
+          fileAccessScope: "workspace_only"
+        })
+      })
+    );
+
+    expect(response.status).toBe(429);
+    await expect(response.json()).resolves.toEqual({
+      error: {
+        code: "user_concurrency_limit",
+        message: "Run admission was rejected by the configured quota"
+      }
     });
+    expect(runs.resume).not.toHaveBeenCalled();
   });
 
   it("reserves full access for project admins and rejects host file scopes", async () => {
@@ -264,7 +297,8 @@ describe("createRunApiHandler", () => {
     expect(unknown.status).toBe(404);
     expect(runs.start).toHaveBeenCalledTimes(1);
     expect(runs.start).toHaveBeenCalledWith(
-      expect.objectContaining({ projectId: "project-2" })
+      expect.objectContaining({ projectId: "project-2" }),
+      { actorId: "local-user" }
     );
   });
 

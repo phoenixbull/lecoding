@@ -12,6 +12,7 @@ import type {
   ProjectPolicyRuleRecord,
   RunHistory
 } from "@lecoding/run-engine";
+import { RunAdmissionError } from "@lecoding/run-engine";
 import type { RunEventSseHandler } from "@lecoding/run-events";
 import type { RunChangesReader, RunResultManager } from "@lecoding/workspace";
 
@@ -268,7 +269,11 @@ export function createRunApiHandler(
               "Server Runs require workspace-only file access"
             );
           }
-          const runId = await options.runs.start({ projectId, ...input });
+          const runId = await options.runs.start(
+            { projectId, ...input },
+            // Durable admission is attributed to the authenticated control-plane identity.
+            { actorId: principal.userId }
+          );
           // Run execution is detached from the HTTP request after queued persistence.
           queueMicrotask(() => {
             void options.runs.resume(runId).catch((error: unknown) => {
@@ -278,7 +283,14 @@ export function createRunApiHandler(
           return jsonResponse({ runId }, 202, {
             location: `/api/v1/runs/${encodeURIComponent(runId)}`
           });
-        } catch {
+        } catch (error) {
+          if (error instanceof RunAdmissionError) {
+            return errorResponse(
+              429,
+              error.reason,
+              "Run admission was rejected by the configured quota"
+            );
+          }
           return errorResponse(400, "invalid_run", "Run input is invalid");
         }
       }

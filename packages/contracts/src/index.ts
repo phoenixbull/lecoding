@@ -123,6 +123,35 @@ export interface RunView {
   verification?: VerificationReport;
   /** Bounded references to retained large command output; content is fetched separately. */
   artifacts?: ArtifactReference[];
+  /** Non-secret provider usage, hard limits, and stable warning labels. */
+  budget?: RunBudgetView;
+}
+
+/** Authenticated Run usage projection; user identity remains server-side. */
+export interface RunBudgetView {
+  inputTokens: number;
+  outputTokens: number;
+  totalTokens: number;
+  costUsd: number;
+  toolCalls: number;
+  elapsedMs: number;
+  maxTotalTokens: number;
+  warningCostUsd: number;
+  maxCostUsd: number;
+  maxWallTimeMs: number;
+  maxToolCalls: number;
+  teamMonthlyCostUsd: number;
+  teamMonthlyWarningUsd: number;
+  teamMonthlyMaxUsd: number;
+  modelId: string;
+  pricingVersion: string;
+  warnings: Array<
+    | "token_warning"
+    | "cost_warning"
+    | "wall_time_warning"
+    | "tool_call_warning"
+    | "team_monthly_cost_warning"
+  >;
 }
 
 /** Durable model question that must be answered before the Run can continue. */
@@ -154,7 +183,11 @@ export interface RunChanges {
 }
 
 export interface RunFailure {
-  code: "agent_loop_failed" | "policy_denied" | "tool_call_outcome_unknown";
+  code:
+    | "agent_loop_failed"
+    | "policy_denied"
+    | "tool_call_outcome_unknown"
+    | "budget_exhausted";
   message: string;
 }
 
@@ -222,13 +255,18 @@ export interface RunCommandContext {
 }
 
 export interface RunEngine {
-  start(input: StartRun): Promise<RunId>;
+  start(input: StartRun, context?: RunStartContext): Promise<RunId>;
   command(
     runId: RunId,
     command: RunCommand,
     context?: RunCommandContext
   ): Promise<void>;
   inspect(runId: RunId): Promise<RunView>;
+}
+
+/** Authenticated identity used only for server-side quota admission. */
+export interface RunStartContext {
+  actorId: string;
 }
 
 /**

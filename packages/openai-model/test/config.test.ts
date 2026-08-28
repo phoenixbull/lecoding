@@ -239,7 +239,11 @@ describe("loadOpenAiCompatibleModelConfig", () => {
   });
 
   it("observes validated Chat Completions token usage without changing the model turn", async () => {
-    const observedUsage: Array<{ inputTokens: number; outputTokens: number }> = [];
+    const observedUsage: Array<{
+      runId: string;
+      inputTokens: number;
+      outputTokens: number;
+    }> = [];
     const model = createOpenAiCompatibleAgentModel({
       config: {
         protocol: "openai_chat_completions",
@@ -247,7 +251,9 @@ describe("loadOpenAiCompatibleModelConfig", () => {
         apiKey: "vendor-secret",
         model: "vendor-coder-v3"
       },
-      onUsage: (usage) => observedUsage.push(usage),
+      onUsage: (usage) => {
+        observedUsage.push(usage);
+      },
       fetch: async () => ({
         ok: true,
         status: 200,
@@ -280,7 +286,9 @@ describe("loadOpenAiCompatibleModelConfig", () => {
         toolResults: []
       })
     ).resolves.toEqual({ type: "completed", summary: "Done" });
-    expect(observedUsage).toEqual([{ inputTokens: 123, outputTokens: 45 }]);
+    expect(observedUsage).toEqual([
+      { runId: "run-usage", inputTokens: 123, outputTokens: 45 }
+    ]);
   });
 
   it("continues a stateless Chat Completions tool call from persisted history", async () => {

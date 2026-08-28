@@ -148,13 +148,14 @@ export interface OpenAiCompatibleAgentModelOptions {
   fetch?: OpenAiFetch;
   instructions?: string;
   /** Receives validated per-request usage for evaluation and billing telemetry. */
-  onUsage?: (usage: OpenAiModelUsage) => void;
+  onUsage?: (usage: OpenAiModelUsage) => void | Promise<void>;
   /** Receives secret-free lifecycle events for the bounded malformed-JSON replay. */
   onMalformedJsonRetry?: (event: OpenAiMalformedJsonRetryEvent) => void;
 }
 
 /** Provider-neutral token counts from one completed model HTTP response. */
 export interface OpenAiModelUsage {
+  runId: string;
   inputTokens: number;
   outputTokens: number;
 }
@@ -178,7 +179,7 @@ export interface OpenAiResponsesAgentModelOptions {
   model: string;
   client: OpenAiResponsesClient;
   instructions?: string;
-  onUsage?: (usage: OpenAiModelUsage) => void;
+  onUsage?: (usage: OpenAiModelUsage) => void | Promise<void>;
   /** Observer errors are ignored so telemetry cannot alter the model turn. */
   onMalformedJsonRetry?: (event: OpenAiMalformedJsonRetryEvent) => void;
 }
@@ -188,7 +189,7 @@ export interface OpenAiChatCompletionsAgentModelOptions {
   model: string;
   client: OpenAiChatCompletionsClient;
   instructions?: string;
-  onUsage?: (usage: OpenAiModelUsage) => void;
+  onUsage?: (usage: OpenAiModelUsage) => void | Promise<void>;
   /** Observer errors are ignored so telemetry cannot alter the model turn. */
   onMalformedJsonRetry?: (event: OpenAiMalformedJsonRetryEvent) => void;
 }
@@ -553,7 +554,9 @@ async function requestValidatedTurn(
   create: () => Promise<unknown>,
   parse: (response: unknown) => AgentModelTurn,
   protocol: OpenAiCompatibleProtocol,
-  onUsage: ((usage: OpenAiModelUsage) => void) | undefined,
+  onUsage:
+    | ((usage: OpenAiModelUsage) => void | Promise<void>)
+    | undefined,
   runId: string,
   onMalformedJsonRetry:
     | ((event: OpenAiMalformedJsonRetryEvent) => void)
@@ -567,7 +570,7 @@ async function requestValidatedTurn(
       // Bill every syntactically valid provider response, including one whose tool
       // arguments force a retry, so resilience does not hide token consumption.
       if (onUsage) {
-        onUsage(parseModelUsage(response, protocol));
+        await onUsage({ runId, ...parseModelUsage(response, protocol) });
       }
       const turn = parse(response);
       if (initialFailureCategory) {
@@ -626,7 +629,7 @@ function emitMalformedJsonRetry(
 function parseModelUsage(
   value: unknown,
   protocol: OpenAiCompatibleProtocol
-): OpenAiModelUsage {
+): Omit<OpenAiModelUsage, "runId"> {
   if (!isRecord(value) || !isRecord(value.usage)) {
     throw new Error("OpenAI response is missing token usage");
   }

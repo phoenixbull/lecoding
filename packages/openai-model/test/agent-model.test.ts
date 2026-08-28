@@ -93,7 +93,9 @@ describe("createOpenAiResponsesAgentModel", () => {
     const retryEvents: unknown[] = [];
     const model = createOpenAiResponsesAgentModel({
       model: "gpt-test",
-      onUsage: (usage) => observedUsage.push(usage),
+      onUsage: (usage) => {
+        observedUsage.push(usage);
+      },
       onMalformedJsonRetry: (event) => retryEvents.push(event),
       client: {
         async create() {
@@ -125,8 +127,8 @@ describe("createOpenAiResponsesAgentModel", () => {
       arguments: { argv: ["node", "--test"] }
     });
     expect(observedUsage).toEqual([
-      { inputTokens: 10, outputTokens: 1 },
-      { inputTokens: 20, outputTokens: 2 }
+      { runId: "run-1", inputTokens: 10, outputTokens: 1 },
+      { runId: "run-1", inputTokens: 20, outputTokens: 2 }
     ]);
     expect(retryEvents).toEqual([
       {

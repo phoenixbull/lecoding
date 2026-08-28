@@ -71,7 +71,11 @@ const validWorkerEnvironment = {
   LECODING_MODEL_PROTOCOL: "openai_chat_completions",
   LECODING_MODEL_BASE_URL: "https://models.example/v1",
   LECODING_MODEL_API_KEY: "secret",
-  LECODING_MODEL_ID: "model-a"
+  LECODING_MODEL_ID: "model-a",
+  LECODING_MODEL_PRICING_VERSION: "vendor-pricing-2026-08-28",
+  LECODING_MODEL_INPUT_USD_PER_MILLION: "0.14",
+  LECODING_MODEL_OUTPUT_USD_PER_MILLION: "0.28",
+  LECODING_TEAM_MONTHLY_MAX_USD: "420"
 } as const;
 
 describe("createWorkerRuntime", () => {
@@ -517,6 +521,49 @@ describe("composeProductionWorker", () => {
     expect(loadWorkerConfig(validWorkerEnvironment).verificationImage).toBe(
       validWorkerEnvironment.LECODING_VERIFICATION_IMAGE
     );
+  });
+
+  it("loads explicit model pricing with the V3 Run budget defaults", () => {
+    expect(loadWorkerConfig(validWorkerEnvironment)).toMatchObject({
+      budgetLimits: {
+        maxTotalTokens: 1_000_000,
+        warningCostUsd: 1,
+        maxCostUsd: 2,
+        maxWallTimeMs: 1_800_000,
+        maxToolCalls: 60,
+        maxActiveRunsPerUser: 2,
+        maxActiveRunsPerProject: 5,
+        teamMonthlyWarningUsd: 336,
+        teamMonthlyMaxUsd: 420
+      },
+      pricing: {
+        modelId: "model-a",
+        version: "vendor-pricing-2026-08-28",
+        inputUsdPerMillion: 0.14,
+        outputUsdPerMillion: 0.28
+      }
+    });
+    const { LECODING_MODEL_PRICING_VERSION: _omitted, ...missingVersion } =
+      validWorkerEnvironment;
+    expect(() => loadWorkerConfig(missingVersion)).toThrow(
+      "LECODING_MODEL_PRICING_VERSION"
+    );
+  });
+
+  it("rejects warning thresholds above their corresponding hard limits", () => {
+    expect(() =>
+      loadWorkerConfig({
+        ...validWorkerEnvironment,
+        LECODING_RUN_COST_WARNING_USD: "3",
+        LECODING_RUN_COST_MAX_USD: "2"
+      })
+    ).toThrow("LECODING_RUN_COST_WARNING_USD must not exceed");
+    expect(() =>
+      loadWorkerConfig({
+        ...validWorkerEnvironment,
+        LECODING_TEAM_MONTHLY_WARNING_USD: "421"
+      })
+    ).toThrow("LECODING_TEAM_MONTHLY_WARNING_USD must not exceed");
   });
 
   it("accepts immutable local Docker image IDs for development hosts", () => {

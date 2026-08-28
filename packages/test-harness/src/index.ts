@@ -22,6 +22,7 @@ import {
   type AgentModelTurn,
   type ApprovalLedger,
   type ArtifactStore,
+  type RunBudgetManager,
   type Engine,
   type LeaseHeartbeat,
   type RetryPolicy,
@@ -81,6 +82,8 @@ export async function createTestHarness(options: {
   projectRules?: Pick<ProjectPolicyRules, "set">;
   /** Boundary used to verify large-output persistence behavior. */
   artifacts?: ArtifactStore;
+  /** Real or boundary budget manager used by quota integration tests. */
+  budgets?: RunBudgetManager;
   /** Deterministic output redactor used by security tests. */
   redactOutput?: (value: string) => string;
   /** 注入策略以验证 RunEngine 传递的规范化授权上下文。 */
@@ -124,6 +127,7 @@ export async function createTestHarness(options: {
       ? { projectRules: options.projectRules }
       : {}),
     ...(options.artifacts !== undefined ? { artifacts: options.artifacts } : {}),
+    ...(options.budgets !== undefined ? { budgets: options.budgets } : {}),
     ...(options.redactOutput !== undefined
       ? { redactOutput: options.redactOutput }
       : {}),

@@ -12,6 +12,7 @@ import type {
   RunEngine,
   RunFailure,
   RunId,
+  RunBudgetView,
   RunLease,
   RunLeaseAcquire,
   RunLeaseRelease,
@@ -20,6 +21,7 @@ import type {
   RunResumer,
   RunSummary,
   RunStatus,
+  RunStartContext,
   RunView,
   StartRun,
   VerificationReport
@@ -47,6 +49,7 @@ import {
   type ApprovalLedger
 } from "./postgres-approval-ledger.js";
 import type { ProjectPolicyRules } from "./postgres-project-policy-rules.js";
+import type { RunBudgetManager } from "./postgres-run-budget.js";
 
 export type { RetryPolicy, LeaseHeartbeat } from "@lecoding/contracts";
 export {
@@ -82,6 +85,21 @@ export {
   createPostgresLocalArtifactStore
 } from "./postgres-local-artifact-store.js";
 export { createIntervalArtifactRetentionWorker } from "./artifact-retention.js";
+export {
+  createPostgresRunBudgetManager,
+  RUN_BUDGET_SCHEMA_SQL
+} from "./postgres-run-budget.js";
+export type {
+  PostgresRunBudgetManager,
+  RunBudgetManager,
+  RunBudgetAdmission,
+  RunBudgetDecision,
+  RunBudgetLimitReason,
+  RunBudgetLimits,
+  RunBudgetSnapshot,
+  RunBudgetWarning,
+  RunModelPricing
+} from "./postgres-run-budget.js";
 export type {
   ArtifactRetentionReport,
   ArtifactRetentionWorker
@@ -195,6 +213,19 @@ export class RunConflictError extends Error {
   }
 }
 
+/** Admission rejection returned before a Run snapshot or worktree is created. */
+export class RunAdmissionError extends Error {
+  constructor(
+    readonly reason:
+      | "user_concurrency_limit"
+      | "project_concurrency_limit"
+      | "team_monthly_cost_limit"
+  ) {
+    super(`Run admission rejected: ${reason}`);
+    this.name = "RunAdmissionError";
+  }
+}
+
 /**
  * 租约丢失:持有 token 的调用方在写入前发现租约已被抢占或过期。
  * 一切后续持久化写入必须放弃,由新 owner 接管;
@@ -264,6 +295,8 @@ export interface RunEngineDependencies {
   approvals?: ApprovalLedger;
   /** Exact administrator project rules written by project-scoped decisions. */
   projectRules?: Pick<ProjectPolicyRules, "set">;
+  /** Durable hard-limit gate shared with the model usage settlement callback. */
+  budgets?: RunBudgetManager;
   /** Durable content-addressed storage used before large output enters Run state. */
   artifacts?: ArtifactStore;
   /** Deployment-seeded secret redactor applied before persistence or model reuse. */
@@ -480,7 +513,7 @@ class DefaultRunEngine implements RunEngine, RunResumer, DisposableEngine {
     await stop?.();
   }
 
-  async start(input: StartRun): Promise<RunId> {
+  async start(input: StartRun, context?: RunStartContext): Promise<RunId> {
     /*
      * 入队语义:start 仅持久化 Run 到 queued 并发事件,立即返回。
      * 环境准备与模型驱动由 Worker 侧 resume() 推进,与 HTTP 请求生命周期解耦,
@@ -497,6 +530,21 @@ class DefaultRunEngine implements RunEngine, RunResumer, DisposableEngine {
       throw new Error("Run input contains a deployment secret");
     }
     const id = this.dependencies.createId();
+    let budgetOpened = false;
+    if (this.dependencies.budgets) {
+      if (!context?.actorId) {
+        throw new Error("Run budget admission requires an authenticated actor");
+      }
+      const admission = await this.dependencies.budgets.open({
+        runId: id,
+        projectId: input.projectId,
+        userId: context.actorId
+      });
+      if (!admission.allowed) {
+        throw new RunAdmissionError(admission.reason);
+      }
+      budgetOpened = true;
+    }
     const stored: StoredRun = {
       id,
       input,
@@ -504,7 +552,14 @@ class DefaultRunEngine implements RunEngine, RunResumer, DisposableEngine {
       version: 0,
       toolResults: []
     };
-    await this.transition(stored, "queued");
+    try {
+      await this.transition(stored, "queued");
+    } catch (error) {
+      if (budgetOpened) {
+        await this.dependencies.budgets!.close(id).catch(() => undefined);
+      }
+      throw error;
+    }
     return id;
   }
 
@@ -1016,6 +1071,7 @@ class DefaultRunEngine implements RunEngine, RunResumer, DisposableEngine {
     const artifacts = run.toolResults.flatMap((result) =>
       result.status === "executed" ? (result.artifacts ?? []) : []
     );
+    const budgetSnapshot = await this.dependencies.budgets?.get(runId);
 
     return {
       id: run.id,
@@ -1036,7 +1092,8 @@ class DefaultRunEngine implements RunEngine, RunResumer, DisposableEngine {
         : {}),
       ...(run.failure ? { failure: run.failure } : {}),
       ...(run.verification ? { verification: run.verification } : {}),
-      ...(artifacts.length > 0 ? { artifacts } : {})
+      ...(artifacts.length > 0 ? { artifacts } : {}),
+      ...(budgetSnapshot ? { budget: toRunBudgetView(budgetSnapshot) } : {})
     };
   }
 
@@ -1203,6 +1260,10 @@ class DefaultRunEngine implements RunEngine, RunResumer, DisposableEngine {
       }
       stored = current;
 
+      if (!(await this.enforceBudget(stored, token))) {
+        return;
+      }
+
       let turn: Extract<AgentModelTurn, { type: "tool_call" }>;
       if (stored.pendingToolCall) {
         // A replacement Worker resumes the exact provider call instead of minting a new callId.
@@ -1217,6 +1278,12 @@ class DefaultRunEngine implements RunEngine, RunResumer, DisposableEngine {
             (entry) => entry.message
           )
         });
+
+        /* The model gateway settles provider usage before returning its turn; this
+         * second gate prevents an over-budget response from reaching any action. */
+        if (!(await this.enforceBudget(stored, token))) {
+          return;
+        }
 
         if (modelTurn.type === "completed") {
           if (stored.pendingSteering?.length) {
@@ -1247,6 +1314,15 @@ class DefaultRunEngine implements RunEngine, RunResumer, DisposableEngine {
           return;
         }
         turn = modelTurn;
+        if (this.dependencies.budgets) {
+          const toolBudget = await this.dependencies.budgets.recordToolCall(
+            stored.id
+          );
+          if (!toolBudget.allowed) {
+            await this.failBudget(stored, toolBudget.reason, token);
+            return;
+          }
+        }
         if (toolTurnText(turn).some((value) => this.containsDeploymentSecret(value))) {
           /* Never persist credential-bearing argv/purpose text. The model receives
            * only a stable denial and may choose a credential-free alternative. */
@@ -1825,6 +1901,36 @@ class DefaultRunEngine implements RunEngine, RunResumer, DisposableEngine {
     return run;
   }
 
+  /** Checks persisted wall/token/cost state at every model-loop boundary. */
+  private async enforceBudget(
+    stored: StoredRun,
+    token: RunLeaseToken
+  ): Promise<boolean> {
+    if (!this.dependencies.budgets) {
+      return true;
+    }
+    const decision = await this.dependencies.budgets.check(stored.id);
+    if (decision.allowed) {
+      return true;
+    }
+    await this.failBudget(stored, decision.reason, token);
+    return false;
+  }
+
+  private async failBudget(
+    stored: StoredRun,
+    reason: import("./postgres-run-budget.js").RunBudgetLimitReason,
+    token: RunLeaseToken
+  ): Promise<void> {
+    stored.failure = {
+      code: "budget_exhausted",
+      message: budgetFailureMessage(reason)
+    };
+    await this.transition(stored, "failed", token, [
+      this.runFailureEvent(stored.failure)
+    ]);
+  }
+
   /**
    * 心跳兜底取消检测:PG LISTEN/NOTIFY 漏派时(订阅断线/消息丢失),
    * cancel 命令已经把 run 写成终态 "cancelled",worker 通过 store 在下一个
@@ -1880,6 +1986,9 @@ class DefaultRunEngine implements RunEngine, RunResumer, DisposableEngine {
           await this.dependencies.events.publish({ runId: stored.id, ...event });
         }
       }
+      if (isTerminalStatus(status)) {
+        await this.dependencies.budgets?.close(stored.id);
+      }
       return;
     }
     if (this.dependencies.transitions) {
@@ -1893,6 +2002,9 @@ class DefaultRunEngine implements RunEngine, RunResumer, DisposableEngine {
         type: "status_changed",
         data: { status }
       });
+    }
+    if (isTerminalStatus(status)) {
+      await this.dependencies.budgets?.close(stored.id);
     }
   }
 
@@ -2431,6 +2543,63 @@ function isDriverStartable(status: RunStatus): boolean {
       return exhaustive;
     }
   }
+}
+
+/** Terminal Run state releases durable user/project concurrency exactly once. */
+function isTerminalStatus(status: RunStatus): boolean {
+  return (
+    status === "succeeded" || status === "failed" || status === "cancelled"
+  );
+}
+
+function budgetFailureMessage(
+  reason: import("./postgres-run-budget.js").RunBudgetLimitReason
+): string {
+  switch (reason) {
+    case "token_limit":
+      return "Run token limit exceeded";
+    case "cost_limit":
+      return "Run cost limit exceeded";
+    case "wall_time_limit":
+      return "Run wall-clock limit exceeded";
+    case "tool_call_limit":
+      return "Run tool-call limit exceeded";
+    case "team_monthly_cost_limit":
+      return "Team monthly cost limit exceeded";
+    case "user_concurrency_limit":
+      return "User concurrency limit exceeded";
+    case "project_concurrency_limit":
+      return "Project concurrency limit exceeded";
+    default: {
+      const exhaustive: never = reason;
+      return exhaustive;
+    }
+  }
+}
+
+/** Removes server-only ownership fields from the authenticated Run projection. */
+function toRunBudgetView(
+  snapshot: import("./postgres-run-budget.js").RunBudgetSnapshot
+): RunBudgetView {
+  return {
+    inputTokens: snapshot.inputTokens,
+    outputTokens: snapshot.outputTokens,
+    totalTokens: snapshot.totalTokens,
+    costUsd: snapshot.costUsd,
+    toolCalls: snapshot.toolCalls,
+    elapsedMs: snapshot.elapsedMs,
+    maxTotalTokens: snapshot.maxTotalTokens,
+    warningCostUsd: snapshot.warningCostUsd,
+    maxCostUsd: snapshot.maxCostUsd,
+    maxWallTimeMs: snapshot.maxWallTimeMs,
+    maxToolCalls: snapshot.maxToolCalls,
+    teamMonthlyCostUsd: snapshot.teamMonthlyCostUsd,
+    teamMonthlyWarningUsd: snapshot.teamMonthlyWarningUsd,
+    teamMonthlyMaxUsd: snapshot.teamMonthlyMaxUsd,
+    modelId: snapshot.modelId,
+    pricingVersion: snapshot.pricingVersion,
+    warnings: [...snapshot.warnings]
+  };
 }
 
 /** Statuses where a mailbox instruction can still reach a future model boundary. */
