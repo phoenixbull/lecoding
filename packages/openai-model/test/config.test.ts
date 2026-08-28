@@ -6,6 +6,107 @@ import {
 } from "../src/index.js";
 
 describe("loadOpenAiCompatibleModelConfig", () => {
+  it("preserves request budgeting hooks through provider-neutral composition", async () => {
+    const lifecycle: string[] = [];
+    const model = createOpenAiCompatibleAgentModel({
+      config: {
+        protocol: "openai_responses",
+        baseUrl: "https://model.vendor.example/v1",
+        apiKey: "vendor-secret",
+        model: "vendor-coder-v2"
+      },
+      maxInputTokens: 240_000,
+      maxOutputTokens: 4_000,
+      createRequestId: () => "compatible-request-1",
+      onRequestStart: async ({ requestId }) => {
+        lifecycle.push(`reserve:${requestId}`);
+      },
+      onUsage: async ({ requestId }) => {
+        lifecycle.push(`settle:${requestId}`);
+      },
+      onRequestFailure: async ({ requestId }) => {
+        lifecycle.push(`forfeit:${requestId}`);
+      },
+      fetch: async (_url, init) => {
+        lifecycle.push(`send:${JSON.parse(init.body).max_output_tokens}`);
+        return {
+          ok: true,
+          status: 200,
+          async json() {
+            return {
+              id: "response-1",
+              status: "completed",
+              output: [],
+              output_text: "Done",
+              usage: { input_tokens: 10, output_tokens: 2 }
+            };
+          }
+        };
+      }
+    });
+
+    await model.next(baseCompatibleInput());
+    expect(lifecycle).toEqual([
+      "reserve:compatible-request-1",
+      "send:4000",
+      "settle:compatible-request-1"
+    ]);
+  });
+
+  it("uses separate reservations when malformed HTTP JSON triggers a retry", async () => {
+    const lifecycle: string[] = [];
+    const requestIds = ["request-invalid", "request-retry"];
+    let providerCalls = 0;
+    const model = createOpenAiCompatibleAgentModel({
+      config: {
+        protocol: "openai_responses",
+        baseUrl: "https://model.vendor.example/v1",
+        apiKey: "vendor-secret",
+        model: "vendor-coder-v2"
+      },
+      createRequestId: () => requestIds.shift()!,
+      onRequestStart: async ({ requestId }) => {
+        lifecycle.push(`reserve:${requestId}`);
+      },
+      onUsage: async ({ requestId }) => {
+        lifecycle.push(`settle:${requestId}`);
+      },
+      onRequestFailure: async ({ requestId }) => {
+        lifecycle.push(`forfeit:${requestId}`);
+      },
+      fetch: async () => {
+        providerCalls += 1;
+        lifecycle.push(`send:${providerCalls}`);
+        return {
+          ok: true,
+          status: 200,
+          async json() {
+            if (providerCalls === 1) {
+              throw new SyntaxError("truncated response");
+            }
+            return {
+              id: "response-retry",
+              status: "completed",
+              output: [],
+              output_text: "Recovered",
+              usage: { input_tokens: 10, output_tokens: 2 }
+            };
+          }
+        };
+      }
+    });
+
+    await model.next(baseCompatibleInput());
+    expect(lifecycle).toEqual([
+      "reserve:request-invalid",
+      "send:1",
+      "forfeit:request-invalid",
+      "reserve:request-retry",
+      "send:2",
+      "settle:request-retry"
+    ]);
+  });
+
   it("loads a non-OpenAI Responses-compatible provider from neutral environment variables", () => {
     const config = loadOpenAiCompatibleModelConfig({
       LECODING_MODEL_PROTOCOL: "openai_responses",
@@ -654,3 +755,18 @@ describe("loadOpenAiCompatibleModelConfig", () => {
     ).toThrow("Remote model base URL must use HTTPS");
   });
 });
+
+function baseCompatibleInput() {
+  return {
+    runId: "run-compatible",
+    run: {
+      projectId: "project-1",
+      environmentId: "environment-1",
+      task: "Fix tests",
+      acceptanceCriteria: ["Tests pass"],
+      approvalMode: "auto_review" as const,
+      fileAccessScope: "workspace_only" as const
+    },
+    toolResults: []
+  };
+}

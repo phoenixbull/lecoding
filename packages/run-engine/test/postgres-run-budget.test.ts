@@ -3,11 +3,11 @@ import { describe, expect, it } from "vitest";
 import { createPostgresRunBudgetManager } from "../src/postgres-run-budget.js";
 
 describe("PostgreSQL Run budget manager", () => {
-  it("atomically records provider usage and closes the token hard limit", async () => {
+  it("atomically reserves worst-case model tokens and releases them on settlement", async () => {
     const database = new PGlite();
     const budgets = await createPostgresRunBudgetManager(database, {
       limits: {
-        maxTotalTokens: 150,
+        maxTotalTokens: 250,
         warningCostUsd: 1,
         maxCostUsd: 2,
         maxWallTimeMs: 30 * 60_000,
@@ -22,44 +22,188 @@ describe("PostgreSQL Run budget manager", () => {
         version: "pricing-2026-08-28",
         inputUsdPerMillion: 0.14,
         outputUsdPerMillion: 0.28
-      },
-      now: () => "2026-08-28T08:00:00.000Z"
+      }
     });
     await budgets.open({
-      runId: "run-1",
+      runId: "run-reserve",
       projectId: "project-1",
       userId: "user-1"
     });
 
     await expect(
-      budgets.recordModelUsage({
-        runId: "run-1",
-        inputTokens: 100,
+      budgets.reserveModelRequest({
+        runId: "run-reserve",
+        requestId: "request-1",
+        maxInputTokens: 200,
+        maxOutputTokens: 50
+      })
+    ).resolves.toMatchObject({ allowed: true });
+    await expect(
+      budgets.settleModelRequest({
+        runId: "run-reserve",
+        requestId: "request-1",
+        inputTokens: 10,
+        outputTokens: 5
+      })
+    ).resolves.toMatchObject({
+      allowed: true,
+      snapshot: { totalTokens: 15 }
+    });
+    await expect(
+      budgets.reserveModelRequest({
+        runId: "run-reserve",
+        requestId: "request-2",
+        maxInputTokens: 200,
+        maxOutputTokens: 50
+      })
+    ).resolves.toMatchObject({ allowed: false, reason: "token_limit" });
+    await database.close();
+  });
+
+  it("fails closed when provider usage exceeds its reserved request envelope", async () => {
+    const database = new PGlite();
+    const budgets = await createPostgresRunBudgetManager(database, {
+      limits: {
+        maxTotalTokens: 1_000,
+        warningCostUsd: 1,
+        maxCostUsd: 2,
+        maxWallTimeMs: 30 * 60_000,
+        maxToolCalls: 60,
+        maxActiveRunsPerUser: 2,
+        maxActiveRunsPerProject: 5,
+        teamMonthlyWarningUsd: 350,
+        teamMonthlyMaxUsd: 420
+      },
+      pricing: {
+        modelId: "vendor-model-v1",
+        version: "pricing-2026-08-28",
+        inputUsdPerMillion: 0.14,
+        outputUsdPerMillion: 0.28
+      }
+    });
+    await budgets.open({
+      runId: "run-provider-overage",
+      projectId: "project-1",
+      userId: "user-1"
+    });
+    await budgets.reserveModelRequest({
+      runId: "run-provider-overage",
+      requestId: "request-provider-overage",
+      maxInputTokens: 100,
+      maxOutputTokens: 20
+    });
+
+    await expect(
+      budgets.settleModelRequest({
+        runId: "run-provider-overage",
+        requestId: "request-provider-overage",
+        inputTokens: 101,
         outputTokens: 20
+      })
+    ).resolves.toMatchObject({
+      allowed: false,
+      reason: "token_limit",
+      snapshot: { inputTokens: 101, outputTokens: 20, totalTokens: 121 }
+    });
+    await database.close();
+  });
+
+  it("conservatively forfeits unknown provider usage exactly once", async () => {
+    const database = new PGlite();
+    const budgets = await createPostgresRunBudgetManager(database, {
+      limits: {
+        maxTotalTokens: 1_000,
+        warningCostUsd: 1,
+        maxCostUsd: 2,
+        maxWallTimeMs: 30 * 60_000,
+        maxToolCalls: 60,
+        maxActiveRunsPerUser: 2,
+        maxActiveRunsPerProject: 5,
+        teamMonthlyWarningUsd: 350,
+        teamMonthlyMaxUsd: 420
+      },
+      pricing: {
+        modelId: "vendor-model-v1",
+        version: "pricing-2026-08-28",
+        inputUsdPerMillion: 0.14,
+        outputUsdPerMillion: 0.28
+      }
+    });
+    await budgets.open({
+      runId: "run-forfeit",
+      projectId: "project-1",
+      userId: "user-1"
+    });
+    await budgets.reserveModelRequest({
+      runId: "run-forfeit",
+      requestId: "request-unknown",
+      maxInputTokens: 100,
+      maxOutputTokens: 20
+    });
+
+    await expect(
+      budgets.forfeitModelRequest({
+        runId: "run-forfeit",
+        requestId: "request-unknown"
       })
     ).resolves.toMatchObject({
       allowed: true,
       snapshot: { inputTokens: 100, outputTokens: 20, totalTokens: 120 }
     });
-    await expect(
-      budgets.recordModelUsage({
-        runId: "run-1",
-        inputTokens: 30,
-        outputTokens: 1
-      })
-    ).resolves.toMatchObject({
-      allowed: false,
-      reason: "token_limit",
-      snapshot: {
-        inputTokens: 130,
-        outputTokens: 21,
-        totalTokens: 151,
-        pricingVersion: "pricing-2026-08-28"
+    await budgets.forfeitModelRequest({
+      runId: "run-forfeit",
+      requestId: "request-unknown"
+    });
+    await expect(budgets.get("run-forfeit")).resolves.toMatchObject({
+      inputTokens: 100,
+      outputTokens: 20,
+      totalTokens: 120,
+      costUsd: 0.00002
+    });
+    await database.close();
+  });
+
+  it("charges an in-flight reservation before terminal budget closure", async () => {
+    const database = new PGlite();
+    const budgets = await createPostgresRunBudgetManager(database, {
+      limits: {
+        maxTotalTokens: 1_000,
+        warningCostUsd: 1,
+        maxCostUsd: 2,
+        maxWallTimeMs: 30 * 60_000,
+        maxToolCalls: 60,
+        maxActiveRunsPerUser: 2,
+        maxActiveRunsPerProject: 5,
+        teamMonthlyWarningUsd: 350,
+        teamMonthlyMaxUsd: 420
+      },
+      pricing: {
+        modelId: "vendor-model-v1",
+        version: "pricing-2026-08-28",
+        inputUsdPerMillion: 0.14,
+        outputUsdPerMillion: 0.28
       }
     });
-    await expect(budgets.get("run-1")).resolves.toMatchObject({
-      totalTokens: 151,
-      maxTotalTokens: 150
+    await budgets.open({
+      runId: "run-cancelled-request",
+      projectId: "project-1",
+      userId: "user-1"
+    });
+    await budgets.reserveModelRequest({
+      runId: "run-cancelled-request",
+      requestId: "request-in-flight",
+      maxInputTokens: 100,
+      maxOutputTokens: 20
+    });
+
+    await budgets.close("run-cancelled-request");
+
+    await expect(budgets.get("run-cancelled-request")).resolves.toMatchObject({
+      active: false,
+      inputTokens: 100,
+      outputTokens: 20,
+      totalTokens: 120,
+      costUsd: 0.00002
     });
     await database.close();
   });
@@ -92,9 +236,16 @@ describe("PostgreSQL Run budget manager", () => {
       userId: "user-1"
     });
 
+    await budgets.reserveModelRequest({
+      runId: "run-cost",
+      requestId: "request-cost-1",
+      maxInputTokens: 100,
+      maxOutputTokens: 20
+    });
     await expect(
-      budgets.recordModelUsage({
+      budgets.settleModelRequest({
         runId: "run-cost",
+        requestId: "request-cost-1",
         inputTokens: 100,
         outputTokens: 20
       })
@@ -103,15 +254,16 @@ describe("PostgreSQL Run budget manager", () => {
       snapshot: { costUsd: 0.00002, warnings: ["cost_warning"] }
     });
     await expect(
-      budgets.recordModelUsage({
+      budgets.reserveModelRequest({
         runId: "run-cost",
-        inputTokens: 1,
-        outputTokens: 0
+        requestId: "request-cost-2",
+        maxInputTokens: 1,
+        maxOutputTokens: 1
       })
     ).resolves.toMatchObject({
       allowed: false,
       reason: "cost_limit",
-      snapshot: { costUsd: 0.000021 }
+      snapshot: { costUsd: 0.00002 }
     });
     await database.close();
   });
@@ -327,8 +479,15 @@ describe("PostgreSQL Run budget manager", () => {
       projectId: "project-1",
       userId: "user-1"
     });
-    await budgets.recordModelUsage({
+    await budgets.reserveModelRequest({
       runId: "run-spent",
+      requestId: "request-spent",
+      maxInputTokens: 100,
+      maxOutputTokens: 20
+    });
+    await budgets.settleModelRequest({
+      runId: "run-spent",
+      requestId: "request-spent",
       inputTokens: 100,
       outputTokens: 20
     });
@@ -350,7 +509,56 @@ describe("PostgreSQL Run budget manager", () => {
     await database.close();
   });
 
-  it("stops the active Run when usage crosses the team monthly limit", async () => {
+  it("counts active model reservations when admitting a new team Run", async () => {
+    const database = new PGlite();
+    const budgets = await createPostgresRunBudgetManager(database, {
+      limits: {
+        maxTotalTokens: 10_000,
+        warningCostUsd: 1,
+        maxCostUsd: 2,
+        maxWallTimeMs: 30 * 60_000,
+        maxToolCalls: 60,
+        maxActiveRunsPerUser: 5,
+        maxActiveRunsPerProject: 5,
+        teamMonthlyWarningUsd: 0.000016,
+        teamMonthlyMaxUsd: 0.00002
+      },
+      pricing: {
+        modelId: "vendor-model-v1",
+        version: "pricing-2026-08-28",
+        inputUsdPerMillion: 0.14,
+        outputUsdPerMillion: 0.28
+      },
+      now: () => "2026-08-28T08:00:00.000Z"
+    });
+    await budgets.open({
+      runId: "run-reserved-team-cost",
+      projectId: "project-1",
+      userId: "user-1"
+    });
+    await budgets.reserveModelRequest({
+      runId: "run-reserved-team-cost",
+      requestId: "request-reserved-team-cost",
+      maxInputTokens: 100,
+      maxOutputTokens: 20
+    });
+
+    await expect(
+      budgets.open({
+        runId: "run-after-reservation",
+        projectId: "project-2",
+        userId: "user-2"
+      })
+    ).resolves.toMatchObject({
+      allowed: false,
+      reason: "team_monthly_cost_limit",
+      spentUsd: 0.00002,
+      limitUsd: 0.00002
+    });
+    await database.close();
+  });
+
+  it("accounts provider overage in the team month before failing the request", async () => {
     const database = new PGlite();
     const budgets = await createPostgresRunBudgetManager(database, {
       limits: {
@@ -378,15 +586,22 @@ describe("PostgreSQL Run budget manager", () => {
       userId: "user-1"
     });
 
+    await budgets.reserveModelRequest({
+      runId: "run-cross-team-limit",
+      requestId: "request-cross-team-limit",
+      maxInputTokens: 100,
+      maxOutputTokens: 20
+    });
     await expect(
-      budgets.recordModelUsage({
+      budgets.settleModelRequest({
         runId: "run-cross-team-limit",
+        requestId: "request-cross-team-limit",
         inputTokens: 103,
         outputTokens: 20
       })
     ).resolves.toMatchObject({
       allowed: false,
-      reason: "team_monthly_cost_limit",
+      reason: "token_limit",
       snapshot: {
         costUsd: 0.000021,
         teamMonthlyCostUsd: 0.000021,

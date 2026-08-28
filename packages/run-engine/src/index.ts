@@ -226,6 +226,16 @@ export class RunAdmissionError extends Error {
   }
 }
 
+/** Request preauthorization rejection raised before provider I/O begins. */
+export class RunBudgetExceededError extends Error {
+  constructor(
+    readonly reason: import("./postgres-run-budget.js").RunBudgetLimitReason
+  ) {
+    super(budgetFailureMessage(reason));
+    this.name = "RunBudgetExceededError";
+  }
+}
+
 /**
  * 租约丢失:持有 token 的调用方在写入前发现租约已被抢占或过期。
  * 一切后续持久化写入必须放弃,由新 owner 接管;
@@ -622,6 +632,10 @@ class DefaultRunEngine implements RunEngine, RunResumer, DisposableEngine {
             error instanceof RunConflictError ||
             error instanceof LeaseLostError
           ) {
+            return;
+          }
+          if (error instanceof RunBudgetExceededError) {
+            await this.failBudget(stored, error.reason, token);
             return;
           }
           await this.recordAgentLoopFailure(stored, error, token);
@@ -1239,6 +1253,17 @@ class DefaultRunEngine implements RunEngine, RunResumer, DisposableEngine {
      */
     if (stored.status !== "running") {
       return;
+    }
+    if (this.dependencies.budgets) {
+      /* A replacement Worker cannot know whether a provider billed the request that
+       * died with its predecessor, so recovery charges the persisted worst case. */
+      const recovered = await this.dependencies.budgets.reconcileModelRequests(
+        stored.id
+      );
+      if (!recovered.allowed) {
+        await this.failBudget(stored, recovered.reason, token);
+        return;
+      }
     }
     for (;;) {
       /*

@@ -35,6 +35,7 @@ import {
   createPostgresRunTransitionWriter,
   createPostgresToolCallLedger,
   createRunEngine,
+  RunBudgetExceededError,
   type PostgresExecutor,
   type PostgresNotifiable
 } from "@lecoding/run-engine";
@@ -97,6 +98,11 @@ export interface WorkerConfig {
   verificationImage: string;
   recoveryIntervalMs: number;
   eventDispatchIntervalMs: number;
+  /** Provider-neutral per-request envelope enforced before any billable call. */
+  modelRequestLimits: {
+    maxInputTokens: number;
+    maxOutputTokens: number;
+  };
   budgetLimits: RunBudgetLimits;
   pricing: RunModelPricing;
 }
@@ -294,6 +300,20 @@ export function loadWorkerConfig(environment: ModelEnvironment): WorkerConfig {
       "LECODING_EVENT_DISPATCH_INTERVAL_MS",
       100
     ),
+    modelRequestLimits: {
+      maxInputTokens: readPositiveInteger(
+        environment,
+        "LECODING_MODEL_MAX_INPUT_TOKENS",
+        240_000,
+        2_000_000
+      ),
+      maxOutputTokens: readPositiveInteger(
+        environment,
+        "LECODING_MODEL_MAX_OUTPUT_TOKENS",
+        16_000,
+        1_000_000
+      )
+    },
     budgetLimits: {
       maxTotalTokens: readPositiveInteger(
         environment,
@@ -800,9 +820,36 @@ export async function composeProductionWorker(
       environment: runtimeEnvironment,
       model: createOpenAiCompatibleAgentModel({
         config: modelConfig,
-        // Provider usage is durably charged before RunEngine may consume the turn.
+        maxInputTokens: config.modelRequestLimits.maxInputTokens,
+        maxOutputTokens: config.modelRequestLimits.maxOutputTokens,
+        // Worst-case exposure is reserved atomically before provider I/O begins.
+        onRequestStart: async (request) => {
+          const decision = await budgets.reserveModelRequest(request);
+          if (!decision.allowed) {
+            throw new RunBudgetExceededError(decision.reason);
+          }
+        },
+        // Provider usage is durably settled before RunEngine may consume the turn.
         onUsage: async (usage) => {
-          await budgets.recordModelUsage(usage);
+          if (!usage.requestId) {
+            throw new Error("Reserved model usage is missing its request identity");
+          }
+          const decision = await budgets.settleModelRequest({
+            runId: usage.runId,
+            requestId: usage.requestId,
+            inputTokens: usage.inputTokens,
+            outputTokens: usage.outputTokens
+          });
+          if (!decision.allowed) {
+            throw new RunBudgetExceededError(decision.reason);
+          }
+        },
+        // Unknowable billing is conservatively charged at the reserved maximum.
+        onRequestFailure: async (request) => {
+          const decision = await budgets.forfeitModelRequest(request);
+          if (!decision.allowed) {
+            throw new RunBudgetExceededError(decision.reason);
+          }
         },
         ...(options.onModelRetry
           ? { onMalformedJsonRetry: options.onModelRetry }

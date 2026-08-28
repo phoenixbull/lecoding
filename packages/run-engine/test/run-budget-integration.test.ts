@@ -3,10 +3,120 @@ import { describe, expect, it, vi } from "vitest";
 import { createTestHarness } from "@lecoding/test-harness";
 import {
   createPostgresRunBudgetManager,
+  RunBudgetExceededError,
   type AgentModel
 } from "../src/index.js";
 
 describe("RunEngine budget integration", () => {
+  it("forfeits an abandoned model reservation before crash recovery continues", async () => {
+    const database = new PGlite();
+    const budgets = await createPostgresRunBudgetManager(database, {
+      limits: {
+        maxTotalTokens: 100,
+        warningCostUsd: 1,
+        maxCostUsd: 2,
+        maxWallTimeMs: 30 * 60_000,
+        maxToolCalls: 60,
+        maxActiveRunsPerUser: 2,
+        maxActiveRunsPerProject: 5,
+        teamMonthlyWarningUsd: 350,
+        teamMonthlyMaxUsd: 420
+      },
+      pricing: {
+        modelId: "vendor-model-v1",
+        version: "pricing-2026-08-28",
+        inputUsdPerMillion: 0.14,
+        outputUsdPerMillion: 0.28
+      }
+    });
+    const model: AgentModel = {
+      next: vi.fn(async () => ({
+        type: "completed" as const,
+        summary: "Done"
+      }))
+    };
+    const harness = await createTestHarness({ budgets, model });
+    const runId = await harness.engine.start(
+      {
+        projectId: "project-1",
+        environmentId: "environment-1",
+        task: "Recover safely",
+        acceptanceCriteria: ["Unknown usage is charged"],
+        approvalMode: "auto_review",
+        fileAccessScope: "workspace_only"
+      },
+      { actorId: "user-1" }
+    );
+    await budgets.reserveModelRequest({
+      runId,
+      requestId: "request-before-crash",
+      maxInputTokens: 80,
+      maxOutputTokens: 20
+    });
+
+    await harness.engine.resume(runId);
+
+    expect(model.next).toHaveBeenCalledTimes(1);
+    await expect(harness.engine.inspect(runId)).resolves.toMatchObject({
+      status: "succeeded",
+      budget: { inputTokens: 80, outputTokens: 20, totalTokens: 100 }
+    });
+    await database.close();
+  });
+
+  it("maps request preauthorization rejection to the stable budget failure", async () => {
+    const database = new PGlite();
+    const budgets = await createPostgresRunBudgetManager(database, {
+      limits: {
+        maxTotalTokens: 1_000,
+        warningCostUsd: 1,
+        maxCostUsd: 2,
+        maxWallTimeMs: 30 * 60_000,
+        maxToolCalls: 60,
+        maxActiveRunsPerUser: 2,
+        maxActiveRunsPerProject: 5,
+        teamMonthlyWarningUsd: 350,
+        teamMonthlyMaxUsd: 420
+      },
+      pricing: {
+        modelId: "vendor-model-v1",
+        version: "pricing-2026-08-28",
+        inputUsdPerMillion: 0.14,
+        outputUsdPerMillion: 0.28
+      }
+    });
+    const harness = await createTestHarness({
+      budgets,
+      model: {
+        async next() {
+          throw new RunBudgetExceededError("cost_limit");
+        }
+      }
+    });
+    const runId = await harness.engine.start(
+      {
+        projectId: "project-1",
+        environmentId: "environment-1",
+        task: "Run the tests",
+        acceptanceCriteria: ["Tests pass"],
+        approvalMode: "auto_review",
+        fileAccessScope: "workspace_only"
+      },
+      { actorId: "user-1" }
+    );
+
+    await harness.engine.resume(runId);
+
+    await expect(harness.engine.inspect(runId)).resolves.toMatchObject({
+      status: "failed",
+      failure: {
+        code: "budget_exhausted",
+        message: "Run cost limit exceeded"
+      }
+    });
+    await database.close();
+  });
+
   it("fails before a tool side effect when settled model usage exceeds tokens", async () => {
     const database = new PGlite();
     const budgets = await createPostgresRunBudgetManager(database, {
@@ -32,8 +142,15 @@ describe("RunEngine budget integration", () => {
     const model: AgentModel = {
       async next(input) {
         // Mirrors the production model gateway: usage settles before turn delivery.
-        await budgets.recordModelUsage({
+        await budgets.reserveModelRequest({
           runId: input.runId,
+          requestId: "request-over-budget",
+          maxInputTokens: 9,
+          maxOutputTokens: 1
+        });
+        await budgets.settleModelRequest({
+          runId: input.runId,
+          requestId: "request-over-budget",
           inputTokens: 10,
           outputTokens: 1
         });

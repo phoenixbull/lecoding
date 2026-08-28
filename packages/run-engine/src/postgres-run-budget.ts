@@ -92,11 +92,27 @@ export interface RunBudgetManager {
     projectId: string;
     userId: string;
   }): Promise<RunBudgetAdmission>;
-  recordModelUsage(input: {
+  /** Atomically reserves the maximum provider exposure before network I/O. */
+  reserveModelRequest(input: {
     runId: string;
+    requestId: string;
+    maxInputTokens: number;
+    maxOutputTokens: number;
+  }): Promise<RunBudgetDecision>;
+  /** Replaces one active reservation with validated provider usage exactly once. */
+  settleModelRequest(input: {
+    runId: string;
+    requestId: string;
     inputTokens: number;
     outputTokens: number;
   }): Promise<RunBudgetDecision>;
+  /** Charges the full reservation when actual provider usage is unknowable. */
+  forfeitModelRequest(input: {
+    runId: string;
+    requestId: string;
+  }): Promise<RunBudgetDecision>;
+  /** Charges any active reservation left by a crashed request before recovery. */
+  reconcileModelRequests(runId: string): Promise<RunBudgetDecision>;
   recordToolCall(runId: string): Promise<RunBudgetDecision>;
   check(runId: string): Promise<RunBudgetDecision>;
   close(runId: string): Promise<void>;
@@ -139,6 +155,24 @@ const RUN_BUDGET_ACTIVE_PROJECT_INDEX_SQL = `CREATE INDEX IF NOT EXISTS
   run_engine_budgets_active_project_idx ON run_engine_budgets (project_id)
   WHERE finished_at IS NULL;`;
 
+const RUN_MODEL_RESERVATION_SCHEMA_SQL = `
+CREATE TABLE IF NOT EXISTS run_engine_model_reservations (
+  request_id text PRIMARY KEY,
+  run_id text NOT NULL REFERENCES run_engine_budgets(run_id) ON DELETE CASCADE,
+  max_input_tokens bigint NOT NULL CHECK (max_input_tokens > 0),
+  max_output_tokens bigint NOT NULL CHECK (max_output_tokens > 0),
+  reserved_cost_microusd bigint NOT NULL CHECK (reserved_cost_microusd >= 0),
+  status text NOT NULL CHECK (status IN ('active', 'settled', 'forfeited')),
+  actual_input_tokens bigint CHECK (actual_input_tokens >= 0),
+  actual_output_tokens bigint CHECK (actual_output_tokens >= 0),
+  created_at timestamptz NOT NULL,
+  settled_at timestamptz
+);
+`;
+const RUN_MODEL_RESERVATION_ACTIVE_INDEX_SQL = `CREATE UNIQUE INDEX IF NOT EXISTS
+  run_engine_model_reservations_one_active_run_idx
+  ON run_engine_model_reservations(run_id) WHERE status = 'active';`;
+
 /** Creates a manager with deployment-owned limits and one immutable price version. */
 export async function createPostgresRunBudgetManager(
   database: PostgresExecutor,
@@ -153,6 +187,8 @@ export async function createPostgresRunBudgetManager(
   await database.query(RUN_BUDGET_SCHEMA_SQL);
   await database.query(RUN_BUDGET_ACTIVE_USER_INDEX_SQL);
   await database.query(RUN_BUDGET_ACTIVE_PROJECT_INDEX_SQL);
+  await database.query(RUN_MODEL_RESERVATION_SCHEMA_SQL);
+  await database.query(RUN_MODEL_RESERVATION_ACTIVE_INDEX_SQL);
   const now = options.now ?? (() => new Date().toISOString());
   const warningCostMicrousd = usdToMicrousd(options.limits.warningCostUsd);
   const maxCostMicrousd = usdToMicrousd(options.limits.maxCostUsd);
@@ -179,7 +215,7 @@ export async function createPostgresRunBudgetManager(
     return result.rows[0] ? mapSnapshot(result.rows[0], requireNow(now)) : undefined;
   };
 
-  return {
+  const manager: PostgresRunBudgetManager = {
     async open(input) {
       validateIdentifier(input.runId, "Run ID");
       validateIdentifier(input.projectId, "Project ID");
@@ -199,6 +235,13 @@ export async function createPostgresRunBudgetManager(
              COALESCE(sum(cost_microusd) FILTER (
                WHERE started_at >= date_trunc('month', $13::timestamptz)
                  AND started_at < date_trunc('month', $13::timestamptz) + interval '1 month'
+             ), 0) + COALESCE((
+               SELECT sum(reservation.reserved_cost_microusd)
+                 FROM run_engine_model_reservations reservation
+                 JOIN run_engine_budgets owner ON owner.run_id = reservation.run_id
+                WHERE reservation.status = 'active'
+                  AND owner.started_at >= date_trunc('month', $13::timestamptz)
+                  AND owner.started_at < date_trunc('month', $13::timestamptz) + interval '1 month'
              ), 0) AS monthly_cost
              FROM run_engine_budgets, admission_lock
          ), inserted AS (
@@ -257,6 +300,13 @@ export async function createPostgresRunBudgetManager(
              COALESCE(sum(cost_microusd) FILTER (
                WHERE started_at >= date_trunc('month', $3::timestamptz)
                  AND started_at < date_trunc('month', $3::timestamptz) + interval '1 month'
+             ), 0) + COALESCE((
+               SELECT sum(reservation.reserved_cost_microusd)
+                 FROM run_engine_model_reservations reservation
+                 JOIN run_engine_budgets owner ON owner.run_id = reservation.run_id
+                WHERE reservation.status = 'active'
+                  AND owner.started_at >= date_trunc('month', $3::timestamptz)
+                  AND owner.started_at < date_trunc('month', $3::timestamptz) + interval '1 month'
              ), 0) AS monthly_cost
              FROM run_engine_budgets`,
           [input.userId, input.projectId, startedAt]
@@ -309,31 +359,238 @@ export async function createPostgresRunBudgetManager(
       return { allowed: true, snapshot: persisted };
     },
 
-    async recordModelUsage(input) {
+    async reserveModelRequest(input) {
       validateIdentifier(input.runId, "Run ID");
+      validateIdentifier(input.requestId, "Model request ID");
+      validatePositiveTokenCount(input.maxInputTokens, "Maximum input token count");
+      validatePositiveTokenCount(input.maxOutputTokens, "Maximum output token count");
+      const reservedCostMicrousd = Math.ceil(
+        input.maxInputTokens * options.pricing.inputUsdPerMillion +
+          input.maxOutputTokens * options.pricing.outputUsdPerMillion
+      );
+      const createdAt = requireNow(now);
+      const result = await database.query<ModelReservationRow>(
+        `WITH admission_lock AS MATERIALIZED (
+           SELECT pg_advisory_xact_lock(1279345491::bigint)
+         ), budget AS MATERIALIZED (
+           SELECT budget.*
+             FROM run_engine_budgets budget, admission_lock
+            WHERE budget.run_id = $1 AND budget.finished_at IS NULL
+         ), team AS MATERIALIZED (
+           SELECT COALESCE(sum(peer.cost_microusd), 0) AS actual_cost,
+                  COALESCE((
+                    SELECT sum(reservation.reserved_cost_microusd)
+                      FROM run_engine_model_reservations reservation
+                      JOIN run_engine_budgets owner ON owner.run_id = reservation.run_id
+                     WHERE reservation.status = 'active'
+                       AND owner.started_at >= date_trunc('month', $6::timestamptz)
+                       AND owner.started_at < date_trunc('month', $6::timestamptz) + interval '1 month'
+                  ), 0) AS reserved_cost
+             FROM run_engine_budgets peer, admission_lock
+            WHERE peer.started_at >= date_trunc('month', $6::timestamptz)
+              AND peer.started_at < date_trunc('month', $6::timestamptz) + interval '1 month'
+         )
+         INSERT INTO run_engine_model_reservations
+           (request_id, run_id, max_input_tokens, max_output_tokens,
+            reserved_cost_microusd, status, created_at)
+         SELECT $2, budget.run_id, $3::bigint, $4::bigint, $5::bigint,
+                'active', $6::timestamptz
+           FROM budget, team
+          WHERE budget.input_tokens + budget.output_tokens + $3::bigint + $4::bigint
+                  <= budget.max_total_tokens
+            AND budget.cost_microusd + $5::bigint <= budget.max_cost_microusd
+            AND team.actual_cost + team.reserved_cost + $5::bigint
+                  <= budget.team_monthly_max_microusd
+            AND NOT EXISTS (
+              SELECT 1 FROM run_engine_model_reservations active
+               WHERE active.run_id = budget.run_id AND active.status = 'active'
+            )
+         ON CONFLICT (request_id) DO NOTHING
+         RETURNING *`,
+        [
+          input.runId,
+          input.requestId,
+          input.maxInputTokens,
+          input.maxOutputTokens,
+          reservedCostMicrousd,
+          createdAt
+        ]
+      );
+      const inserted = result.rows[0];
+      if (!inserted) {
+        const existing = await readReservation(database, input.requestId);
+        if (existing) {
+          if (
+            existing.run_id !== input.runId ||
+            safeInteger(existing.max_input_tokens, "reserved input tokens") !==
+              input.maxInputTokens ||
+            safeInteger(existing.max_output_tokens, "reserved output tokens") !==
+              input.maxOutputTokens ||
+            existing.status !== "active"
+          ) {
+            throw new Error("Model request reservation identity changed");
+          }
+          const snapshot = await requireActiveBudget(get, input.runId);
+          return { allowed: true, snapshot };
+        }
+        const snapshot = await requireActiveBudget(get, input.runId);
+        const current = decide(snapshot);
+        if (!current.allowed) {
+          return current;
+        }
+        if (
+          snapshot.totalTokens + input.maxInputTokens + input.maxOutputTokens >
+          snapshot.maxTotalTokens
+        ) {
+          return { allowed: false, reason: "token_limit", snapshot };
+        }
+        if (
+          usdToMicrousd(snapshot.costUsd) + reservedCostMicrousd >
+          usdToMicrousd(snapshot.maxCostUsd)
+        ) {
+          return { allowed: false, reason: "cost_limit", snapshot };
+        }
+        const activeTeamReservations = await sumActiveReservationCost(
+          database,
+          createdAt
+        );
+        if (
+          usdToMicrousd(snapshot.teamMonthlyCostUsd) +
+            activeTeamReservations +
+            reservedCostMicrousd >
+          usdToMicrousd(snapshot.teamMonthlyMaxUsd)
+        ) {
+          return {
+            allowed: false,
+            reason: "team_monthly_cost_limit",
+            snapshot
+          };
+        }
+        throw new Error("Run already has an active model request reservation");
+      }
+      const snapshot = await requireActiveBudget(get, input.runId);
+      return { allowed: true, snapshot };
+    },
+
+    async settleModelRequest(input) {
+      validateIdentifier(input.runId, "Run ID");
+      validateIdentifier(input.requestId, "Model request ID");
       validateTokenCount(input.inputTokens, "Input token count");
       validateTokenCount(input.outputTokens, "Output token count");
       const costMicrousd = Math.ceil(
         input.inputTokens * options.pricing.inputUsdPerMillion +
           input.outputTokens * options.pricing.outputUsdPerMillion
       );
+      const settledAt = requireNow(now);
       const result = await database.query<RunBudgetRow>(
-        `UPDATE run_engine_budgets
-            SET input_tokens = input_tokens + $2::bigint,
-                output_tokens = output_tokens + $3::bigint,
-                cost_microusd = cost_microusd + $4::bigint
-          WHERE run_id = $1 AND finished_at IS NULL
-          RETURNING *`,
-        [input.runId, input.inputTokens, input.outputTokens, costMicrousd]
+        `WITH settled AS (
+           UPDATE run_engine_model_reservations
+              SET status = 'settled',
+                  actual_input_tokens = $3::bigint,
+                  actual_output_tokens = $4::bigint,
+                  settled_at = $6::timestamptz
+            WHERE request_id = $2 AND run_id = $1 AND status = 'active'
+            RETURNING run_id
+         )
+         UPDATE run_engine_budgets budget
+            SET input_tokens = input_tokens + $3::bigint,
+                output_tokens = output_tokens + $4::bigint,
+                cost_microusd = cost_microusd + $5::bigint
+           FROM settled
+          WHERE budget.run_id = settled.run_id AND budget.finished_at IS NULL
+         RETURNING budget.*`,
+        [
+          input.runId,
+          input.requestId,
+          input.inputTokens,
+          input.outputTokens,
+          costMicrousd,
+          settledAt
+        ]
       );
+      const existing = await readReservation(database, input.requestId);
       if (!result.rows[0]) {
-        throw new Error("Run budget is not active");
+        if (
+          !existing ||
+          existing.run_id !== input.runId ||
+          existing.status !== "settled" ||
+          safeInteger(existing.actual_input_tokens ?? -1, "settled input tokens") !==
+            input.inputTokens ||
+          safeInteger(existing.actual_output_tokens ?? -1, "settled output tokens") !==
+            input.outputTokens
+        ) {
+          throw new Error("Model request reservation is not active");
+        }
+      }
+      if (!existing || existing.run_id !== input.runId) {
+        throw new Error("Model request reservation disappeared after settlement");
       }
       const snapshot = await get(input.runId);
       if (!snapshot) {
-        throw new Error("Run budget disappeared after usage persistence");
+        throw new Error("Run budget disappeared after model settlement");
+      }
+      if (
+        input.inputTokens >
+          safeInteger(existing.max_input_tokens, "reserved input tokens") ||
+        input.outputTokens >
+          safeInteger(existing.max_output_tokens, "reserved output tokens")
+      ) {
+        return { allowed: false, reason: "token_limit", snapshot };
       }
       return decide(snapshot);
+    },
+
+    async forfeitModelRequest(input) {
+      validateIdentifier(input.runId, "Run ID");
+      validateIdentifier(input.requestId, "Model request ID");
+      const settledAt = requireNow(now);
+      const result = await database.query<RunBudgetRow>(
+        `WITH forfeited AS (
+           UPDATE run_engine_model_reservations
+              SET status = 'forfeited', settled_at = $3::timestamptz
+            WHERE request_id = $2 AND run_id = $1 AND status = 'active'
+            RETURNING run_id, max_input_tokens, max_output_tokens,
+                      reserved_cost_microusd
+         )
+         UPDATE run_engine_budgets budget
+            SET input_tokens = input_tokens + forfeited.max_input_tokens,
+                output_tokens = output_tokens + forfeited.max_output_tokens,
+                cost_microusd = cost_microusd + forfeited.reserved_cost_microusd
+           FROM forfeited
+          WHERE budget.run_id = forfeited.run_id AND budget.finished_at IS NULL
+         RETURNING budget.*`,
+        [input.runId, input.requestId, settledAt]
+      );
+      if (!result.rows[0]) {
+        const existing = await readReservation(database, input.requestId);
+        if (
+          !existing ||
+          existing.run_id !== input.runId ||
+          (existing.status !== "forfeited" && existing.status !== "settled")
+        ) {
+          throw new Error("Model request reservation is not active");
+        }
+      }
+      const snapshot = await get(input.runId);
+      if (!snapshot) {
+        throw new Error("Run budget disappeared after model request forfeiture");
+      }
+      return decide(snapshot);
+    },
+
+    async reconcileModelRequests(runId) {
+      validateIdentifier(runId, "Run ID");
+      const active = await database.query<{ request_id: string }>(
+        `SELECT request_id
+           FROM run_engine_model_reservations
+          WHERE run_id = $1 AND status = 'active'`,
+        [runId]
+      );
+      const requestId = active.rows[0]?.request_id;
+      if (requestId) {
+        return manager.forfeitModelRequest({ runId, requestId });
+      }
+      return manager.check(runId);
     },
 
     async recordToolCall(runId) {
@@ -366,8 +623,24 @@ export async function createPostgresRunBudgetManager(
     async close(runId) {
       validateIdentifier(runId, "Run ID");
       await database.query(
-        `UPDATE run_engine_budgets
-            SET finished_at = COALESCE(finished_at, $2::timestamptz)
+        `WITH forfeited AS (
+           UPDATE run_engine_model_reservations
+              SET status = 'forfeited', settled_at = $2::timestamptz
+            WHERE run_id = $1 AND status = 'active'
+            RETURNING max_input_tokens, max_output_tokens,
+                      reserved_cost_microusd
+         )
+         UPDATE run_engine_budgets
+            SET input_tokens = input_tokens + COALESCE(
+                  (SELECT sum(max_input_tokens) FROM forfeited), 0
+                ),
+                output_tokens = output_tokens + COALESCE(
+                  (SELECT sum(max_output_tokens) FROM forfeited), 0
+                ),
+                cost_microusd = cost_microusd + COALESCE(
+                  (SELECT sum(reserved_cost_microusd) FROM forfeited), 0
+                ),
+                finished_at = COALESCE(finished_at, $2::timestamptz)
           WHERE run_id = $1`,
         [runId, requireNow(now)]
       );
@@ -375,6 +648,7 @@ export async function createPostgresRunBudgetManager(
 
     get
   };
+  return manager;
 }
 
 interface RunBudgetRow extends Record<string, unknown> {
@@ -397,6 +671,17 @@ interface RunBudgetRow extends Record<string, unknown> {
   pricing_version: string;
   started_at: string | Date;
   finished_at: string | Date | null;
+}
+
+interface ModelReservationRow extends Record<string, unknown> {
+  request_id: string;
+  run_id: string;
+  max_input_tokens: string | number;
+  max_output_tokens: string | number;
+  reserved_cost_microusd: string | number;
+  status: "active" | "settled" | "forfeited";
+  actual_input_tokens: string | number | null;
+  actual_output_tokens: string | number | null;
 }
 
 function mapSnapshot(row: RunBudgetRow, observedAt: string): RunBudgetSnapshot {
@@ -537,6 +822,50 @@ function validateTokenCount(value: number, label: string): void {
   if (!Number.isSafeInteger(value) || value < 0) {
     throw new Error(`${label} must be a non-negative safe integer`);
   }
+}
+
+function validatePositiveTokenCount(value: number, label: string): void {
+  if (!Number.isSafeInteger(value) || value < 1) {
+    throw new Error(`${label} must be a positive safe integer`);
+  }
+}
+
+async function readReservation(
+  database: PostgresExecutor,
+  requestId: string
+): Promise<ModelReservationRow | undefined> {
+  const result = await database.query<ModelReservationRow>(
+    `SELECT * FROM run_engine_model_reservations WHERE request_id = $1`,
+    [requestId]
+  );
+  return result.rows[0];
+}
+
+async function requireActiveBudget(
+  get: (runId: string) => Promise<RunBudgetSnapshot | undefined>,
+  runId: string
+): Promise<RunBudgetSnapshot> {
+  const snapshot = await get(runId);
+  if (!snapshot?.active) {
+    throw new Error("Run budget is not active");
+  }
+  return snapshot;
+}
+
+async function sumActiveReservationCost(
+  database: PostgresExecutor,
+  observedAt: string
+): Promise<number> {
+  const result = await database.query<{ reserved_cost: string | number }>(
+    `SELECT COALESCE(sum(reservation.reserved_cost_microusd), 0) AS reserved_cost
+       FROM run_engine_model_reservations reservation
+       JOIN run_engine_budgets budget ON budget.run_id = reservation.run_id
+      WHERE reservation.status = 'active'
+        AND budget.started_at >= date_trunc('month', $1::timestamptz)
+        AND budget.started_at < date_trunc('month', $1::timestamptz) + interval '1 month'`,
+    [observedAt]
+  );
+  return safeInteger(result.rows[0]?.reserved_cost ?? -1, "reserved team cost");
 }
 
 function safeInteger(value: string | number, label: string): number {

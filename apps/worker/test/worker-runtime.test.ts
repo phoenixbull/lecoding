@@ -525,6 +525,10 @@ describe("composeProductionWorker", () => {
 
   it("loads explicit model pricing with the V3 Run budget defaults", () => {
     expect(loadWorkerConfig(validWorkerEnvironment)).toMatchObject({
+      modelRequestLimits: {
+        maxInputTokens: 240_000,
+        maxOutputTokens: 16_000
+      },
       budgetLimits: {
         maxTotalTokens: 1_000_000,
         warningCostUsd: 1,

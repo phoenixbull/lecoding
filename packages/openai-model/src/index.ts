@@ -3,6 +3,7 @@ import type {
   AgentModelInput,
   AgentModelTurn
 } from "@lecoding/run-engine";
+import { randomUUID } from "node:crypto";
 
 /** Minimal Responses API request shape owned by the model gateway boundary. */
 export interface OpenAiResponsesRequest {
@@ -15,6 +16,8 @@ export interface OpenAiResponsesRequest {
   /** Phase 0 persists provider responses so a replacement Worker can continue by id. */
   store: true;
   previous_response_id?: string;
+  /** Provider-enforced upper bound for generated tokens in this request. */
+  max_output_tokens?: number;
 }
 
 /** User-authored continuation content accepted by the Responses API input array. */
@@ -30,6 +33,8 @@ export interface OpenAiChatCompletionsRequest {
   tools: OpenAiChatFunctionTool[];
   tool_choice: "auto";
   parallel_tool_calls: false;
+  /** Provider-enforced upper bound for generated tokens in this request. */
+  max_completion_tokens?: number;
 }
 
 /** Conversation messages persisted to continue a stateless Chat Completions call. */
@@ -149,6 +154,16 @@ export interface OpenAiCompatibleAgentModelOptions {
   instructions?: string;
   /** Receives validated per-request usage for evaluation and billing telemetry. */
   onUsage?: (usage: OpenAiModelUsage) => void | Promise<void>;
+  /** Conservative provider-neutral ceiling for serialized request input. */
+  maxInputTokens?: number;
+  /** Wire-level output cap sent using the selected OpenAI-compatible protocol. */
+  maxOutputTokens?: number;
+  /** Creates a globally unique identity shared by reservation and settlement. */
+  createRequestId?: () => string;
+  /** Must durably reserve the worst-case request before any provider call starts. */
+  onRequestStart?: (request: OpenAiModelRequestReservation) => void | Promise<void>;
+  /** Conservatively accounts the reservation when provider usage cannot be read. */
+  onRequestFailure?: (request: OpenAiModelRequestReference) => void | Promise<void>;
   /** Receives secret-free lifecycle events for the bounded malformed-JSON replay. */
   onMalformedJsonRetry?: (event: OpenAiMalformedJsonRetryEvent) => void;
 }
@@ -156,8 +171,24 @@ export interface OpenAiCompatibleAgentModelOptions {
 /** Provider-neutral token counts from one completed model HTTP response. */
 export interface OpenAiModelUsage {
   runId: string;
+  /** Present when request reservation lifecycle hooks are configured. */
+  requestId?: string;
   inputTokens: number;
   outputTokens: number;
+}
+
+/** Worst-case token envelope reserved before one provider HTTP request. */
+export interface OpenAiModelRequestReservation {
+  runId: string;
+  requestId: string;
+  maxInputTokens: number;
+  maxOutputTokens: number;
+}
+
+/** Stable identity used to settle an unknowable provider request conservatively. */
+export interface OpenAiModelRequestReference {
+  runId: string;
+  requestId: string;
 }
 
 /** Stable failure categories that never contain provider-controlled text. */
@@ -179,7 +210,18 @@ export interface OpenAiResponsesAgentModelOptions {
   model: string;
   client: OpenAiResponsesClient;
   instructions?: string;
+  /** Settles validated usage; required with request budget lifecycle hooks. */
   onUsage?: (usage: OpenAiModelUsage) => void | Promise<void>;
+  /** Conservative provider-neutral ceiling for serialized request input. */
+  maxInputTokens?: number;
+  /** Responses API output cap for every attempted request, including retries. */
+  maxOutputTokens?: number;
+  /** Creates a globally unique identity shared by reservation and settlement. */
+  createRequestId?: () => string;
+  /** Persists worst-case exposure before the client may contact its provider. */
+  onRequestStart?: (request: OpenAiModelRequestReservation) => void | Promise<void>;
+  /** Conservatively settles requests whose actual provider usage is unavailable. */
+  onRequestFailure?: (request: OpenAiModelRequestReference) => void | Promise<void>;
   /** Observer errors are ignored so telemetry cannot alter the model turn. */
   onMalformedJsonRetry?: (event: OpenAiMalformedJsonRetryEvent) => void;
 }
@@ -189,7 +231,18 @@ export interface OpenAiChatCompletionsAgentModelOptions {
   model: string;
   client: OpenAiChatCompletionsClient;
   instructions?: string;
+  /** Settles validated usage; required with request budget lifecycle hooks. */
   onUsage?: (usage: OpenAiModelUsage) => void | Promise<void>;
+  /** Conservative provider-neutral ceiling for serialized request input. */
+  maxInputTokens?: number;
+  /** Chat Completions output cap for every attempted request, including retries. */
+  maxOutputTokens?: number;
+  /** Creates a globally unique identity shared by reservation and settlement. */
+  createRequestId?: () => string;
+  /** Persists worst-case exposure before the client may contact its provider. */
+  onRequestStart?: (request: OpenAiModelRequestReservation) => void | Promise<void>;
+  /** Conservatively settles requests whose actual provider usage is unavailable. */
+  onRequestFailure?: (request: OpenAiModelRequestReference) => void | Promise<void>;
   /** Observer errors are ignored so telemetry cannot alter the model turn. */
   onMalformedJsonRetry?: (event: OpenAiMalformedJsonRetryEvent) => void;
 }
@@ -313,6 +366,17 @@ export function createOpenAiCompatibleAgentModel(
       ...(options.instructions !== undefined
         ? { instructions: options.instructions }
         : {}),
+      ...(options.maxInputTokens !== undefined
+        ? { maxInputTokens: options.maxInputTokens }
+        : {}),
+      ...(options.maxOutputTokens !== undefined
+        ? { maxOutputTokens: options.maxOutputTokens }
+        : {}),
+      ...(options.createRequestId ? { createRequestId: options.createRequestId } : {}),
+      ...(options.onRequestStart ? { onRequestStart: options.onRequestStart } : {}),
+      ...(options.onRequestFailure
+        ? { onRequestFailure: options.onRequestFailure }
+        : {}),
       ...(options.onUsage !== undefined ? { onUsage: options.onUsage } : {}),
       ...(options.onMalformedJsonRetry !== undefined
         ? { onMalformedJsonRetry: options.onMalformedJsonRetry }
@@ -330,6 +394,17 @@ export function createOpenAiCompatibleAgentModel(
     client,
     ...(options.instructions !== undefined
       ? { instructions: options.instructions }
+      : {}),
+    ...(options.maxInputTokens !== undefined
+      ? { maxInputTokens: options.maxInputTokens }
+      : {}),
+    ...(options.maxOutputTokens !== undefined
+      ? { maxOutputTokens: options.maxOutputTokens }
+      : {}),
+    ...(options.createRequestId ? { createRequestId: options.createRequestId } : {}),
+    ...(options.onRequestStart ? { onRequestStart: options.onRequestStart } : {}),
+    ...(options.onRequestFailure
+      ? { onRequestFailure: options.onRequestFailure }
       : {}),
     ...(options.onUsage !== undefined ? { onUsage: options.onUsage } : {}),
     ...(options.onMalformedJsonRetry !== undefined
@@ -461,20 +536,42 @@ export function createOpenAiResponsesAgentModel(
   if (options.model.trim() === "") {
     throw new Error("OpenAI model must not be empty");
   }
+  const maxInputTokens = requirePositiveTokenLimit(
+    options.maxInputTokens ?? 240_000,
+    "OpenAI input token limit"
+  );
+  const maxOutputTokens = requirePositiveTokenLimit(
+    options.maxOutputTokens ?? 16_000,
+    "OpenAI output token limit"
+  );
+  validateRequestBudgetLifecycle(options);
   return {
     async next(input) {
       const request = buildRequest(
         input,
         options.model,
-        options.instructions ?? DEFAULT_INSTRUCTIONS
+        options.instructions ?? DEFAULT_INSTRUCTIONS,
+        maxOutputTokens
       );
+      assertRequestInputWithinLimit(request, maxInputTokens);
       return requestValidatedTurn(
         () => options.client.create(request),
         (response) => parseResponse(response),
         "openai_responses",
         options.onUsage,
         input.runId,
-        options.onMalformedJsonRetry
+        options.onMalformedJsonRetry,
+        {
+          maxInputTokens,
+          maxOutputTokens,
+          createRequestId: options.createRequestId ?? randomUUID,
+          ...(options.onRequestStart
+            ? { onRequestStart: options.onRequestStart }
+            : {}),
+          ...(options.onRequestFailure
+            ? { onRequestFailure: options.onRequestFailure }
+            : {})
+        }
       );
     }
   };
@@ -487,6 +584,15 @@ export function createOpenAiChatCompletionsAgentModel(
   if (options.model.trim() === "") {
     throw new Error("OpenAI model must not be empty");
   }
+  const maxInputTokens = requirePositiveTokenLimit(
+    options.maxInputTokens ?? 240_000,
+    "OpenAI input token limit"
+  );
+  const maxOutputTokens = requirePositiveTokenLimit(
+    options.maxOutputTokens ?? 16_000,
+    "OpenAI output token limit"
+  );
+  validateRequestBudgetLifecycle(options);
   return {
     async next(input) {
       const initialMessages = buildInitialChatMessages(
@@ -536,15 +642,28 @@ export function createOpenAiChatCompletionsAgentModel(
             }
         })),
         tool_choice: "auto",
-        parallel_tool_calls: false
+        parallel_tool_calls: false,
+        max_completion_tokens: maxOutputTokens
       };
+      assertRequestInputWithinLimit(request, maxInputTokens);
       return requestValidatedTurn(
         () => options.client.create(request),
         (response) => parseChatCompletion(response, continuationMessages),
         "openai_chat_completions",
         options.onUsage,
         input.runId,
-        options.onMalformedJsonRetry
+        options.onMalformedJsonRetry,
+        {
+          maxInputTokens,
+          maxOutputTokens,
+          createRequestId: options.createRequestId ?? randomUUID,
+          ...(options.onRequestStart
+            ? { onRequestStart: options.onRequestStart }
+            : {}),
+          ...(options.onRequestFailure
+            ? { onRequestFailure: options.onRequestFailure }
+            : {})
+        }
       );
     }
   };
@@ -560,17 +679,47 @@ async function requestValidatedTurn(
   runId: string,
   onMalformedJsonRetry:
     | ((event: OpenAiMalformedJsonRetryEvent) => void)
-    | undefined
+    | undefined,
+  requestBudget?: {
+    maxInputTokens: number;
+    maxOutputTokens: number;
+    createRequestId: () => string;
+    onRequestStart?: (
+      request: OpenAiModelRequestReservation
+    ) => void | Promise<void>;
+    onRequestFailure?: (
+      request: OpenAiModelRequestReference
+    ) => void | Promise<void>;
+  }
 ): Promise<AgentModelTurn> {
   let retryCount = 0;
   let initialFailureCategory: OpenAiMalformedJsonFailureCategory | undefined;
   for (;;) {
+    const requestId = requestBudget?.onRequestStart
+      ? requestBudget.createRequestId()
+      : undefined;
+    let reservationStarted = false;
+    let usageSettled = false;
     try {
+      if (requestBudget?.onRequestStart && requestId) {
+        await requestBudget.onRequestStart({
+          runId,
+          requestId,
+          maxInputTokens: requestBudget.maxInputTokens,
+          maxOutputTokens: requestBudget.maxOutputTokens
+        });
+        reservationStarted = true;
+      }
       const response = await create();
       // Bill every syntactically valid provider response, including one whose tool
       // arguments force a retry, so resilience does not hide token consumption.
       if (onUsage) {
-        await onUsage({ runId, ...parseModelUsage(response, protocol) });
+        await onUsage({
+          runId,
+          ...(requestId ? { requestId } : {}),
+          ...parseModelUsage(response, protocol)
+        });
+        usageSettled = true;
       }
       const turn = parse(response);
       if (initialFailureCategory) {
@@ -584,6 +733,14 @@ async function requestValidatedTurn(
       }
       return turn;
     } catch (error) {
+      if (
+        requestId &&
+        reservationStarted &&
+        requestBudget?.onRequestFailure &&
+        !usageSettled
+      ) {
+        await requestBudget.onRequestFailure({ runId, requestId });
+      }
       if (initialFailureCategory) {
         emitMalformedJsonRetry(onMalformedJsonRetry, {
           runId,
@@ -902,7 +1059,8 @@ function parsePersistedChatMessages(value: unknown[]): OpenAiChatMessage[] {
 function buildRequest(
   input: AgentModelInput,
   model: string,
-  instructions: string
+  instructions: string,
+  maxOutputTokens: number
 ): OpenAiResponsesRequest {
   const latestResult = input.toolResults.at(-1);
   const steering = formatSteeringMessage(input.steeringMessages);
@@ -929,7 +1087,8 @@ function buildRequest(
     ],
     tool_choice: "auto",
     parallel_tool_calls: false,
-    store: true
+    store: true,
+    max_output_tokens: maxOutputTokens
   };
   if (latestResult) {
     if (!latestResult.continuationId) {
@@ -938,6 +1097,52 @@ function buildRequest(
     request.previous_response_id = latestResult.continuationId;
   }
   return request;
+}
+
+function requirePositiveTokenLimit(value: number, label: string): number {
+  if (!Number.isSafeInteger(value) || value < 1) {
+    throw new Error(`${label} must be a positive safe integer`);
+  }
+  return value;
+}
+
+function validateRequestBudgetLifecycle(options: {
+  onUsage?: (usage: OpenAiModelUsage) => void | Promise<void>;
+  onRequestStart?: (request: OpenAiModelRequestReservation) => void | Promise<void>;
+  onRequestFailure?: (request: OpenAiModelRequestReference) => void | Promise<void>;
+}): void {
+  const configured = [
+    options.onRequestStart,
+    options.onRequestFailure
+  ].filter(Boolean).length;
+  if (configured !== 0 && (configured !== 2 || !options.onUsage)) {
+    throw new Error(
+      "OpenAI request budgeting requires start, usage, and failure lifecycle hooks"
+    );
+  }
+}
+
+function assertRequestInputWithinLimit(
+  request: OpenAiResponsesRequest | OpenAiChatCompletionsRequest,
+  maxInputTokens: number
+): void {
+  /* Every compatible tokenizer token must consume input bytes, while exact tokenizers
+   * differ by vendor. UTF-8 bytes therefore provide a provider-neutral safe ceiling. */
+  const inputBytes = new TextEncoder().encode(
+    JSON.stringify(
+      "messages" in request
+        ? { messages: request.messages, tools: request.tools }
+        : {
+            instructions: request.instructions,
+            input: request.input,
+            tools: request.tools,
+            previousResponseId: request.previous_response_id
+          }
+    )
+  ).byteLength;
+  if (inputBytes > maxInputTokens) {
+    throw new Error("OpenAI request input exceeds the configured token limit");
+  }
 }
 
 function formatSteeringSection(messages: string[] | undefined): string[] {

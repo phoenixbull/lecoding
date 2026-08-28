@@ -8,6 +8,165 @@ import {
 } from "../src/index.js";
 
 describe("createOpenAiResponsesAgentModel", () => {
+  it("reserves one bounded request before sending it to a Responses provider", async () => {
+    const lifecycle: string[] = [];
+    const requests: OpenAiResponsesRequest[] = [];
+    const model = createOpenAiResponsesAgentModel({
+      model: "gpt-test",
+      maxInputTokens: 240_000,
+      maxOutputTokens: 16_000,
+      createRequestId: () => "request-1",
+      onRequestStart: async (request) => {
+        lifecycle.push(
+          `reserve:${request.runId}:${request.requestId}:${request.maxInputTokens}:${request.maxOutputTokens}`
+        );
+      },
+      onUsage: async () => undefined,
+      onRequestFailure: async () => undefined,
+      client: {
+        async create(request) {
+          lifecycle.push("send");
+          requests.push(request);
+          return {
+            id: "resp-1",
+            status: "completed",
+            output: [],
+            output_text: "Done",
+            usage: { input_tokens: 10, output_tokens: 2 }
+          };
+        }
+      }
+    });
+
+    await expect(model.next(baseInput([]))).resolves.toEqual({
+      type: "completed",
+      summary: "Done"
+    });
+    expect(lifecycle).toEqual([
+      "reserve:run-1:request-1:240000:16000",
+      "send"
+    ]);
+    expect(requests[0]).toMatchObject({ max_output_tokens: 16_000 });
+  });
+
+  it("settles validated usage against the exact reserved model request", async () => {
+    const usage: unknown[] = [];
+    const model = createOpenAiResponsesAgentModel({
+      model: "gpt-test",
+      createRequestId: () => "request-settle",
+      onRequestStart: async () => undefined,
+      onRequestFailure: async () => undefined,
+      onUsage: async (observed) => {
+        usage.push(observed);
+      },
+      client: {
+        async create() {
+          return {
+            id: "resp-settle",
+            status: "completed",
+            output: [],
+            output_text: "Done",
+            usage: { input_tokens: 12, output_tokens: 3 }
+          };
+        }
+      }
+    });
+
+    await model.next(baseInput([]));
+    expect(usage).toEqual([
+      {
+        runId: "run-1",
+        requestId: "request-settle",
+        inputTokens: 12,
+        outputTokens: 3
+      }
+    ]);
+  });
+
+  it("forfeits the exact reservation when provider usage is unknowable", async () => {
+    const lifecycle: string[] = [];
+    const model = createOpenAiResponsesAgentModel({
+      model: "gpt-test",
+      createRequestId: () => "request-unknown",
+      onRequestStart: async ({ requestId }) => {
+        lifecycle.push(`reserve:${requestId}`);
+      },
+      onUsage: async () => undefined,
+      onRequestFailure: async ({ requestId }) => {
+        lifecycle.push(`forfeit:${requestId}`);
+      },
+      client: {
+        async create() {
+          lifecycle.push("send");
+          throw new Error("network disconnected");
+        }
+      }
+    });
+
+    await expect(model.next(baseInput([]))).rejects.toThrow(
+      "network disconnected"
+    );
+    expect(lifecycle).toEqual([
+      "reserve:request-unknown",
+      "send",
+      "forfeit:request-unknown"
+    ]);
+  });
+
+  it("does not send or forfeit when request reservation itself is rejected", async () => {
+    let providerCallCount = 0;
+    let failureCount = 0;
+    const model = createOpenAiResponsesAgentModel({
+      model: "gpt-test",
+      onRequestStart: async () => {
+        throw new Error("model request budget rejected");
+      },
+      onUsage: async () => undefined,
+      onRequestFailure: async () => {
+        failureCount += 1;
+      },
+      client: {
+        async create() {
+          providerCallCount += 1;
+          return {};
+        }
+      }
+    });
+
+    await expect(model.next(baseInput([]))).rejects.toThrow(
+      "model request budget rejected"
+    );
+    expect(providerCallCount).toBe(0);
+    expect(failureCount).toBe(0);
+  });
+
+  it("rejects an oversized Responses input before reservation or provider I/O", async () => {
+    let reservationCount = 0;
+    let providerCallCount = 0;
+    const model = createOpenAiResponsesAgentModel({
+      model: "gpt-test",
+      maxInputTokens: 10,
+      maxOutputTokens: 16,
+      onRequestStart: async () => {
+        reservationCount += 1;
+      },
+      onUsage: async () => undefined,
+      onRequestFailure: async () => undefined,
+      client: {
+        async create() {
+          providerCallCount += 1;
+          return {};
+        }
+      }
+    });
+
+    await expect(model.next(baseInput([]))).rejects.toThrow(
+      "OpenAI request input exceeds the configured token limit"
+    );
+    expect(reservationCount).toBe(0);
+    expect(providerCallCount).toBe(0);
+  });
+
   it("turns one strict execute_command function call into an AgentModel turn", async () => {
     const requests: OpenAiResponsesRequest[] = [];
     const model = createOpenAiResponsesAgentModel({
@@ -284,6 +443,66 @@ describe("createOpenAiResponsesAgentModel", () => {
         }
       ]
     });
+  });
+
+  it("reserves and bounds one Chat Completions provider request", async () => {
+    const lifecycle: string[] = [];
+    const requests: OpenAiChatCompletionsRequest[] = [];
+    const model = createOpenAiChatCompletionsAgentModel({
+      model: "chat-test",
+      maxInputTokens: 240_000,
+      maxOutputTokens: 8_000,
+      createRequestId: () => "chat-request-1",
+      onRequestStart: async (request) => {
+        lifecycle.push(`reserve:${request.requestId}:${request.maxOutputTokens}`);
+      },
+      onUsage: async () => undefined,
+      onRequestFailure: async () => undefined,
+      client: {
+        async create(request) {
+          lifecycle.push("send");
+          requests.push(request);
+          return {
+            choices: [{ message: { content: "Done" } }],
+            usage: { prompt_tokens: 10, completion_tokens: 2 }
+          };
+        }
+      }
+    });
+
+    await expect(model.next(baseInput([]))).resolves.toEqual({
+      type: "completed",
+      summary: "Done"
+    });
+    expect(lifecycle).toEqual(["reserve:chat-request-1:8000", "send"]);
+    expect(requests[0]).toMatchObject({ max_completion_tokens: 8_000 });
+  });
+
+  it("rejects oversized Chat Completions input before reservation", async () => {
+    let reservationCount = 0;
+    let providerCallCount = 0;
+    const model = createOpenAiChatCompletionsAgentModel({
+      model: "chat-test",
+      maxInputTokens: 10,
+      maxOutputTokens: 16,
+      onRequestStart: async () => {
+        reservationCount += 1;
+      },
+      onUsage: async () => undefined,
+      onRequestFailure: async () => undefined,
+      client: {
+        async create() {
+          providerCallCount += 1;
+          return {};
+        }
+      }
+    });
+
+    await expect(model.next(baseInput([]))).rejects.toThrow(
+      "OpenAI request input exceeds the configured token limit"
+    );
+    expect(reservationCount).toBe(0);
+    expect(providerCallCount).toBe(0);
   });
 
   it("maps Chat Completions request_user_input calls", async () => {
