@@ -359,12 +359,20 @@ export function createRunApiHandler(
         }
         try {
           const command = parseMinimalRunCommand(await readJsonBody(request));
-          if (command.type === "approve" || command.type === "reject") {
+          if (
+            command.type === "approve" ||
+            command.type === "reject" ||
+            command.type === "edit_approve"
+          ) {
             const role = await options.access.roleFor(
               principal.userId,
               run.projectId
             );
-            if (command.scope === "project" && role !== "admin") {
+            if (
+              command.type !== "edit_approve" &&
+              command.scope === "project" &&
+              role !== "admin"
+            ) {
               return errorResponse(
                 403,
                 "project_rule_forbidden",
@@ -374,7 +382,7 @@ export function createRunApiHandler(
             await options.runs.command(
               runId,
               command,
-              command.scope === "project"
+              command.type !== "edit_approve" && command.scope === "project"
                 ? {
                     actorId: principal.userId,
                     canManageProjectRules: true
@@ -547,6 +555,19 @@ function parseMinimalRunCommand(value: unknown): RunCommand {
     };
   }
   if (
+    Object.keys(value).length === 3 &&
+    value.type === "edit_approve" &&
+    typeof value.approvalId === "string" &&
+    value.approvalId.trim() !== "" &&
+    isRecord(value.replacement)
+  ) {
+    return {
+      type: "edit_approve",
+      approvalId: value.approvalId,
+      replacement: parseEditedApprovalCapability(value.replacement)
+    };
+  }
+  if (
     Object.keys(value).length === 4 &&
     value.type === "answer" &&
     typeof value.commandId === "string" &&
@@ -582,6 +603,45 @@ function parseMinimalRunCommand(value: unknown): RunCommand {
     };
   }
   throw new Error("Run command is not available in the minimal control plane");
+}
+
+function parseEditedApprovalCapability(
+  value: Record<string, unknown>
+): Extract<RunCommand, { type: "edit_approve" }>["replacement"] {
+  if (
+    Object.keys(value).length === 2 &&
+    value.type === "command_exec" &&
+    Array.isArray(value.argv) &&
+    value.argv.length >= 1 &&
+    value.argv.length <= 256 &&
+    value.argv.every(
+      (argument) =>
+        typeof argument === "string" &&
+        argument.length >= 1 &&
+        argument.length <= 4_096
+    )
+  ) {
+    return { type: "command_exec", argv: value.argv as string[] };
+  }
+  if (
+    Object.keys(value).length === 4 &&
+    value.type === "network_egress" &&
+    value.scheme === "https" &&
+    typeof value.domain === "string" &&
+    value.domain.length >= 1 &&
+    value.domain.length <= 253 &&
+    Number.isSafeInteger(value.port) &&
+    Number(value.port) >= 1 &&
+    Number(value.port) <= 65_535
+  ) {
+    return {
+      type: "network_egress",
+      scheme: "https",
+      domain: value.domain,
+      port: Number(value.port)
+    };
+  }
+  throw new Error("Edited approval capability is invalid");
 }
 
 function parseRunResult(value: unknown): "keep" | "discard" {

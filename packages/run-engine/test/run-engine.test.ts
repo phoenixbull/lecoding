@@ -373,6 +373,159 @@ describe("RunEngine", () => {
     });
   });
 
+  it("executes only a narrower edited command once", async () => {
+    const environment = new RecordingRunEnvironment();
+    const harness = await createTestHarness({
+      environment,
+      modelTurns: [
+        {
+          type: "tool_call",
+          callId: "edit-command",
+          tool: "execute_command",
+          arguments: { argv: ["pnpm", "test", "--force"] }
+        },
+        { type: "completed", summary: "Used the narrowed command" }
+      ]
+    });
+    const runId = await harness.engine.start({
+      projectId: "project-1",
+      environmentId: "environment-1",
+      task: "Run the safe test command",
+      acceptanceCriteria: ["Tests run without force"],
+      approvalMode: "manual",
+      fileAccessScope: "workspace_only"
+    });
+
+    await harness.engine.resume(runId);
+    await harness.engine.command(
+      runId,
+      {
+        type: "edit_approve",
+        approvalId: "approval-edit-command",
+        replacement: { type: "command_exec", argv: ["pnpm", "test"] }
+      },
+      { actorId: "github_42" }
+    );
+
+    expect(environment.performedCommands).toEqual([["pnpm", "test"]]);
+    await expect(harness.engine.inspect(runId)).resolves.toMatchObject({
+      status: "succeeded"
+    });
+  });
+
+  it("keeps the original approval pending when an edit changes command meaning", async () => {
+    const environment = new RecordingRunEnvironment();
+    const harness = await createTestHarness({
+      environment,
+      modelTurns: [
+        {
+          type: "tool_call",
+          callId: "invalid-edit-command",
+          tool: "execute_command",
+          arguments: { argv: ["pnpm", "test", "--force"] }
+        },
+        { type: "completed", summary: "Used a later valid decision" }
+      ]
+    });
+    const runId = await harness.engine.start({
+      projectId: "project-1",
+      environmentId: "environment-1",
+      task: "Edit a command safely",
+      acceptanceCriteria: ["Changed meaning is refused"],
+      approvalMode: "manual",
+      fileAccessScope: "workspace_only"
+    });
+    await harness.engine.resume(runId);
+
+    await expect(
+      harness.engine.command(runId, {
+        type: "edit_approve",
+        approvalId: "approval-invalid-edit-command",
+        replacement: { type: "command_exec", argv: ["pnpm", "test", "--watch"] }
+      })
+    ).rejects.toThrow(/remove arguments/i);
+
+    expect(environment.performedCommands).toEqual([]);
+    await expect(harness.engine.inspect(runId)).resolves.toMatchObject({
+      status: "waiting_approval",
+      pendingApproval: { id: "approval-invalid-edit-command" }
+    });
+  });
+
+  it("refuses argument deletion that turns a dry run into a side effect", async () => {
+    const environment = new RecordingRunEnvironment();
+    const harness = await createTestHarness({
+      environment,
+      modelTurns: [
+        {
+          type: "tool_call",
+          callId: "edit-removes-dry-run",
+          tool: "execute_command",
+          arguments: { argv: ["git", "push", "--dry-run"] }
+        }
+      ]
+    });
+    const runId = await harness.engine.start({
+      projectId: "project-1",
+      environmentId: "environment-1",
+      task: "Inspect a push without performing it",
+      acceptanceCriteria: ["No remote write occurs"],
+      approvalMode: "manual",
+      fileAccessScope: "workspace_only"
+    });
+    await harness.engine.resume(runId);
+
+    await expect(
+      harness.engine.command(runId, {
+        type: "edit_approve",
+        approvalId: "approval-edit-removes-dry-run",
+        replacement: { type: "command_exec", argv: ["git", "push"] }
+      })
+    ).rejects.toThrow(/independent review/i);
+    expect(environment.performedCommands).toEqual([]);
+  });
+
+  it("authorizes only the edited strict subdomain for one network request", async () => {
+    let authorizedTarget: string | undefined;
+    let modelCalls = 0;
+    const model: AgentModel = {
+      async next(input) {
+        modelCalls += 1;
+        if (modelCalls === 1) {
+          return networkTurn("edit-network", "example.com");
+        }
+        const result = input.toolResults.find(
+          (entry) => entry.callId === "edit-network" && entry.status === "authorized"
+        );
+        authorizedTarget = result?.status === "authorized" ? result.target : undefined;
+        return { type: "completed", summary: "Used narrowed endpoint" };
+      }
+    };
+    const harness = await createTestHarness({ model });
+    const runId = await harness.engine.start({
+      projectId: "project-1",
+      environmentId: "environment-1",
+      task: "Authorize one package endpoint",
+      acceptanceCriteria: ["Only registry.example.com is authorized"],
+      approvalMode: "manual",
+      fileAccessScope: "workspace_only"
+    });
+    await harness.engine.resume(runId);
+
+    await harness.engine.command(runId, {
+      type: "edit_approve",
+      approvalId: "approval-edit-network",
+      replacement: {
+        type: "network_egress",
+        scheme: "https",
+        domain: "registry.example.com",
+        port: 443
+      }
+    });
+
+    expect(authorizedTarget).toBe("https://registry.example.com:443");
+  });
+
   it("passes the exact capability fingerprint to project policy resolution", async () => {
     const authorize = vi.fn(async () => ({ decision: "allow" as const }));
     const harness = await createTestHarness({
@@ -2474,14 +2627,19 @@ class RecordingRunEnvironment implements RunEnvironment {
   performCount = 0;
   disposeCount = 0;
   lastDisposeOutcome: "keep" | "discard" | undefined;
+  performedCommands: string[][] = [];
 
   async prepare(spec: EnvironmentSpec): Promise<EnvironmentHandle> {
     this.prepareCount += 1;
     return { id: `handle-${spec.runId}`, environmentId: spec.environmentId };
   }
 
-  async perform(): Promise<EnvironmentResult> {
+  async perform(
+    _handle: EnvironmentHandle,
+    action: import("@lecoding/contracts").EnvironmentAction
+  ): Promise<EnvironmentResult> {
     this.performCount += 1;
+    this.performedCommands.push([...action.command]);
     return { exitCode: 0, stdout: "", stderr: "" };
   }
 

@@ -22,6 +22,15 @@ export interface ApprovalDecisionInput {
   decision: "allow" | "deny";
   scope: ApprovalScope;
   decidedBy: string;
+  /** Exact user-narrowed capability; present only for edit-and-allow-once. */
+  editedCapability?: EditedApprovalAudit;
+}
+
+/** Immutable normalized replacement retained beside the original request. */
+export interface EditedApprovalAudit {
+  capabilityType: ApprovalCapabilityType;
+  capabilityHash: string;
+  constraints: Record<string, JsonValue>;
 }
 
 /** Read-only approval audit projection; decided fields are absent while pending. */
@@ -34,6 +43,7 @@ export type ApprovalAuditRecord = ApprovalRequestInput &
         scope: ApprovalScope;
         decidedBy: string;
         decidedAt: string;
+        editedCapability?: EditedApprovalAudit;
       }
   );
 
@@ -73,6 +83,7 @@ export function createInMemoryApprovalLedger(
     },
     async decide(input) {
       validateIdentifier(input.decidedBy, "Decision actor");
+      validateDecision(input);
       const existing = records.get(input.approvalId);
       if (!existing || existing.runId !== input.runId) {
         throw new Error(`Approval is not pending: ${input.approvalId}`);
@@ -89,7 +100,10 @@ export function createInMemoryApprovalLedger(
         decision: input.decision,
         scope: input.scope,
         decidedBy: input.decidedBy,
-        decidedAt: requireTimestamp(now())
+        decidedAt: requireTimestamp(now()),
+        ...(input.editedCapability
+          ? { editedCapability: structuredClone(input.editedCapability) }
+          : {})
       });
     },
     async get(approvalId) {
@@ -114,8 +128,42 @@ CREATE TABLE IF NOT EXISTS run_engine_approvals (
   scope text CHECK (scope IN ('once', 'run', 'project')),
   decided_by text,
   decided_at timestamptz,
+  edited_capability_type text,
+  edited_capability_hash text,
+  edited_constraints jsonb,
   created_at timestamptz NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
+`;
+
+const APPROVAL_LEDGER_EDIT_MIGRATION_SQL = `
+ALTER TABLE run_engine_approvals
+  ADD COLUMN IF NOT EXISTS edited_capability_type text,
+  ADD COLUMN IF NOT EXISTS edited_capability_hash text,
+  ADD COLUMN IF NOT EXISTS edited_constraints jsonb;
+`;
+
+const APPROVAL_LEDGER_SCOPE_MIGRATION_SQL = `
+DO $$
+DECLARE
+  scope_definition text;
+BEGIN
+  PERFORM pg_advisory_xact_lock(
+    hashtextextended('lecoding:run_engine_approvals:scope:v2', 0)
+  );
+  SELECT pg_get_constraintdef(oid)
+    INTO scope_definition
+    FROM pg_constraint
+   WHERE conrelid = 'run_engine_approvals'::regclass
+     AND conname = 'run_engine_approvals_scope_check';
+  IF scope_definition IS NULL OR position('project' IN scope_definition) = 0 THEN
+    ALTER TABLE run_engine_approvals
+      DROP CONSTRAINT IF EXISTS run_engine_approvals_scope_check;
+    ALTER TABLE run_engine_approvals
+      ADD CONSTRAINT run_engine_approvals_scope_check
+      CHECK (scope IN ('once', 'run', 'project'));
+  END IF;
+END;
+$$;
 `;
 
 /** Creates the approval audit ledger shared by every production Worker. */
@@ -124,6 +172,8 @@ export async function createPostgresApprovalLedger(
   options: { now?: () => string } = {}
 ): Promise<ApprovalLedger> {
   await database.query(APPROVAL_LEDGER_SCHEMA_SQL);
+  await database.query(APPROVAL_LEDGER_EDIT_MIGRATION_SQL);
+  await database.query(APPROVAL_LEDGER_SCOPE_MIGRATION_SQL);
   const now = options.now ?? (() => new Date().toISOString());
 
   return {
@@ -170,11 +220,15 @@ export async function createPostgresApprovalLedger(
       validateIdentifier(input.approvalId, "Approval ID");
       validateIdentifier(input.runId, "Run ID");
       validateIdentifier(input.decidedBy, "Decision actor");
+      validateDecision(input);
       const decidedAt = requireTimestamp(now());
       const result = await database.query<{ id: string }>(
         `UPDATE run_engine_approvals
             SET status = 'decided', decision = $3, scope = $4,
-                decided_by = $5, decided_at = $6::timestamptz
+                decided_by = $5, decided_at = $6::timestamptz,
+                edited_capability_type = $7,
+                edited_capability_hash = $8,
+                edited_constraints = $9::jsonb
           WHERE id = $1 AND run_id = $2 AND status = 'pending'
         RETURNING id`,
         [
@@ -183,7 +237,12 @@ export async function createPostgresApprovalLedger(
           input.decision,
           input.scope,
           input.decidedBy,
-          decidedAt
+          decidedAt,
+          input.editedCapability?.capabilityType ?? null,
+          input.editedCapability?.capabilityHash ?? null,
+          input.editedCapability
+            ? canonicalJson(input.editedCapability.constraints)
+            : null
         ]
       );
       if (result.rows.length !== 1) {
@@ -216,6 +275,9 @@ interface ApprovalRow extends Record<string, unknown> {
   scope: ApprovalScope | null;
   decided_by: string | null;
   decided_at: string | Date | null;
+  edited_capability_type: ApprovalCapabilityType | null;
+  edited_capability_hash: string | null;
+  edited_constraints: Record<string, JsonValue> | null;
 }
 
 async function readRecord(
@@ -225,7 +287,8 @@ async function readRecord(
   const result = await database.query<ApprovalRow>(
     `SELECT id, run_id, tool_call_id, status, capability_type,
             capability_hash, reason, constraints, decision, scope,
-            decided_by, decided_at
+            decided_by, decided_at, edited_capability_type,
+            edited_capability_hash, edited_constraints
        FROM run_engine_approvals
       WHERE id = $1`,
     [approvalId]
@@ -258,7 +321,18 @@ async function readRecord(
     decidedAt:
       row.decided_at instanceof Date
         ? row.decided_at.toISOString()
-        : new Date(row.decided_at).toISOString()
+        : new Date(row.decided_at).toISOString(),
+    ...(row.edited_capability_type &&
+    row.edited_capability_hash &&
+    row.edited_constraints
+      ? {
+          editedCapability: {
+            capabilityType: row.edited_capability_type,
+            capabilityHash: row.edited_capability_hash,
+            constraints: row.edited_constraints
+          }
+        }
+      : {})
   };
 }
 
@@ -280,6 +354,18 @@ function validateIdentifier(value: string, label: string): void {
   }
 }
 
+function validateDecision(input: ApprovalDecisionInput): void {
+  if (!input.editedCapability) {
+    return;
+  }
+  if (input.decision !== "allow" || input.scope !== "once") {
+    throw new Error("Edited approval must allow exactly once");
+  }
+  if (!/^[a-f0-9]{64}$/u.test(input.editedCapability.capabilityHash)) {
+    throw new Error("Edited capability hash is invalid");
+  }
+}
+
 function requireTimestamp(value: string): string {
   if (!Number.isFinite(Date.parse(value))) {
     throw new Error("Approval clock must return an ISO timestamp");
@@ -295,7 +381,8 @@ function matchesDecision(
     record.runId === input.runId &&
     record.decision === input.decision &&
     record.scope === input.scope &&
-    record.decidedBy === input.decidedBy
+    record.decidedBy === input.decidedBy &&
+    canonicalJson(record.editedCapability) === canonicalJson(input.editedCapability)
   );
 }
 

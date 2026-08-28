@@ -5,6 +5,7 @@ import {
   canResolveRunResult,
   formatEventTitle,
   formatApprovalDetails,
+  formatEditableApproval,
   formatProjectPolicyRule,
   formatRunEventDetail,
   isTerminalStatus,
@@ -159,6 +160,25 @@ describe("Web Run presentation", () => {
       decision: "允许",
       fingerprint: "aaaaaaaaaaaa",
       active: true
+    });
+  });
+
+  it("presents command argv as one inert argument per line for safe editing", () => {
+    expect(
+      formatEditableApproval({
+        id: "approval-edit",
+        callId: "call-edit",
+        summary: "Run pnpm test --force",
+        editableCapability: {
+          type: "command_exec",
+          argv: ["pnpm", "test", "--force"]
+        }
+      })
+    ).toEqual({
+      kind: "command_exec",
+      label: "编辑命令参数（每行一个 argv）",
+      value: "pnpm\ntest\n--force",
+      help: "只能删除参数并保持原顺序；修改后仅允许本次调用。"
     });
   });
 });

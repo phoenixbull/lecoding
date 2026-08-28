@@ -3,6 +3,7 @@ import {
   type CreateRunInput,
   type CreateRunResult,
   type ControlPlaneConfig,
+  type EditedApprovalCapability,
   type ProjectId,
   type ProjectMembershipResult,
   type ProjectPolicyRuleResult,
@@ -46,6 +47,12 @@ export interface LeCodingClient {
     runId: RunId,
     approvalId: string,
     scope?: "once" | "run" | "project"
+  ): Promise<void>;
+  /** Replaces the pending capability with a strictly narrower one for one call. */
+  editAndApproveRun(
+    runId: RunId,
+    approvalId: string,
+    replacement: EditedApprovalCapability
   ): Promise<void>;
   answerRun(
     runId: RunId,
@@ -347,6 +354,14 @@ export function createClient(options: ClientOptions): LeCodingClient {
       scope = "once"
     ): Promise<void> {
       await sendRunCommand(runId, { type: "reject", approvalId, scope });
+    },
+
+    async editAndApproveRun(runId, approvalId, replacement): Promise<void> {
+      await sendRunCommand(runId, {
+        type: "edit_approve",
+        approvalId,
+        replacement
+      });
     },
 
     async answerRun(

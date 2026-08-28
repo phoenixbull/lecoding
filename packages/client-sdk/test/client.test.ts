@@ -338,6 +338,37 @@ describe("LeCodingClient", () => {
     ]);
   });
 
+  it("submits a user-narrowed capability as edit-and-allow-once", async () => {
+    const commands: unknown[] = [];
+    const client = createClient({
+      baseUrl: "https://agent.example",
+      fetch: async (_input, init) => {
+        commands.push(JSON.parse(String(init?.body)));
+        return new Response(null, { status: 202 });
+      }
+    });
+
+    await client.editAndApproveRun("run-1", "approval-1", {
+      type: "network_egress",
+      scheme: "https",
+      domain: "registry.example.com",
+      port: 443
+    });
+
+    expect(commands).toEqual([
+      {
+        type: "edit_approve",
+        approvalId: "approval-1",
+        replacement: {
+          type: "network_egress",
+          scheme: "https",
+          domain: "registry.example.com",
+          port: 443
+        }
+      }
+    ]);
+  });
+
   it("answers a pending question or steers that waiting turn", async () => {
     const commands: unknown[] = [];
     const client = createClient({

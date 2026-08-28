@@ -43,6 +43,38 @@ export interface ApprovalDetails {
   }>;
 }
 
+/** Safe edit-control projection with no shell reconstruction. */
+export interface EditableApprovalDetails {
+  kind: "command_exec" | "network_egress";
+  label: string;
+  value: string;
+  help: string;
+}
+
+/** Formats normalized edit input without parsing the human-readable summary. */
+export function formatEditableApproval(
+  approval: PendingApproval
+): EditableApprovalDetails | undefined {
+  const editable = approval.editableCapability;
+  if (!editable) {
+    return undefined;
+  }
+  if (editable.type === "command_exec") {
+    return {
+      kind: editable.type,
+      label: "编辑命令参数（每行一个 argv）",
+      value: editable.argv.join("\n"),
+      help: "只能删除参数并保持原顺序；修改后仅允许本次调用。"
+    };
+  }
+  return {
+    kind: editable.type,
+    label: "缩小网络域名",
+    value: editable.domain,
+    help: "只能改为原域名的下级域名；协议和端口保持不变。"
+  };
+}
+
 /** Formats bounded, policy-owned approval metadata for the interactive card. */
 export function formatApprovalDetails(
   approval: PendingApproval

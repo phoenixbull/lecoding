@@ -1,4 +1,5 @@
 import type {
+  EditedApprovalCapability,
   EnvironmentHandle,
   EnvironmentResult,
   LeaseHeartbeat,
@@ -774,24 +775,69 @@ class DefaultRunEngine implements RunEngine, RunResumer, DisposableEngine {
       throw new Error(`Approval is not pending: ${command.approvalId}`);
     }
 
-    const toolCall = stored.pendingToolCall;
+    const originalToolCall = stored.pendingToolCall;
     const approval = stored.pendingApproval;
-    if (command.scope === "project") {
+    const originalCapability = capabilityForTurn(originalToolCall);
+    if (
+      approval.capabilityHash &&
+      hashCapability(originalCapability) !== approval.capabilityHash
+    ) {
+      throw new Error(`Approval capability changed: ${command.approvalId}`);
+    }
+    const toolCall =
+      command.type === "edit_approve"
+        ? narrowToolCall(originalToolCall, command.replacement)
+        : originalToolCall;
+    let editedCapability: ExecutableCapability | undefined;
+    if (command.type === "edit_approve") {
+      editedCapability = capabilityForTurn(toolCall);
+      const editedCapabilityHash = hashCapability(editedCapability);
+      const editedDecision = await this.dependencies.policy.authorize({
+        // Command deletion can change semantics (for example removing --dry-run),
+        // so an independent reviewer must affirm the final exact argv.
+        approvalMode:
+          editedCapability.type === "command_exec"
+            ? "auto_review"
+            : stored.input.approvalMode,
+        fileAccessScope: stored.input.fileAccessScope,
+        ...(stored.input.deniedCommands
+          ? { deniedCommands: stored.input.deniedCommands }
+          : {}),
+        capability: editedCapability,
+        context: {
+          runId: stored.id,
+          projectId: stored.input.projectId,
+          toolCallId: `edit-${editedCapabilityHash}`,
+          userTask: stored.input.task,
+          capabilityHash: editedCapabilityHash
+        }
+      });
+      // Explicit editing can resolve an ask, but cannot override any deny source.
+      if (editedDecision.decision === "deny") {
+        throw new Error(`Edited capability is denied: ${editedDecision.reason}`);
+      }
+      if (
+        editedCapability.type === "command_exec" &&
+        editedDecision.decision !== "allow"
+      ) {
+        throw new Error("Edited command requires independent review approval");
+      }
+    }
+    if (
+      command.type !== "edit_approve" &&
+      command.scope === "project"
+    ) {
       if (!context?.canManageProjectRules || !this.dependencies.projectRules) {
         throw new Error("Project-scoped approval requires a project administrator");
       }
       if (!approval.capabilityHash || !approval.capabilityType) {
         throw new Error(`Approval cannot become a project rule: ${command.approvalId}`);
       }
-      const capability = capabilityForTurn(toolCall);
-      if (hashCapability(capability) !== approval.capabilityHash) {
-        throw new Error(`Approval capability changed: ${command.approvalId}`);
-      }
       await this.dependencies.projectRules.set({
         projectId: stored.input.projectId,
         capabilityType: approval.capabilityType,
         capabilityHash: approval.capabilityHash,
-        constraints: approvalConstraints(capability, toolCall),
+        constraints: approvalConstraints(originalCapability, originalToolCall),
         decision: command.type === "approve" ? "allow" : "deny",
         createdBy: context.actorId,
         sourceApprovalId: approval.id
@@ -800,9 +846,18 @@ class DefaultRunEngine implements RunEngine, RunResumer, DisposableEngine {
     await this.approvals.decide({
       approvalId: approval.id,
       runId: stored.id,
-      decision: command.type === "approve" ? "allow" : "deny",
-      scope: command.scope,
-      decidedBy: context?.actorId ?? "system"
+      decision: command.type === "reject" ? "deny" : "allow",
+      scope: command.type === "edit_approve" ? "once" : command.scope,
+      decidedBy: context?.actorId ?? "system",
+      ...(editedCapability
+        ? {
+            editedCapability: {
+              capabilityType: editedCapability.type,
+              capabilityHash: hashCapability(editedCapability),
+              constraints: approvalConstraints(editedCapability, toolCall)
+            }
+          }
+        : {})
     });
     if (
       command.type === "approve" &&
@@ -1188,7 +1243,16 @@ class DefaultRunEngine implements RunEngine, RunResumer, DisposableEngine {
           reason: decision.reason,
           riskLevel:
             decision.review?.riskLevel ?? capabilityRiskLevel(capability),
-          allowedScopes: ["once", "run", "project"]
+          allowedScopes: ["once", "run", "project"],
+          editableCapability:
+            turn.tool === "execute_command"
+              ? { type: "command_exec", argv: [...turn.arguments.argv] }
+              : {
+                  type: "network_egress",
+                  scheme: "https",
+                  domain: turn.arguments.domain.trim().toLowerCase(),
+                  port: turn.arguments.port
+                }
         };
         stored.pendingApproval = pendingApproval;
         await this.approvals.request({
@@ -1809,6 +1873,71 @@ function capabilityForTurn(
     domain,
     port: turn.arguments.port
   };
+}
+
+/** Builds a strictly narrower replacement while retaining provider continuation identity. */
+function narrowToolCall(
+  original: Extract<AgentModelTurn, { type: "tool_call" }>,
+  replacement: EditedApprovalCapability
+): Extract<AgentModelTurn, { type: "tool_call" }> {
+  if (original.tool === "execute_command") {
+    if (
+      replacement.type !== "command_exec" ||
+      !isStrictOrderedSubset(replacement.argv, original.arguments.argv)
+    ) {
+      throw new Error("Edited command must remove arguments without changing their order");
+    }
+    return {
+      ...original,
+      arguments: { argv: [...replacement.argv] }
+    };
+  }
+  if (replacement.type !== "network_egress") {
+    throw new Error("Edited capability type must match the pending network request");
+  }
+  const domain = replacement.domain.trim().toLowerCase();
+  const originalDomain = original.arguments.domain.trim().toLowerCase();
+  if (
+    replacement.scheme !== "https" ||
+    replacement.port !== original.arguments.port ||
+    !isValidNetworkDomain(domain) ||
+    !domain.endsWith(`.${originalDomain}`)
+  ) {
+    throw new Error("Edited network endpoint must be a strict subdomain on the same port");
+  }
+  return {
+    ...original,
+    arguments: {
+      ...original.arguments,
+      domain
+    }
+  };
+}
+
+function isStrictOrderedSubset(replacement: string[], original: string[]): boolean {
+  if (
+    replacement.length === 0 ||
+    replacement.length >= original.length ||
+    replacement.length > 256 ||
+    replacement.some(
+      (argument) =>
+        typeof argument !== "string" || argument.length === 0 || argument.length > 4_096
+    ) ||
+    replacement[0] !== original[0]
+  ) {
+    return false;
+  }
+  let originalIndex = 0;
+  return replacement.every((argument) => {
+    while (originalIndex < original.length && original[originalIndex] !== argument) {
+      originalIndex += 1;
+    }
+    if (originalIndex >= original.length) {
+      return false;
+    }
+    originalIndex += 1;
+    return true;
+  });
 }
 
 function summarizeCapability(capability: ExecutableCapability): string {

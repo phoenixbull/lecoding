@@ -567,6 +567,48 @@ describe("createRunApiHandler", () => {
     }, { actorId: "local-user", canManageProjectRules: true });
   });
 
+  it("accepts only a bounded edit-and-allow-once command with actor attribution", async () => {
+    const runs = createRuns([]);
+    const handler = createHandler(runs);
+    const command = (body: unknown) =>
+      handler.handle(
+        new Request("http://127.0.0.1:8787/api/v1/runs/run-1/commands", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify(body)
+        })
+      );
+
+    const accepted = await command({
+      type: "edit_approve",
+      approvalId: "approval-edit-1",
+      replacement: { type: "command_exec", argv: ["pnpm", "test"] }
+    });
+    const unknownField = await command({
+      type: "edit_approve",
+      approvalId: "approval-edit-1",
+      replacement: {
+        type: "network_egress",
+        scheme: "https",
+        domain: "registry.npmjs.org",
+        port: 443,
+        credentials: "include"
+      }
+    });
+
+    expect(accepted.status).toBe(202);
+    expect(unknownField.status).toBe(409);
+    expect(runs.command).toHaveBeenCalledWith(
+      "run-1",
+      {
+        type: "edit_approve",
+        approvalId: "approval-edit-1",
+        replacement: { type: "command_exec", argv: ["pnpm", "test"] }
+      },
+      { actorId: "local-user" }
+    );
+  });
+
   it("accepts strict user answers and waiting-turn steering", async () => {
     const runs = createRuns([]);
     const handler = createHandler(runs);

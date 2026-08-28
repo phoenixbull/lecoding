@@ -168,10 +168,22 @@ export interface PendingApproval {
   riskLevel?: "low" | "medium" | "high";
   /** Maximum scopes the current normalized capability can safely reuse. */
   allowedScopes?: ApprovalScope[];
+  /** Normalized, non-secret value an approval client may only narrow. */
+  editableCapability?: EditedApprovalCapability;
 }
 
 /** Maximum persistence boundary for an approval decision. */
 export type ApprovalScope = "once" | "run" | "project";
+
+/** User-authored narrower capability accepted only by edit-and-allow-once. */
+export type EditedApprovalCapability =
+  | { type: "command_exec"; argv: string[] }
+  | {
+      type: "network_egress";
+      scheme: "https";
+      domain: string;
+      port: number;
+    };
 
 export type RunCommand =
   | { type: "cancel" }
@@ -186,6 +198,11 @@ export type RunCommand =
       type: "approve";
       approvalId: string;
       scope: ApprovalScope;
+    }
+  | {
+      type: "edit_approve";
+      approvalId: string;
+      replacement: EditedApprovalCapability;
     }
   /**
    * Worker 主动放弃当前环境:把 Run 转为 environment_offline,释放本地句柄,

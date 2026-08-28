@@ -13,6 +13,7 @@ import {
   canResolveRunResult,
   formatApprovalDetails,
   formatEventTitle,
+  formatEditableApproval,
   formatProjectPolicyRule,
   formatRunEventDetail,
   isTerminalStatus,
@@ -43,6 +44,11 @@ const approvalReason = requiredElement<HTMLElement>("#approval-reason");
 const approvalScope = requiredElement<HTMLSelectElement>("#approval-scope");
 const approveButton = requiredElement<HTMLButtonElement>("#approve-approval");
 const rejectButton = requiredElement<HTMLButtonElement>("#reject-approval");
+const approvalEditPanel = requiredElement<HTMLElement>("#approval-edit-panel");
+const approvalEditLabel = requiredElement<HTMLElement>("#approval-edit-label");
+const approvalEditValue = requiredElement<HTMLTextAreaElement>("#approval-edit-value");
+const approvalEditHelp = requiredElement<HTMLElement>("#approval-edit-help");
+const editApproveButton = requiredElement<HTMLButtonElement>("#edit-approve");
 const userRequestCard = requiredElement<HTMLElement>("#user-request-card");
 const userRequestPrompt = requiredElement<HTMLElement>("#user-request-prompt");
 const userResponse = requiredElement<HTMLTextAreaElement>("#user-response");
@@ -69,6 +75,7 @@ let bootstrap: ControlPlaneConfig | undefined;
 let currentRun: RunView | undefined;
 let streamController: AbortController | undefined;
 let approvalCommandPending = false;
+let renderedEditableApprovalId: string | undefined;
 let userCommandPending = false;
 let selectedRunId: string | undefined;
 let selectedProjectId: string | undefined;
@@ -130,6 +137,10 @@ approveButton.addEventListener("click", () => {
 
 rejectButton.addEventListener("click", () => {
   void resolveCurrentApproval("reject");
+});
+
+editApproveButton.addEventListener("click", () => {
+  void editAndApproveCurrentCapability();
 });
 
 answerButton.addEventListener("click", () => {
@@ -667,6 +678,8 @@ function renderApproval(run: RunView): void {
     approvalRisk.textContent = "";
     approvalReason.textContent = "";
     approvalScope.replaceChildren();
+    approvalEditPanel.hidden = true;
+    renderedEditableApprovalId = undefined;
     return;
   }
   const details = formatApprovalDetails(approval);
@@ -692,6 +705,61 @@ function renderApproval(run: RunView): void {
   approveButton.disabled = approvalCommandPending;
   rejectButton.disabled = approvalCommandPending;
   approvalScope.disabled = approvalCommandPending;
+  const editable = formatEditableApproval(approval);
+  if (editable) {
+    approvalEditLabel.textContent = editable.label;
+    approvalEditHelp.textContent = editable.help;
+    if (renderedEditableApprovalId !== approval.id) {
+      // SSE refresh must preserve an in-progress user edit for the same approval.
+      approvalEditValue.value = editable.value;
+      renderedEditableApprovalId = approval.id;
+    }
+    approvalEditPanel.hidden = false;
+    approvalEditValue.disabled = approvalCommandPending;
+    editApproveButton.disabled = approvalCommandPending;
+  } else {
+    approvalEditPanel.hidden = true;
+    renderedEditableApprovalId = undefined;
+  }
+}
+
+async function editAndApproveCurrentCapability(): Promise<void> {
+  const run = currentRun;
+  const approval = run?.status === "waiting_approval" ? run.pendingApproval : undefined;
+  const original = approval?.editableCapability;
+  if (!run || !approval || !original || approvalCommandPending) {
+    return;
+  }
+  const replacement =
+    original.type === "command_exec"
+      ? {
+          type: "command_exec" as const,
+          // Lines preserve argv boundaries; empty lines mean removed arguments.
+          argv: approvalEditValue.value
+            .replace(/\r\n/gu, "\n")
+            .split("\n")
+            .filter((argument) => argument.length > 0)
+        }
+      : {
+          type: "network_egress" as const,
+          scheme: "https" as const,
+          domain: approvalEditValue.value.trim().toLowerCase(),
+          port: original.port
+        };
+  hideError();
+  approvalCommandPending = true;
+  renderApproval(run);
+  try {
+    await client.editAndApproveRun(run.id, approval.id, replacement);
+    await refreshRun(run.id);
+  } catch {
+    showError("修改后的能力未被接受；只能缩小原请求且不能绕过固定拒绝规则。");
+  } finally {
+    approvalCommandPending = false;
+    if (currentRun) {
+      renderApproval(currentRun);
+    }
+  }
 }
 
 function renderUserRequest(run: RunView): void {
