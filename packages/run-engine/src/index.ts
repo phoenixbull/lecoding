@@ -6,6 +6,7 @@ import type {
   PendingUserRequest,
   RetryPolicy,
   RunCommand,
+  RunCommandContext,
   RunEngine,
   RunFailure,
   RunId,
@@ -21,7 +22,8 @@ import type {
   StartRun,
   VerificationReport
 } from "@lecoding/contracts";
-import type { PolicyEngine } from "@lecoding/policy";
+import { createHash } from "node:crypto";
+import type { Capability, PolicyEngine } from "@lecoding/policy";
 import type { RunEnvironment } from "@lecoding/run-environment";
 import type { RunEventJournal } from "@lecoding/run-events";
 import type { Verifier } from "@lecoding/verifier";
@@ -38,6 +40,10 @@ import {
   type RunSteerMailbox,
   type RunSteerMessage
 } from "./run-steer-mailbox.js";
+import {
+  createInMemoryApprovalLedger,
+  type ApprovalLedger
+} from "./postgres-approval-ledger.js";
 
 export type { RetryPolicy, LeaseHeartbeat } from "@lecoding/contracts";
 export {
@@ -55,6 +61,18 @@ export {
   createPostgresToolCallLedger,
   TOOL_CALL_LEDGER_SCHEMA_SQL
 } from "./postgres-tool-call-ledger.js";
+export {
+  APPROVAL_LEDGER_SCHEMA_SQL,
+  createInMemoryApprovalLedger,
+  createPostgresApprovalLedger
+} from "./postgres-approval-ledger.js";
+export type {
+  ApprovalAuditRecord,
+  ApprovalCapabilityType,
+  ApprovalDecisionInput,
+  ApprovalLedger,
+  ApprovalRequestInput
+} from "./postgres-approval-ledger.js";
 export {
   createInMemoryRunSteerMailbox,
   createPostgresRunSteerMailbox,
@@ -116,6 +134,10 @@ interface StoredRun {
   userCommandReceipts?: Record<string, UserCommandReceipt>;
   /** Durable markers prevent duplicate tool-start events when another Worker takes over. */
   startedToolCallIds?: string[];
+  /** Exact normalized capabilities approved for reuse only within this Run. */
+  approvedCapabilityHashes?: string[];
+  /** Exact normalized capabilities rejected for the remainder of this Run. */
+  deniedCapabilityHashes?: string[];
   pendingToolCall?: Extract<AgentModelTurn, { type: "tool_call" }>;
   failure?: RunFailure;
   verification?: VerificationReport;
@@ -204,6 +226,8 @@ export interface RunEngineDependencies {
    * 缺省内存实现仅供单进程开发和既有接口测试。
    */
   toolCalls?: ToolCallLedger;
+  /** Approval audit ledger persisted outside model-controlled Run snapshots. */
+  approvals?: ApprovalLedger;
   /** 原子保存 Run 状态和 RunEvent/outbox;生产 PostgreSQL 组合必须注入。 */
   transitions?: RunTransitionWriter;
   /** Cross-Worker mailbox that accepts steer without contending for the driver lease. */
@@ -313,6 +337,7 @@ export async function createRunEngine(
 class DefaultRunEngine implements RunEngine, RunResumer, DisposableEngine {
   private cancelSubscriptionStop: (() => void | Promise<void>) | undefined;
   private readonly toolCalls: ToolCallLedger;
+  private readonly approvals: ApprovalLedger;
   private readonly steerMailbox: RunSteerMailbox;
 
   constructor(private readonly dependencies: RunEngineDependencies) {
@@ -322,6 +347,9 @@ class DefaultRunEngine implements RunEngine, RunResumer, DisposableEngine {
      * resolve 后订阅一定生效,worker 可以立即 publish。
      */
     this.toolCalls = dependencies.toolCalls ?? createInMemoryToolCallLedger();
+    this.approvals =
+      dependencies.approvals ??
+      createInMemoryApprovalLedger({ now: dependencies.now });
     this.steerMailbox =
       dependencies.steerMailbox ??
       createInMemoryRunSteerMailbox({ events: dependencies.events });
@@ -490,7 +518,11 @@ class DefaultRunEngine implements RunEngine, RunResumer, DisposableEngine {
     }
   }
 
-  async command(runId: RunId, command: RunCommand): Promise<void> {
+  async command(
+    runId: RunId,
+    command: RunCommand,
+    context?: RunCommandContext
+  ): Promise<void> {
     if (command.type === "steer" || command.type === "answer") {
       const current = await this.requireRun(runId);
       validateSteeringCommandId(command.commandId);
@@ -538,7 +570,7 @@ class DefaultRunEngine implements RunEngine, RunResumer, DisposableEngine {
     }
     try {
       const stored = await this.requireRun(runId);
-      await this.runCommandWithToken(stored, command, token);
+      await this.runCommandWithToken(stored, command, token, context);
     } finally {
       await this.dependencies.lease.release({
         runId: token.runId,
@@ -551,7 +583,8 @@ class DefaultRunEngine implements RunEngine, RunResumer, DisposableEngine {
   private async runCommandWithToken(
     stored: StoredRun,
     command: RunCommand,
-    token: RunLeaseToken
+    token: RunLeaseToken,
+    context?: RunCommandContext
   ): Promise<void> {
     if (command.type === "recover_environment") {
       /*
@@ -702,6 +735,36 @@ class DefaultRunEngine implements RunEngine, RunResumer, DisposableEngine {
     }
 
     const toolCall = stored.pendingToolCall;
+    const approval = stored.pendingApproval;
+    await this.approvals.decide({
+      approvalId: approval.id,
+      runId: stored.id,
+      decision: command.type === "approve" ? "allow" : "deny",
+      scope: command.scope,
+      decidedBy: context?.actorId ?? "system"
+    });
+    if (command.type === "approve" && command.scope === "run") {
+      if (!approval.capabilityHash) {
+        throw new Error(`Approval cannot be reused for this Run: ${command.approvalId}`);
+      }
+      stored.approvedCapabilityHashes = Array.from(
+        new Set([
+          ...(stored.approvedCapabilityHashes ?? []),
+          approval.capabilityHash
+        ])
+      );
+    }
+    if (command.type === "reject" && command.scope === "run") {
+      if (!approval.capabilityHash) {
+        throw new Error(`Approval cannot be denied for this Run: ${command.approvalId}`);
+      }
+      stored.deniedCapabilityHashes = Array.from(
+        new Set([
+          ...(stored.deniedCapabilityHashes ?? []),
+          approval.capabilityHash
+        ])
+      );
+    }
     delete stored.pendingApproval;
     await this.transition(stored, "running", token);
 
@@ -995,25 +1058,74 @@ class DefaultRunEngine implements RunEngine, RunResumer, DisposableEngine {
         stored.version = await this.dependencies.store.save(stored);
       }
 
-      const decision = await this.dependencies.policy.authorize({
+      const capability: Capability = {
+        type: "command_exec",
+        argv: turn.arguments.argv,
+        cwd: "."
+      };
+      const capabilityHash = hashCapability(capability);
+      const policyDecision = await this.dependencies.policy.authorize({
         approvalMode: stored.input.approvalMode,
         fileAccessScope: stored.input.fileAccessScope,
         ...(stored.input.deniedCommands
           ? { deniedCommands: stored.input.deniedCommands }
           : {}),
-        capability: {
-          type: "command_exec",
-          argv: turn.arguments.argv,
-          cwd: "."
-        }
+        capability
       });
+      // A Run grant can replace only an interactive ask; fixed deny is re-evaluated.
+      const decision =
+        policyDecision.decision === "ask" &&
+        stored.approvedCapabilityHashes?.includes(capabilityHash)
+          ? { decision: "allow" as const }
+          : policyDecision;
+      if (
+        decision.decision === "ask" &&
+        stored.deniedCapabilityHashes?.includes(capabilityHash)
+      ) {
+        // A Run denial is a model-visible tool result, not a terminal policy failure.
+        stored.toolResults.push({
+          callId: turn.callId,
+          ...(turn.continuationId
+            ? { continuationId: turn.continuationId }
+            : {}),
+          status: "denied",
+          reason: "Capability was denied for this Run"
+        });
+        delete stored.pendingToolCall;
+        await this.persistEvents(
+          stored,
+          [
+            {
+              type: "tool_completed",
+              data: { callId: turn.callId, outcome: "denied" }
+            }
+          ],
+          token
+        );
+        continue;
+      }
       if (decision.decision === "ask") {
         stored.pendingToolCall = turn;
         stored.pendingApproval = {
           id: `approval-${turn.callId}`,
           callId: turn.callId,
-          summary: `Run ${turn.arguments.argv.join(" ")}`
+          summary: `Run ${turn.arguments.argv.join(" ")}`,
+          capabilityType: capability.type,
+          capabilityHash
         };
+        await this.approvals.request({
+          id: stored.pendingApproval.id,
+          runId: stored.id,
+          toolCallId: turn.callId,
+          capabilityType: capability.type,
+          capabilityHash,
+          reason: decision.reason,
+          constraints: {
+            argv: turn.arguments.argv,
+            cwd: ".",
+            shellMode: "direct"
+          }
+        });
         await this.transition(stored, "waiting_approval", token, [
           {
             type: "approval_requested",
@@ -1525,6 +1637,20 @@ class DefaultRunEngine implements RunEngine, RunResumer, DisposableEngine {
     }
     return new Date(now + milliseconds).toISOString();
   }
+}
+
+/** Hashes canonical structured capability input instead of a broad tool name. */
+function hashCapability(capability: Capability): string {
+  const normalized =
+    capability.type === "command_exec"
+      ? {
+          type: capability.type,
+          argv: capability.argv,
+          cwd: capability.cwd,
+          shellMode: "direct"
+        }
+      : capability;
+  return createHash("sha256").update(JSON.stringify(normalized)).digest("hex");
 }
 
 const DEFAULT_LEASE_MILLISECONDS = 30_000;

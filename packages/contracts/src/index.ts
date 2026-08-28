@@ -133,6 +133,10 @@ export interface PendingApproval {
   id: string;
   callId: string;
   summary: string;
+  /** Normalized capability category rendered by approval clients. */
+  capabilityType?: "command_exec" | "network_egress";
+  /** Stable normalized-argument digest used for exact-scope reuse. */
+  capabilityHash?: string;
 }
 
 export type RunCommand =
@@ -155,9 +159,18 @@ export type RunCommand =
    */
   | { type: "recover_environment"; reason: string };
 
+/** Trusted caller context supplied by the authenticated control-plane adapter. */
+export interface RunCommandContext {
+  actorId: string;
+}
+
 export interface RunEngine {
   start(input: StartRun): Promise<RunId>;
-  command(runId: RunId, command: RunCommand): Promise<void>;
+  command(
+    runId: RunId,
+    command: RunCommand,
+    context?: RunCommandContext
+  ): Promise<void>;
   inspect(runId: RunId): Promise<RunView>;
 }
 

@@ -347,7 +347,7 @@ describe("createRunApiHandler", () => {
     expect(results.resolve).not.toHaveBeenCalled();
   });
 
-  it("accepts only single-call approval and rejection commands", async () => {
+  it("accepts strict once/run approval and rejection commands", async () => {
     const runs = createRuns([]);
     const handler = createHandler(runs);
     const command = (body: unknown) =>
@@ -376,18 +376,23 @@ describe("createRunApiHandler", () => {
     });
 
     expect([approved.status, rejected.status, broadScope.status]).toEqual([
-      202, 202, 409
+      202, 202, 202
     ]);
     expect(runs.command).toHaveBeenNthCalledWith(1, "run-1", {
       type: "approve",
       approvalId: "approval-1",
       scope: "once"
-    });
+    }, { actorId: "local-user" });
     expect(runs.command).toHaveBeenNthCalledWith(2, "run-1", {
       type: "reject",
       approvalId: "approval-2",
       scope: "once"
-    });
+    }, { actorId: "local-user" });
+    expect(runs.command).toHaveBeenNthCalledWith(3, "run-1", {
+      type: "approve",
+      approvalId: "approval-1",
+      scope: "run"
+    }, { actorId: "local-user" });
   });
 
   it("accepts strict user answers and waiting-turn steering", async () => {

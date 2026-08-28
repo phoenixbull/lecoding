@@ -7,6 +7,7 @@ import type {
 } from "@lecoding/contracts";
 import type { AgentModel, AgentModelTurn, ModelToolResult } from "@lecoding/run-engine";
 import {
+  createInMemoryApprovalLedger,
   createInMemoryRunLease,
   InMemoryRunCancelBus
 } from "@lecoding/run-engine";
@@ -183,7 +184,11 @@ describe("RunEngine", () => {
   });
 
   it("pauses a manual run for approval and resumes the same tool call", async () => {
+    const approvals = createInMemoryApprovalLedger({
+      now: () => "2026-08-28T03:30:00.000Z"
+    });
     const harness = await createTestHarness({
+      approvals,
       expectedChangedFile: "src/generated.ts",
       modelTurns: [
         {
@@ -231,12 +236,63 @@ describe("RunEngine", () => {
       type: "approve",
       approvalId: "approval-call-approval",
       scope: "once"
-    });
+    }, { actorId: "github_42" });
 
     await expect(harness.engine.inspect(runId)).resolves.toMatchObject({
       status: "succeeded",
       verification: { outcome: "passed" }
     });
+    await expect(approvals.get("approval-call-approval")).resolves.toMatchObject({
+      status: "decided",
+      decision: "allow",
+      scope: "once",
+      decidedBy: "github_42",
+      capabilityType: "command_exec"
+    });
+  });
+
+  it("reuses a run-scoped approval only for the same normalized capability", async () => {
+    const harness = await createTestHarness({
+      expectedChangedFile: "src/generated.ts",
+      modelTurns: [
+        {
+          type: "tool_call",
+          callId: "call-approved-first",
+          tool: "execute_command",
+          arguments: { argv: ["pnpm", "test"] }
+        },
+        {
+          type: "tool_call",
+          callId: "call-approved-second",
+          tool: "execute_command",
+          arguments: { argv: ["pnpm", "test"] }
+        },
+        { type: "completed", summary: "Repeated the approved capability" }
+      ]
+    });
+    const runId = await harness.engine.start({
+      projectId: "project-1",
+      environmentId: "environment-1",
+      task: "Run the same protected command twice",
+      acceptanceCriteria: ["src/generated.ts exists"],
+      approvalMode: "manual",
+      fileAccessScope: "workspace_only"
+    });
+
+    await harness.engine.resume(runId);
+    await harness.engine.command(runId, {
+      type: "approve",
+      approvalId: "approval-call-approved-first",
+      scope: "run"
+    });
+
+    await expect(harness.engine.inspect(runId)).resolves.toMatchObject({
+      status: "succeeded"
+    });
+    const approvalEvents = parseSseEvents(await harness.events.resume(runId)).filter(
+      (event) => event.type === "approval_requested"
+    );
+    expect(approvalEvents).toHaveLength(1);
   });
 
   it("rejects a pending tool call without executing it", async () => {
@@ -278,6 +334,50 @@ describe("RunEngine", () => {
       }
     });
 
+  });
+
+  it("reuses a run-scoped denial as a denied tool result without re-prompting", async () => {
+    const harness = await createTestHarness({
+      expectNoChangedFiles: true,
+      modelTurns: [
+        {
+          type: "tool_call",
+          callId: "call-denied-first",
+          tool: "execute_command",
+          arguments: { argv: ["curl", "https://example.com"] }
+        },
+        {
+          type: "tool_call",
+          callId: "call-denied-second",
+          tool: "execute_command",
+          arguments: { argv: ["curl", "https://example.com"] }
+        },
+        { type: "completed", summary: "Continued without the denied capability" }
+      ]
+    });
+    const runId = await harness.engine.start({
+      projectId: "project-1",
+      environmentId: "environment-1",
+      task: "Do not repeat a denied capability prompt",
+      acceptanceCriteria: ["No files are changed"],
+      approvalMode: "manual",
+      fileAccessScope: "workspace_only"
+    });
+
+    await harness.engine.resume(runId);
+    await harness.engine.command(runId, {
+      type: "reject",
+      approvalId: "approval-call-denied-first",
+      scope: "run"
+    });
+
+    await expect(harness.engine.inspect(runId)).resolves.toMatchObject({
+      status: "succeeded"
+    });
+    const approvalEvents = parseSseEvents(await harness.events.resume(runId)).filter(
+      (event) => event.type === "approval_requested"
+    );
+    expect(approvalEvents).toHaveLength(1);
   });
 
   it("persists a model question and continues from the matching user answer", async () => {

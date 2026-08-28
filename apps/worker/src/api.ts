@@ -294,7 +294,13 @@ export function createRunApiHandler(
         }
         try {
           const command = parseMinimalRunCommand(await readJsonBody(request));
-          await options.runs.command(runId, command);
+          if (command.type === "approve" || command.type === "reject") {
+            await options.runs.command(runId, command, {
+              actorId: principal.userId
+            });
+          } else {
+            await options.runs.command(runId, command);
+          }
           return new Response(null, { status: 202 });
         } catch {
           return errorResponse(409, "command_rejected", "Run command was rejected");
@@ -433,13 +439,13 @@ function parseMinimalRunCommand(value: unknown): RunCommand {
     (value.type === "approve" || value.type === "reject") &&
     typeof value.approvalId === "string" &&
     value.approvalId.trim() !== "" &&
-    value.scope === "once"
+    (value.scope === "once" || value.scope === "run")
   ) {
-    // Browser commands cannot broaden one reviewed call into a Run-wide grant.
+    // The engine binds Run scope to the pending normalized capability fingerprint.
     return {
       type: value.type,
       approvalId: value.approvalId,
-      scope: "once"
+      scope: value.scope
     };
   }
   if (

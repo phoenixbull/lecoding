@@ -20,6 +20,7 @@ import {
   type AgentModel,
   type AgentModelInput,
   type AgentModelTurn,
+  type ApprovalLedger,
   type Engine,
   type LeaseHeartbeat,
   type RetryPolicy,
@@ -72,6 +73,8 @@ export async function createTestHarness(options: {
   store?: RunStore;
   /** 注入工具调用幂等账本;跨 Worker 测试可共享 PostgreSQL 实现。 */
   toolCalls?: ToolCallLedger;
+  /** 注入审批审计账本；跨 Worker 测试可共享 PostgreSQL 实现。 */
+  approvals?: ApprovalLedger;
   /** 注入状态 + 事件原子 writer;提供时替代 legacy 两步发布路径。 */
   transitions?: RunTransitionWriter;
 }): Promise<TestHarness> {
@@ -106,6 +109,7 @@ export async function createTestHarness(options: {
     handles: createInMemoryRunHandleRegistry(),
     lease,
     ...(options.toolCalls !== undefined ? { toolCalls: options.toolCalls } : {}),
+    ...(options.approvals !== undefined ? { approvals: options.approvals } : {}),
     ...(options.transitions !== undefined
       ? { transitions: options.transitions }
       : {}),

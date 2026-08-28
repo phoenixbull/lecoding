@@ -19,6 +19,7 @@ import {
   createIntervalLeaseHeartbeat,
   createPgBossRecoveryWorker,
   createPostgresRunCancelBus,
+  createPostgresApprovalLedger,
   createPostgresRunLease,
   createPostgresRunStore,
   createPostgresRunSteerMailbox,
@@ -565,6 +566,10 @@ export async function composeProductionWorker(
     const toolCalls = await createPostgresToolCallLedger(
       options.database.executor
     );
+    const approvals = await createPostgresApprovalLedger(
+      options.database.executor,
+      { now }
+    );
     const steerMailbox = await createPostgresRunSteerMailbox({
       database: options.database.executor,
       now
@@ -612,6 +617,7 @@ export async function composeProductionWorker(
       store,
       transitions,
       toolCalls,
+      approvals,
       steerMailbox,
       lease,
       heartbeat: createIntervalLeaseHeartbeat(lease),
