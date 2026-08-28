@@ -664,6 +664,78 @@ input:focus {
   gap: 10px;
 }
 
+.budget-panel {
+  margin: 0 0 22px;
+  padding: 16px;
+  border: 1px solid #293630;
+  border-left: 3px solid #50d393;
+  border-radius: 10px;
+  background: #0b100e;
+}
+
+.budget-panel[data-tone="warning"] {
+  border-left-color: #e8b158;
+}
+
+.budget-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.budget-model {
+  color: #7e9187;
+  font: 11px "SFMono-Regular", Consolas, monospace;
+  overflow-wrap: anywhere;
+  text-align: right;
+}
+
+.budget-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 10px;
+  margin: 14px 0 0;
+}
+
+.budget-grid > div {
+  min-width: 0;
+  padding: 10px;
+  border: 1px solid #202c27;
+  border-radius: 8px;
+}
+
+.budget-grid dt {
+  color: #75887f;
+  font-size: 11px;
+}
+
+.budget-grid dd {
+  margin: 5px 0 0;
+  color: #d5e2db;
+  font: 12px "SFMono-Regular", Consolas, monospace;
+  overflow-wrap: anywhere;
+}
+
+.budget-warnings {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 12px;
+}
+
+.budget-warnings:empty {
+  display: none;
+}
+
+.budget-warnings span {
+  padding: 4px 8px;
+  border: 1px solid #6e542d;
+  border-radius: 999px;
+  color: #e8b158;
+  font-size: 11px;
+}
+
 .check-card {
   padding: 15px;
   border: 1px solid #293630;

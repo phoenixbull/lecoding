@@ -16,6 +16,7 @@ import {
   formatEventTitle,
   formatEditableApproval,
   formatProjectPolicyRule,
+  formatRunBudget,
   formatRunEventDetail,
   isTerminalStatus,
   isTerminalRunEvent,
@@ -75,6 +76,14 @@ const changedFiles = requiredElement<HTMLElement>("#changed-files");
 const diffOutput = requiredElement<HTMLElement>("#diff-output");
 const artifactList = requiredElement<HTMLElement>("#artifact-list");
 const artifactOutput = requiredElement<HTMLElement>("#artifact-output");
+const budgetPanel = requiredElement<HTMLElement>("#budget-panel");
+const budgetModel = requiredElement<HTMLElement>("#budget-model");
+const budgetTokens = requiredElement<HTMLElement>("#budget-tokens");
+const budgetCost = requiredElement<HTMLElement>("#budget-cost");
+const budgetWallTime = requiredElement<HTMLElement>("#budget-wall-time");
+const budgetToolCalls = requiredElement<HTMLElement>("#budget-tool-calls");
+const budgetTeamCost = requiredElement<HTMLElement>("#budget-team-cost");
+const budgetWarnings = requiredElement<HTMLElement>("#budget-warnings");
 
 let bootstrap: ControlPlaneConfig | undefined;
 let currentRun: RunView | undefined;
@@ -378,6 +387,7 @@ function clearProjectView(changesMessage = "选择 Run 后显示其受管工作�
   setStreamState("就绪", "idle");
   resetChanges(changesMessage);
   renderArtifacts(undefined);
+  renderBudget(undefined);
 }
 
 function renderProjectOptions(
@@ -719,6 +729,35 @@ function renderRun(run: RunView): void {
   renderUserRequest(run);
   renderVerification(run.verification?.checks ?? []);
   renderArtifacts(run);
+  renderBudget(run);
+}
+
+function renderBudget(run: RunView | undefined): void {
+  budgetWarnings.replaceChildren();
+  if (!run?.budget) {
+    budgetPanel.hidden = true;
+    budgetModel.textContent = "";
+    budgetTokens.textContent = "";
+    budgetCost.textContent = "";
+    budgetWallTime.textContent = "";
+    budgetToolCalls.textContent = "";
+    budgetTeamCost.textContent = "";
+    return;
+  }
+  const details = formatRunBudget(run.budget);
+  budgetPanel.hidden = false;
+  budgetPanel.dataset.tone = details.tone;
+  budgetModel.textContent = details.model;
+  budgetTokens.textContent = details.tokens;
+  budgetCost.textContent = details.cost;
+  budgetWallTime.textContent = details.wallTime;
+  budgetToolCalls.textContent = details.toolCalls;
+  budgetTeamCost.textContent = details.teamCost;
+  for (const warning of details.warnings) {
+    const chip = document.createElement("span");
+    chip.textContent = warning;
+    budgetWarnings.append(chip);
+  }
 }
 
 function renderArtifacts(run: RunView | undefined): void {

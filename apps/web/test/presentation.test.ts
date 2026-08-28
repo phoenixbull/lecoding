@@ -8,6 +8,7 @@ import {
   formatApprovalDetails,
   formatEditableApproval,
   formatProjectPolicyRule,
+  formatRunBudget,
   formatRunEventDetail,
   isTerminalStatus,
   isTerminalRunEvent,
@@ -17,6 +18,49 @@ import {
 } from "../src/presentation.js";
 
 describe("Web Run presentation", () => {
+  it("formats authenticated Run quotas and stable warning labels", () => {
+    expect(
+      formatRunBudget({
+        inputTokens: 180_000,
+        outputTokens: 20_000,
+        totalTokens: 200_000,
+        costUsd: 1.25,
+        toolCalls: 48,
+        elapsedMs: 1_500_000,
+        maxTotalTokens: 1_000_000,
+        warningCostUsd: 1,
+        maxCostUsd: 2,
+        maxWallTimeMs: 1_800_000,
+        maxToolCalls: 60,
+        teamMonthlyCostUsd: 336,
+        teamMonthlyWarningUsd: 336,
+        teamMonthlyMaxUsd: 420,
+        modelId: "vendor-model-v1",
+        pricingVersion: "pricing-2026-08-28",
+        warnings: [
+          "cost_warning",
+          "wall_time_warning",
+          "tool_call_warning",
+          "team_monthly_cost_warning"
+        ]
+      })
+    ).toEqual({
+      model: "vendor-model-v1 · pricing-2026-08-28",
+      tokens: "200,000 / 1,000,000（输入 180,000 · 输出 20,000）",
+      cost: "$1.25 / $2.00（$1.00 起预警）",
+      wallTime: "25分 / 30分",
+      toolCalls: "48 / 60",
+      teamCost: "$336.00 / $420.00",
+      warnings: [
+        "成本接近上限",
+        "运行时间接近上限",
+        "工具调用接近上限",
+        "团队月预算接近上限"
+      ],
+      tone: "warning"
+    });
+  });
+
   it("preserves a registered project selection and falls back to the server default", () => {
     const config = {
       projectId: "project-a",

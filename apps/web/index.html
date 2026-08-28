@@ -139,6 +139,23 @@
                 </button>
               </div>
             </div>
+            <div id="budget-panel" class="budget-panel" aria-live="polite" hidden>
+              <div class="budget-heading">
+                <div>
+                  <p class="eyebrow">Quota monitor</p>
+                  <strong>用量与硬限制</strong>
+                </div>
+                <span id="budget-model" class="budget-model"></span>
+              </div>
+              <dl class="budget-grid">
+                <div><dt>Token</dt><dd id="budget-tokens"></dd></div>
+                <div><dt>Run 费用</dt><dd id="budget-cost"></dd></div>
+                <div><dt>墙钟时间</dt><dd id="budget-wall-time"></dd></div>
+                <div><dt>工具调用</dt><dd id="budget-tool-calls"></dd></div>
+                <div><dt>团队月预算</dt><dd id="budget-team-cost"></dd></div>
+              </dl>
+              <div id="budget-warnings" class="budget-warnings"></div>
+            </div>
             <div id="approval-card" class="approval-card" aria-live="polite" hidden>
               <div>
                 <p class="eyebrow">Approval required</p>

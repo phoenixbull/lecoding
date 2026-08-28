@@ -3,11 +3,65 @@ import type {
   PendingApproval,
   ProjectPolicyRule,
   ProjectRole,
+  RunBudgetView,
   RunEventV1,
   RunEventType,
   RunStatus,
   VerificationOutcome
 } from "@lecoding/contracts";
+
+/** Inert quota-card projection derived only from bounded Run budget fields. */
+export interface RunBudgetDetails {
+  model: string;
+  tokens: string;
+  cost: string;
+  wallTime: string;
+  toolCalls: string;
+  teamCost: string;
+  warnings: string[];
+  tone: "positive" | "warning";
+}
+
+const BUDGET_WARNING_LABELS: Record<
+  RunBudgetView["warnings"][number],
+  string
+> = {
+  token_warning: "Token 接近上限",
+  cost_warning: "成本接近上限",
+  wall_time_warning: "运行时间接近上限",
+  tool_call_warning: "工具调用接近上限",
+  team_monthly_cost_warning: "团队月预算接近上限"
+};
+
+/** Formats usage and limits without reflecting arbitrary provider response text. */
+export function formatRunBudget(budget: RunBudgetView): RunBudgetDetails {
+  const warnings = budget.warnings.map((warning) => BUDGET_WARNING_LABELS[warning]);
+  return {
+    model: `${budget.modelId} · ${budget.pricingVersion}`,
+    tokens: `${formatCount(budget.totalTokens)} / ${formatCount(budget.maxTotalTokens)}（输入 ${formatCount(budget.inputTokens)} · 输出 ${formatCount(budget.outputTokens)}）`,
+    cost: `${formatUsd(budget.costUsd)} / ${formatUsd(budget.maxCostUsd)}（${formatUsd(budget.warningCostUsd)} 起预警）`,
+    wallTime: `${formatDuration(budget.elapsedMs)} / ${formatDuration(budget.maxWallTimeMs)}`,
+    toolCalls: `${formatCount(budget.toolCalls)} / ${formatCount(budget.maxToolCalls)}`,
+    teamCost: `${formatUsd(budget.teamMonthlyCostUsd)} / ${formatUsd(budget.teamMonthlyMaxUsd)}`,
+    warnings,
+    tone: warnings.length > 0 ? "warning" : "positive"
+  };
+}
+
+function formatCount(value: number): string {
+  return new Intl.NumberFormat("en-US", { maximumFractionDigits: 0 }).format(value);
+}
+
+function formatUsd(value: number): string {
+  return `$${value < 0.01 && value > 0 ? value.toFixed(6) : value.toFixed(2)}`;
+}
+
+function formatDuration(milliseconds: number): string {
+  const totalSeconds = Math.floor(milliseconds / 1_000);
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  return seconds === 0 ? `${minutes}分` : `${minutes}分${seconds}秒`;
+}
 
 /** Run approval modes exposed for the caller's selected-project authority. */
 export function approvalModeOptions(
