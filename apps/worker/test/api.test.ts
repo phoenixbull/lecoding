@@ -126,6 +126,41 @@ describe("createRunApiHandler", () => {
     });
   });
 
+  it("reserves full access for project admins and rejects host file scopes", async () => {
+    const developerAccess: RunApiAccessControl = {
+      authenticate: vi.fn(async () => ({ userId: "developer-user" })),
+      roleFor: vi.fn(async () => "developer" as const)
+    };
+    const adminAccess: RunApiAccessControl = {
+      authenticate: vi.fn(async () => ({ userId: "admin-user" })),
+      roleFor: vi.fn(async () => "admin" as const)
+    };
+    const create = (access: RunApiAccessControl, fileAccessScope: string) =>
+      createHandler(createRuns([]), undefined, undefined, undefined, access).handle(
+        new Request("http://127.0.0.1:8787/api/v1/projects/project-1/runs", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            environmentId: "server-docker",
+            task: "Use elevated policy",
+            acceptanceCriteria: ["Remain isolated"],
+            approvalMode: "full_access",
+            fileAccessScope
+          })
+        })
+      );
+
+    const developerFullAccess = await create(developerAccess, "workspace_only");
+    const adminHostFull = await create(adminAccess, "host_full");
+    const adminWorkspace = await create(adminAccess, "workspace_only");
+
+    expect([
+      developerFullAccess.status,
+      adminHostFull.status,
+      adminWorkspace.status
+    ]).toEqual([403, 400, 202]);
+  });
+
   it("lets only a project admin assign a bounded membership role", async () => {
     const memberships = {
       list: vi.fn(async () => []),

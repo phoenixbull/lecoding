@@ -137,4 +137,71 @@ describe("createAgentModelGoldenTaskExecutor", () => {
       await rm(workingRoot, { recursive: true, force: true });
     }
   });
+
+  it("returns a denied result for network requests without enabling eval egress", async () => {
+    const workingRoot = await mkdtemp(join(tmpdir(), "lecoding-model-eval-"));
+    const performed: string[][] = [];
+    let observedResults: unknown;
+    let turn = 0;
+    try {
+      const executor = createAgentModelGoldenTaskExecutor({
+        workingRoot,
+        modelId: "vendor-coder-v3",
+        pricing: { inputUsdPerMillion: 2, outputUsdPerMillion: 8 },
+        createModel() {
+          return {
+            async next(input) {
+              turn += 1;
+              if (turn === 1) {
+                return {
+                  type: "tool_call" as const,
+                  callId: "network-1",
+                  tool: "request_network_egress" as const,
+                  arguments: {
+                    scheme: "https" as const,
+                    domain: "registry.npmjs.org",
+                    port: 443,
+                    purpose: "Install a dependency"
+                  }
+                };
+              }
+              observedResults = input.toolResults;
+              return { type: "completed" as const, summary: "Continued offline" };
+            }
+          };
+        },
+        createEnvironment() {
+          return {
+            async prepare(spec) {
+              return { id: `handle-${spec.runId}`, environmentId: spec.environmentId };
+            },
+            async perform(_handle, action) {
+              performed.push(action.command);
+              return { exitCode: 0, stdout: "ok", stderr: "" };
+            },
+            async inspect() {
+              return { changedFiles: ["src/subject.js"] };
+            },
+            async dispose() {}
+          };
+        }
+      });
+      const task = loadGoldenTaskCatalog().find(
+        (candidate) => candidate.id === "ts-fix-boundary"
+      );
+
+      await expect(executor.execute(task!)).resolves.toMatchObject({ outcome: "passed" });
+      expect(observedResults).toEqual([
+        {
+          callId: "network-1",
+          status: "denied",
+          reason: "Network access is unavailable in unattended golden evaluation"
+        }
+      ]);
+      // Only the independent verifier executes; the requested endpoint is never opened.
+      expect(performed).toEqual([["node", "--test"]]);
+    } finally {
+      await rm(workingRoot, { recursive: true, force: true });
+    }
+  });
 });

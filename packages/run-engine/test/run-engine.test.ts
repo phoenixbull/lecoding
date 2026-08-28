@@ -15,6 +15,23 @@ import type { RunEnvironment } from "@lecoding/run-environment";
 import { FakeDockerRunEnvironment } from "@lecoding/run-environment";
 import { createTestHarness, InMemoryRunStore } from "@lecoding/test-harness";
 
+function networkTurn(
+  callId: string,
+  domain: string
+): Extract<AgentModelTurn, { tool: "request_network_egress" }> {
+  return {
+    type: "tool_call",
+    callId,
+    tool: "request_network_egress",
+    arguments: {
+      scheme: "https",
+      domain,
+      port: 443,
+      purpose: "Resolve reviewed dependencies"
+    }
+  };
+}
+
 describe("RunEngine", () => {
   it("completes a run only after verification passes", async () => {
     const harness = await createTestHarness({ verificationOutcome: "passed" });
@@ -378,6 +395,120 @@ describe("RunEngine", () => {
       (event) => event.type === "approval_requested"
     );
     expect(approvalEvents).toHaveLength(1);
+  });
+
+  it("pauses for an exact network endpoint and resumes after one approval", async () => {
+    const approvals = createInMemoryApprovalLedger({
+      now: () => "2026-08-28T04:00:00.000Z"
+    });
+    const harness = await createTestHarness({
+      expectNoChangedFiles: true,
+      approvals,
+      modelTurns: [
+        {
+          type: "tool_call",
+          callId: "call-network",
+          tool: "request_network_egress",
+          arguments: {
+            scheme: "https",
+            domain: "registry.npmjs.org",
+            port: 443,
+            purpose: "Resolve reviewed project dependencies"
+          }
+        },
+        { type: "completed", summary: "Network grant received" }
+      ]
+    });
+    const runId = await harness.engine.start({
+      projectId: "project-1",
+      environmentId: "environment-1",
+      task: "Request dependency registry access",
+      acceptanceCriteria: ["No files are changed"],
+      approvalMode: "manual",
+      fileAccessScope: "workspace_only"
+    });
+
+    await harness.engine.resume(runId);
+
+    await expect(harness.engine.inspect(runId)).resolves.toMatchObject({
+      status: "waiting_approval",
+      pendingApproval: {
+        id: "approval-call-network",
+        capabilityType: "network_egress",
+        summary: "Connect to https://registry.npmjs.org:443"
+      }
+    });
+    await harness.engine.command(
+      runId,
+      {
+        type: "approve",
+        approvalId: "approval-call-network",
+        scope: "once"
+      },
+      { actorId: "github_42" }
+    );
+
+    await expect(harness.engine.inspect(runId)).resolves.toMatchObject({
+      status: "succeeded"
+    });
+    await expect(approvals.get("approval-call-network")).resolves.toMatchObject({
+      capabilityType: "network_egress",
+      constraints: {
+        scheme: "https",
+        domain: "registry.npmjs.org",
+        port: 443
+      },
+      status: "decided",
+      decision: "allow",
+      decidedBy: "github_42"
+    });
+  });
+
+  it("reuses only the approved network endpoint and resumes after another is rejected", async () => {
+    const harness = await createTestHarness({
+      expectNoChangedFiles: true,
+      modelTurns: [
+        networkTurn("network-first", "registry.npmjs.org"),
+        networkTurn("network-same", "registry.npmjs.org"),
+        networkTurn("network-different", "files.pythonhosted.org"),
+        { type: "completed", summary: "Handled both endpoint decisions" }
+      ]
+    });
+    const runId = await harness.engine.start({
+      projectId: "project-1",
+      environmentId: "environment-1",
+      task: "Use only explicitly reviewed endpoints",
+      acceptanceCriteria: ["No files are changed"],
+      approvalMode: "manual",
+      fileAccessScope: "workspace_only"
+    });
+
+    await harness.engine.resume(runId);
+    await harness.engine.command(runId, {
+      type: "approve",
+      approvalId: "approval-network-first",
+      scope: "run"
+    });
+
+    await expect(harness.engine.inspect(runId)).resolves.toMatchObject({
+      status: "waiting_approval",
+      pendingApproval: {
+        id: "approval-network-different",
+        summary: "Connect to https://files.pythonhosted.org:443"
+      }
+    });
+    await harness.engine.command(runId, {
+      type: "reject",
+      approvalId: "approval-network-different",
+      scope: "once"
+    });
+    await expect(harness.engine.inspect(runId)).resolves.toMatchObject({
+      status: "succeeded"
+    });
+    const approvalEvents = parseSseEvents(await harness.events.resume(runId)).filter(
+      (event) => event.type === "approval_requested"
+    );
+    expect(approvalEvents).toHaveLength(2);
   });
 
   it("persists a model question and continues from the matching user answer", async () => {

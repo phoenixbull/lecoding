@@ -1,4 +1,5 @@
 import type { ApprovalMode, FileAccessScope } from "@lecoding/contracts";
+import { isIP } from "node:net";
 
 export type Capability =
   | { type: "sensitive_file_read"; realpath: string }
@@ -36,11 +37,34 @@ class DefaultPolicyEngine implements PolicyEngine {
   async authorize(request: CapabilityRequest): Promise<PolicyDecision> {
     if (
       request.capability.type === "sensitive_file_read" &&
-      request.capability.realpath === "/var/run/docker.sock"
+      isCredentialOrHostControlPath(request.capability.realpath)
     ) {
       return {
         decision: "deny",
-        reason: "Docker socket access is never allowed"
+        reason:
+          request.capability.realpath === "/var/run/docker.sock"
+            ? "Docker socket access is never allowed"
+            : "Credential and browser secret files are never allowed"
+      };
+    }
+
+    if (
+      request.capability.type === "network_egress" &&
+      isForbiddenNetworkTarget(request.capability.domain)
+    ) {
+      return {
+        decision: "deny",
+        reason: "Private and metadata network targets are never allowed"
+      };
+    }
+
+    if (
+      request.capability.type === "command_exec" &&
+      isHostControlCommand(request.capability.argv[0])
+    ) {
+      return {
+        decision: "deny",
+        reason: "Host control commands are never allowed"
       };
     }
 
@@ -75,6 +99,60 @@ class DefaultPolicyEngine implements PolicyEngine {
 
     return { decision: "ask", reason: "Capability requires approval" };
   }
+}
+
+function isForbiddenNetworkTarget(domain: string): boolean {
+  const normalized = domain.trim().toLowerCase().replace(/\.$/u, "");
+  // Approval is domain-scoped; raw IP literals cannot receive an interactive grant.
+  if (isIP(normalized) !== 0) {
+    return true;
+  }
+  return (
+    normalized === "localhost" ||
+    normalized.endsWith(".localhost") ||
+    normalized === "metadata.google.internal" ||
+    normalized.endsWith(".metadata.google.internal") ||
+    normalized === "instance-data.ec2.internal" ||
+    normalized.endsWith(".instance-data.ec2.internal")
+  );
+}
+
+function isCredentialOrHostControlPath(realpath: string): boolean {
+  const normalized = realpath.toLowerCase();
+  const basename = normalized.split("/").at(-1) ?? "";
+  return (
+    normalized === "/var/run/docker.sock" ||
+    basename === ".env" ||
+    basename.startsWith(".env.") ||
+    basename === ".npmrc" ||
+    basename === ".pypirc" ||
+    basename === ".netrc" ||
+    normalized.includes("/.ssh/") ||
+    normalized.includes("/.gnupg/") ||
+    normalized.endsWith("/.aws/credentials") ||
+    normalized.endsWith("/.kube/config") ||
+    normalized.includes("/keychains/") ||
+    normalized.includes("/google-chrome/") ||
+    normalized.includes("/chromium/") ||
+    normalized.includes("/firefox/")
+  );
+}
+
+function isHostControlCommand(executable: string | undefined): boolean {
+  const basename = executable?.split("/").at(-1)?.toLowerCase();
+  return (
+    basename !== undefined &&
+    new Set([
+      "sudo",
+      "mount",
+      "umount",
+      "docker",
+      "podman",
+      "nerdctl",
+      "nsenter",
+      "unshare"
+    ]).has(basename)
+  );
 }
 
 function isLowRiskCommand(capability: Capability): boolean {

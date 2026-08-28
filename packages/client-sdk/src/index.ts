@@ -34,8 +34,16 @@ export interface LeCodingClient {
   /** Keeps or discards the isolated worktree only after the Run reaches a terminal state. */
   resolveRunResult(runId: RunId, outcome: "keep" | "discard"): Promise<void>;
   cancelRun(runId: RunId): Promise<void>;
-  approveRun(runId: RunId, approvalId: string): Promise<void>;
-  rejectRun(runId: RunId, approvalId: string): Promise<void>;
+  approveRun(
+    runId: RunId,
+    approvalId: string,
+    scope?: "once" | "run"
+  ): Promise<void>;
+  rejectRun(
+    runId: RunId,
+    approvalId: string,
+    scope?: "once" | "run"
+  ): Promise<void>;
   answerRun(
     runId: RunId,
     requestId: string,
@@ -295,13 +303,20 @@ export function createClient(options: ClientOptions): LeCodingClient {
       await sendRunCommand(runId, { type: "cancel" });
     },
 
-    async approveRun(runId: RunId, approvalId: string): Promise<void> {
-      // The minimum UI deliberately grants only the displayed call, never the whole Run.
-      await sendRunCommand(runId, { type: "approve", approvalId, scope: "once" });
+    async approveRun(
+      runId: RunId,
+      approvalId: string,
+      scope = "once"
+    ): Promise<void> {
+      await sendRunCommand(runId, { type: "approve", approvalId, scope });
     },
 
-    async rejectRun(runId: RunId, approvalId: string): Promise<void> {
-      await sendRunCommand(runId, { type: "reject", approvalId, scope: "once" });
+    async rejectRun(
+      runId: RunId,
+      approvalId: string,
+      scope = "once"
+    ): Promise<void> {
+      await sendRunCommand(runId, { type: "reject", approvalId, scope });
     },
 
     async answerRun(

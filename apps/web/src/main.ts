@@ -10,6 +10,7 @@ import type {
 import {
   canLoadRunChanges,
   canResolveRunResult,
+  formatApprovalDetails,
   formatEventTitle,
   formatRunEventDetail,
   isTerminalStatus,
@@ -34,6 +35,10 @@ const cancelButton = requiredElement<HTMLButtonElement>("#cancel-run");
 const discardResultButton = requiredElement<HTMLButtonElement>("#discard-result");
 const approvalCard = requiredElement<HTMLElement>("#approval-card");
 const approvalSummary = requiredElement<HTMLElement>("#approval-summary");
+const approvalCapability = requiredElement<HTMLElement>("#approval-capability");
+const approvalRisk = requiredElement<HTMLElement>("#approval-risk");
+const approvalReason = requiredElement<HTMLElement>("#approval-reason");
+const approvalScope = requiredElement<HTMLSelectElement>("#approval-scope");
 const approveButton = requiredElement<HTMLButtonElement>("#approve-approval");
 const rejectButton = requiredElement<HTMLButtonElement>("#reject-approval");
 const userRequestCard = requiredElement<HTMLElement>("#user-request-card");
@@ -580,13 +585,35 @@ function renderApproval(run: RunView): void {
   if (!approval) {
     approvalCard.hidden = true;
     approvalSummary.textContent = "";
+    approvalCapability.textContent = "";
+    approvalRisk.textContent = "";
+    approvalReason.textContent = "";
+    approvalScope.replaceChildren();
     return;
   }
-  // Summary is provider-originated content and is rendered only as text.
-  approvalSummary.textContent = approval.summary;
+  const details = formatApprovalDetails(approval);
+  // All provider/policy strings enter the DOM only through textContent.
+  approvalSummary.textContent = details.target;
+  approvalCapability.textContent = details.capability;
+  approvalRisk.textContent = details.risk;
+  approvalReason.textContent = details.reason;
+  const previousScope = approvalScope.value;
+  approvalScope.replaceChildren(
+    ...details.allowedScopes.map(({ value, label }) => {
+      const option = document.createElement("option");
+      option.value = value;
+      option.textContent = label;
+      return option;
+    })
+  );
+  if (details.allowedScopes.some(({ value }) => value === previousScope)) {
+    // SSE refreshes must not silently weaken or broaden the user's selected scope.
+    approvalScope.value = previousScope;
+  }
   approvalCard.hidden = false;
   approveButton.disabled = approvalCommandPending;
   rejectButton.disabled = approvalCommandPending;
+  approvalScope.disabled = approvalCommandPending;
 }
 
 function renderUserRequest(run: RunView): void {
@@ -667,14 +694,15 @@ async function resolveCurrentApproval(
   if (!run || !approval || approvalCommandPending) {
     return;
   }
+  const scope = approvalScope.value === "run" ? "run" : "once";
   hideError();
   approvalCommandPending = true;
   renderApproval(run);
   try {
     if (decision === "approve") {
-      await client.approveRun(run.id, approval.id);
+      await client.approveRun(run.id, approval.id, scope);
     } else {
-      await client.rejectRun(run.id, approval.id);
+      await client.rejectRun(run.id, approval.id, scope);
     }
     await refreshRun(run.id);
   } catch {

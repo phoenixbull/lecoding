@@ -4,6 +4,7 @@ import {
   canLoadRunChanges,
   canResolveRunResult,
   formatEventTitle,
+  formatApprovalDetails,
   formatRunEventDetail,
   isTerminalStatus,
   isTerminalRunEvent,
@@ -112,5 +113,29 @@ describe("Web Run presentation", () => {
     expect(
       event("run_failed", { code: "agent_loop_failed", message: "Provider unavailable" })
     ).toBe("Provider unavailable（agent_loop_failed）");
+  });
+
+  it("presents a network approval with risk, reason, exact target, and scopes", () => {
+    expect(
+      formatApprovalDetails({
+        id: "approval-network",
+        callId: "network-1",
+        summary: "Connect to https://registry.npmjs.org:443",
+        capabilityType: "network_egress",
+        capabilityHash: "a".repeat(64),
+        reason: "Capability requires approval",
+        riskLevel: "medium",
+        allowedScopes: ["once", "run"]
+      })
+    ).toEqual({
+      capability: "网络访问",
+      risk: "中风险",
+      reason: "Capability requires approval",
+      target: "Connect to https://registry.npmjs.org:443",
+      allowedScopes: [
+        { value: "once", label: "仅本次调用" },
+        { value: "run", label: "本 Run 内相同端点" }
+      ]
+    });
   });
 });

@@ -1,10 +1,48 @@
 import type {
   ControlPlaneConfig,
+  PendingApproval,
   RunEventV1,
   RunEventType,
   RunStatus,
   VerificationOutcome
 } from "@lecoding/contracts";
+
+/** Safe approval-card projection rendered without reflecting arbitrary constraints. */
+export interface ApprovalDetails {
+  capability: string;
+  risk: string;
+  reason: string;
+  target: string;
+  allowedScopes: Array<{ value: "once" | "run"; label: string }>;
+}
+
+/** Formats bounded, policy-owned approval metadata for the interactive card. */
+export function formatApprovalDetails(
+  approval: PendingApproval
+): ApprovalDetails {
+  const network = approval.capabilityType === "network_egress";
+  const scopes = approval.allowedScopes ?? ["once"];
+  return {
+    capability: network ? "网络访问" : "受控命令",
+    risk:
+      approval.riskLevel === "low"
+        ? "低风险"
+        : approval.riskLevel === "medium"
+          ? "中风险"
+          : "高风险",
+    reason: boundedText(approval.reason ?? "该能力需要用户确认"),
+    target: boundedText(approval.summary),
+    allowedScopes: scopes.map((value) => ({
+      value,
+      label:
+        value === "once"
+          ? "仅本次调用"
+          : network
+            ? "本 Run 内相同端点"
+            : "本 Run 内相同能力"
+    }))
+  };
+}
 
 /** Resolves the visible project allowlist while retaining a still-valid choice. */
 export function resolveProjectSelection(

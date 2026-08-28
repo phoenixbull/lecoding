@@ -47,7 +47,7 @@ export interface OpenAiChatToolCall {
   id: string;
   type: "function";
   function: {
-    name: "execute_command" | "request_user_input";
+    name: "execute_command" | "request_user_input" | "request_network_egress";
     arguments: string;
   };
 }
@@ -75,7 +75,7 @@ export interface OpenAiFunctionCallOutput {
 /** Strict command tool advertised to the model. */
 export interface OpenAiFunctionTool {
   type: "function";
-  name: "execute_command" | "request_user_input";
+  name: "execute_command" | "request_user_input" | "request_network_egress";
   description: string;
   strict: true;
   parameters: {
@@ -226,6 +226,25 @@ const REQUEST_USER_INPUT_TOOL: OpenAiFunctionTool = {
   }
 };
 
+const REQUEST_NETWORK_EGRESS_TOOL: OpenAiFunctionTool = {
+  type: "function",
+  name: "request_network_egress",
+  description:
+    "Request approval for one exact HTTPS domain and port before attempting a task that needs external network access. This grants only the endpoint capability; it does not expose credentials.",
+  strict: true,
+  parameters: {
+    type: "object",
+    properties: {
+      scheme: { type: "string", enum: ["https"] },
+      domain: { type: "string", minLength: 1, maxLength: 253 },
+      port: { type: "integer", minimum: 1, maximum: 65535 },
+      purpose: { type: "string", minLength: 1, maxLength: 500 }
+    },
+    required: ["scheme", "domain", "port", "purpose"],
+    additionalProperties: false
+  }
+};
+
 const DEFAULT_INSTRUCTIONS = [
   "Act as a coding agent in an isolated repository workspace.",
   "Use execute_command when repository inspection or modification is required.",
@@ -234,6 +253,7 @@ const DEFAULT_INSTRUCTIONS = [
   "In manual approval mode, minimize exploratory commands and read only files necessary for the requested change.",
   "After finishing the requested edits, do not execute acceptance verification commands such as pnpm test or pnpm typecheck; return completed and the host Verifier will run administrator-reviewed checks in a separate dependency-prepared image.",
   "Use request_user_input only when a necessary ambiguity cannot be resolved from repository files.",
+  "Use request_network_egress before any operation that requires external network access; request one exact HTTPS domain and port with a concrete purpose.",
   "Finish the editing turn only when the requested change is ready for host verification."
 ].join(" ");
 
@@ -501,7 +521,11 @@ export function createOpenAiChatCompletionsAgentModel(
       const request: OpenAiChatCompletionsRequest = {
         model: options.model,
         messages: [...initialMessages, ...continuationMessages],
-        tools: [EXECUTE_COMMAND_TOOL, REQUEST_USER_INPUT_TOOL].map((tool) => ({
+        tools: [
+          EXECUTE_COMMAND_TOOL,
+          REQUEST_USER_INPUT_TOOL,
+          REQUEST_NETWORK_EGRESS_TOOL
+        ].map((tool) => ({
             type: "function",
             function: {
               name: tool.name,
@@ -691,7 +715,8 @@ function parseChatToolCall(rawCall: unknown): OpenAiChatToolCall {
   }
   if (
     rawCall.function.name !== "execute_command" &&
-    rawCall.function.name !== "request_user_input"
+    rawCall.function.name !== "request_user_input" &&
+    rawCall.function.name !== "request_network_egress"
   ) {
     throw new Error(
       `OpenAI response requested unsupported tool: ${String(rawCall.function.name)}`
@@ -723,6 +748,15 @@ function toChatToolTurn(
       requestId: toolCall.id,
       continuationId: JSON.stringify(continuation),
       prompt: parseUserQuestion(toolCall.function.arguments)
+    };
+  }
+  if (toolCall.function.name === "request_network_egress") {
+    return {
+      type: "tool_call",
+      callId: toolCall.id,
+      continuationId: JSON.stringify(continuation),
+      tool: "request_network_egress",
+      arguments: parseNetworkEgressArguments(toolCall.function.arguments)
     };
   }
   return {
@@ -887,7 +921,8 @@ function buildRequest(
         ].join("\n"),
     tools: [
       structuredClone(EXECUTE_COMMAND_TOOL),
-      structuredClone(REQUEST_USER_INPUT_TOOL)
+      structuredClone(REQUEST_USER_INPUT_TOOL),
+      structuredClone(REQUEST_NETWORK_EGRESS_TOOL)
     ],
     tool_choice: "auto",
     parallel_tool_calls: false,
@@ -930,6 +965,12 @@ function toFunctionCallOutput(
           stdout: result.stdout,
           stderr: result.stderr
         }
+      : result.status === "authorized"
+        ? {
+            status: result.status,
+            capabilityType: result.capabilityType,
+            target: result.target
+          }
       : result.status === "denied"
         ? { status: result.status, reason: result.reason }
         : { status: result.status, value: result.value };
@@ -965,7 +1006,11 @@ function parseResponse(value: unknown): AgentModelTurn {
     throw new Error(`OpenAI response returned multiple function calls: ${calls.length}`);
   }
   const call = calls[0]!;
-  if (call.name !== "execute_command" && call.name !== "request_user_input") {
+  if (
+    call.name !== "execute_command" &&
+    call.name !== "request_user_input" &&
+    call.name !== "request_network_egress"
+  ) {
     throw new Error(`OpenAI response requested unsupported tool: ${String(call.name)}`);
   }
   if (typeof call.call_id !== "string" || call.call_id.trim() === "") {
@@ -980,6 +1025,15 @@ function parseResponse(value: unknown): AgentModelTurn {
       requestId: call.call_id,
       continuationId: value.id,
       prompt: parseUserQuestion(call.arguments)
+    };
+  }
+  if (call.name === "request_network_egress") {
+    return {
+      type: "tool_call",
+      callId: call.call_id,
+      continuationId: value.id,
+      tool: "request_network_egress",
+      arguments: parseNetworkEgressArguments(call.arguments)
     };
   }
   const args = parseCommandArguments(call.arguments);
@@ -1033,6 +1087,47 @@ function parseCommandArguments(value: string): { argv: string[] } {
     throw new Error("OpenAI execute_command arguments must contain only non-empty argv");
   }
   return { argv: parsed.argv };
+}
+
+function parseNetworkEgressArguments(value: string): {
+  scheme: "https";
+  domain: string;
+  port: number;
+  purpose: string;
+} {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(value);
+  } catch {
+    throw new OpenAiMalformedJsonError(
+      "tool_arguments_invalid_json",
+      "OpenAI request_network_egress arguments are invalid JSON"
+    );
+  }
+  if (
+    !isRecord(parsed) ||
+    Object.keys(parsed).some(
+      (key) => !["scheme", "domain", "port", "purpose"].includes(key)
+    ) ||
+    parsed.scheme !== "https" ||
+    typeof parsed.domain !== "string" ||
+    parsed.domain.trim() === "" ||
+    parsed.domain.length > 253 ||
+    !Number.isSafeInteger(parsed.port) ||
+    (parsed.port as number) < 1 ||
+    (parsed.port as number) > 65_535 ||
+    typeof parsed.purpose !== "string" ||
+    parsed.purpose.trim() === "" ||
+    parsed.purpose.length > 500
+  ) {
+    throw new Error("OpenAI request_network_egress arguments are invalid");
+  }
+  return {
+    scheme: "https",
+    domain: parsed.domain.trim().toLowerCase(),
+    port: parsed.port as number,
+    purpose: parsed.purpose.trim()
+  };
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

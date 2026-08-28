@@ -127,14 +127,23 @@
               <div>
                 <p class="eyebrow">Approval required</p>
                 <strong>Agent 请求执行一项受控操作</strong>
+                <div class="approval-metadata">
+                  <span id="approval-capability"></span>
+                  <span id="approval-risk"></span>
+                </div>
                 <p id="approval-summary"></p>
+                <p id="approval-reason" class="approval-reason"></p>
               </div>
               <div class="approval-actions">
+                <label class="approval-scope-label">
+                  作用范围
+                  <select id="approval-scope"></select>
+                </label>
                 <button id="reject-approval" class="secondary-button" type="button">
-                  拒绝本次
+                  拒绝
                 </button>
                 <button id="approve-approval" class="primary-button compact" type="button">
-                  仅批准本次
+                  批准
                 </button>
               </div>
             </div>

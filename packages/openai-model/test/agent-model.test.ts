@@ -204,6 +204,86 @@ describe("createOpenAiResponsesAgentModel", () => {
     });
   });
 
+  it("maps a strict network-egress request and its authorization continuation", async () => {
+    const requests: OpenAiResponsesRequest[] = [];
+    const model = createOpenAiResponsesAgentModel({
+      model: "gpt-test",
+      client: {
+        async create(request) {
+          requests.push(request);
+          return requests.length === 1
+            ? {
+                id: "resp-network",
+                status: "completed",
+                output: [
+                  {
+                    type: "function_call",
+                    call_id: "network-1",
+                    name: "request_network_egress",
+                    arguments: JSON.stringify({
+                      scheme: "https",
+                      domain: "registry.npmjs.org",
+                      port: 443,
+                      purpose: "Resolve reviewed dependencies"
+                    })
+                  }
+                ]
+              }
+            : {
+                id: "resp-after-network",
+                status: "completed",
+                output: [],
+                output_text: "Continued after authorization"
+              };
+        }
+      }
+    });
+
+    await expect(model.next(baseInput([]))).resolves.toEqual({
+      type: "tool_call",
+      callId: "network-1",
+      continuationId: "resp-network",
+      tool: "request_network_egress",
+      arguments: {
+        scheme: "https",
+        domain: "registry.npmjs.org",
+        port: 443,
+        purpose: "Resolve reviewed dependencies"
+      }
+    });
+    await model.next(
+      baseInput([
+        {
+          callId: "network-1",
+          continuationId: "resp-network",
+          status: "authorized",
+          capabilityType: "network_egress",
+          target: "https://registry.npmjs.org:443"
+        }
+      ])
+    );
+
+    expect(requests[0]?.tools).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          name: "request_network_egress",
+          strict: true
+        })
+      ])
+    );
+    expect(requests[1]).toMatchObject({
+      previous_response_id: "resp-network",
+      input: [
+        {
+          type: "function_call_output",
+          call_id: "network-1",
+          output:
+            '{"status":"authorized","capabilityType":"network_egress","target":"https://registry.npmjs.org:443"}'
+        }
+      ]
+    });
+  });
+
   it("maps Chat Completions request_user_input calls", async () => {
     const model = createOpenAiChatCompletionsAgentModel({
       model: "chat-test",
@@ -237,6 +317,80 @@ describe("createOpenAiResponsesAgentModel", () => {
       requestId: "question-chat",
       prompt: "Which target?"
     });
+  });
+
+  it("maps Chat Completions network-egress calls and authorization output", async () => {
+    const requests: OpenAiChatCompletionsRequest[] = [];
+    const model = createOpenAiChatCompletionsAgentModel({
+      model: "chat-test",
+      client: {
+        async create(request) {
+          requests.push(request);
+          return requests.length === 1
+            ? {
+                choices: [
+                  {
+                    message: {
+                      content: null,
+                      tool_calls: [
+                        {
+                          id: "network-chat",
+                          type: "function",
+                          function: {
+                            name: "request_network_egress",
+                            arguments:
+                              '{"scheme":"https","domain":"pypi.org","port":443,"purpose":"Resolve dependencies"}'
+                          }
+                        }
+                      ]
+                    }
+                  }
+                ]
+              }
+            : { choices: [{ message: { content: "Done" } }] };
+        }
+      }
+    });
+
+    const turn = await model.next(baseInput([]));
+    expect(turn).toMatchObject({
+      type: "tool_call",
+      callId: "network-chat",
+      tool: "request_network_egress",
+      arguments: { domain: "pypi.org", port: 443 }
+    });
+    if (turn.type !== "tool_call" || !turn.continuationId) {
+      throw new Error("Expected a persisted network tool continuation");
+    }
+    await model.next(
+      baseInput([
+        {
+          callId: turn.callId,
+          continuationId: turn.continuationId,
+          status: "authorized",
+          capabilityType: "network_egress",
+          target: "https://pypi.org:443"
+        }
+      ])
+    );
+
+    expect(requests[0]?.tools).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          function: expect.objectContaining({ name: "request_network_egress" })
+        })
+      ])
+    );
+    expect(requests[1]?.messages).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          role: "tool",
+          tool_call_id: "network-chat",
+          content:
+            '{"status":"authorized","capabilityType":"network_egress","target":"https://pypi.org:443"}'
+        })
+      ])
+    );
   });
 
   it("retries malformed Chat Completions tool JSON once before exposing an action", async () => {

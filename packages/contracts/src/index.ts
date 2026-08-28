@@ -137,6 +137,12 @@ export interface PendingApproval {
   capabilityType?: "command_exec" | "network_egress";
   /** Stable normalized-argument digest used for exact-scope reuse. */
   capabilityHash?: string;
+  /** Stable policy explanation; provider response bodies never appear here. */
+  reason?: string;
+  /** Deterministic presentation severity assigned before user interaction. */
+  riskLevel?: "low" | "medium" | "high";
+  /** Maximum scopes the current normalized capability can safely reuse. */
+  allowedScopes?: Array<"once" | "run">;
 }
 
 export type RunCommand =

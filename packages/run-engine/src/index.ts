@@ -277,6 +277,19 @@ export type AgentModelTurn =
       arguments: { argv: string[] };
     }
   | {
+      type: "tool_call";
+      callId: string;
+      /** Provider continuation persisted with the authorization result. */
+      continuationId?: string;
+      tool: "request_network_egress";
+      arguments: {
+        scheme: "https";
+        domain: string;
+        port: number;
+        purpose: string;
+      };
+    }
+  | {
       type: "user_request";
       requestId: string;
       continuationId?: string;
@@ -293,6 +306,13 @@ export type ModelToolResult =
       exitCode: number;
       stdout: string;
       stderr: string;
+    }
+  | {
+      callId: string;
+      continuationId?: string;
+      status: "authorized";
+      capabilityType: "network_egress";
+      target: string;
     }
   | {
       callId: string;
@@ -768,37 +788,39 @@ class DefaultRunEngine implements RunEngine, RunResumer, DisposableEngine {
     delete stored.pendingApproval;
     await this.transition(stored, "running", token);
 
-    const borrowed = this.dependencies.handles.borrow(stored.id);
-    if (!borrowed) {
-      throw new Error(`Run environment is not prepared: ${stored.id}`);
-    }
-    try {
-      if (command.type === "reject") {
-        stored.toolResults.push({
-          callId: toolCall.callId,
-          ...(toolCall.continuationId
-            ? { continuationId: toolCall.continuationId }
-            : {}),
-          status: "denied",
-          reason: "User rejected the tool call"
-        });
-        // The denied result is now the durable continuation; the pending call is consumed.
-        delete stored.pendingToolCall;
-        await this.persistEvents(
-          stored,
-          [
-            {
-              type: "tool_completed",
-              data: { callId: toolCall.callId, outcome: "denied" }
-            }
-          ],
-          token
-        );
-      } else {
-        await this.performWith(stored, toolCall, borrowed, token);
+    if (command.type === "reject") {
+      stored.toolResults.push({
+        callId: toolCall.callId,
+        ...(toolCall.continuationId
+          ? { continuationId: toolCall.continuationId }
+          : {}),
+        status: "denied",
+        reason: "User rejected the tool call"
+      });
+      // The denied result is now the durable continuation; the pending call is consumed.
+      delete stored.pendingToolCall;
+      await this.persistEvents(
+        stored,
+        [
+          {
+            type: "tool_completed",
+            data: { callId: toolCall.callId, outcome: "denied" }
+          }
+        ],
+        token
+      );
+    } else if (toolCall.tool === "request_network_egress") {
+      await this.recordNetworkAuthorization(stored, toolCall, token);
+    } else {
+      const borrowed = this.dependencies.handles.borrow(stored.id);
+      if (!borrowed) {
+        throw new Error(`Run environment is not prepared: ${stored.id}`);
       }
-    } finally {
-      this.dependencies.handles.restore(stored.id, borrowed);
+      try {
+        await this.performWith(stored, toolCall, borrowed, token);
+      } finally {
+        this.dependencies.handles.restore(stored.id, borrowed);
+      }
     }
 
     if (isDriverStartable(stored.status)) {
@@ -1058,11 +1080,7 @@ class DefaultRunEngine implements RunEngine, RunResumer, DisposableEngine {
         stored.version = await this.dependencies.store.save(stored);
       }
 
-      const capability: Capability = {
-        type: "command_exec",
-        argv: turn.arguments.argv,
-        cwd: "."
-      };
+      const capability = capabilityForTurn(turn);
       const capabilityHash = hashCapability(capability);
       const policyDecision = await this.dependencies.policy.authorize({
         approvalMode: stored.input.approvalMode,
@@ -1106,33 +1124,33 @@ class DefaultRunEngine implements RunEngine, RunResumer, DisposableEngine {
       }
       if (decision.decision === "ask") {
         stored.pendingToolCall = turn;
-        stored.pendingApproval = {
+        const pendingApproval: PendingApproval = {
           id: `approval-${turn.callId}`,
           callId: turn.callId,
-          summary: `Run ${turn.arguments.argv.join(" ")}`,
+          summary: summarizeCapability(capability),
           capabilityType: capability.type,
-          capabilityHash
+          capabilityHash,
+          reason: decision.reason,
+          riskLevel: capabilityRiskLevel(capability),
+          allowedScopes: ["once", "run"]
         };
+        stored.pendingApproval = pendingApproval;
         await this.approvals.request({
-          id: stored.pendingApproval.id,
+          id: pendingApproval.id,
           runId: stored.id,
           toolCallId: turn.callId,
           capabilityType: capability.type,
           capabilityHash,
           reason: decision.reason,
-          constraints: {
-            argv: turn.arguments.argv,
-            cwd: ".",
-            shellMode: "direct"
-          }
+          constraints: approvalConstraints(capability, turn)
         });
         await this.transition(stored, "waiting_approval", token, [
           {
             type: "approval_requested",
             data: {
-              approvalId: stored.pendingApproval.id,
-              callId: stored.pendingApproval.callId,
-              summary: stored.pendingApproval.summary
+              approvalId: pendingApproval.id,
+              callId: pendingApproval.callId,
+              summary: pendingApproval.summary
             }
           }
         ]);
@@ -1147,6 +1165,11 @@ class DefaultRunEngine implements RunEngine, RunResumer, DisposableEngine {
           this.runFailureEvent(stored.failure)
         ]);
         return;
+      }
+
+      if (turn.tool === "request_network_egress") {
+        await this.recordNetworkAuthorization(stored, turn, token);
+        continue;
       }
 
       const borrowed = this.dependencies.handles.borrow(stored.id);
@@ -1302,7 +1325,7 @@ class DefaultRunEngine implements RunEngine, RunResumer, DisposableEngine {
 
   private async performWith(
     stored: StoredRun,
-    turn: Extract<AgentModelTurn, { type: "tool_call" }>,
+    turn: Extract<AgentModelTurn, { tool: "execute_command" }>,
     borrowed: RegisteredHandle,
     token: RunLeaseToken
   ): Promise<void> {
@@ -1440,6 +1463,36 @@ class DefaultRunEngine implements RunEngine, RunResumer, DisposableEngine {
             outcome: "executed",
             exitCode: result.exitCode,
             recovered: claim.status === "completed"
+          }
+        }
+      ],
+      token
+    );
+  }
+
+  private async recordNetworkAuthorization(
+    stored: StoredRun,
+    turn: Extract<AgentModelTurn, { tool: "request_network_egress" }>,
+    token: RunLeaseToken
+  ): Promise<void> {
+    const target = `${turn.arguments.scheme}://${turn.arguments.domain.toLowerCase()}:${turn.arguments.port}`;
+    stored.toolResults.push({
+      callId: turn.callId,
+      ...(turn.continuationId ? { continuationId: turn.continuationId } : {}),
+      status: "authorized",
+      capabilityType: "network_egress",
+      target
+    });
+    delete stored.pendingToolCall;
+    await this.persistEvents(
+      stored,
+      [
+        {
+          type: "tool_completed",
+          data: {
+            callId: turn.callId,
+            outcome: "authorized",
+            capabilityType: "network_egress"
           }
         }
       ],
@@ -1651,6 +1704,96 @@ function hashCapability(capability: Capability): string {
         }
       : capability;
   return createHash("sha256").update(JSON.stringify(normalized)).digest("hex");
+}
+
+type ExecutableCapability = Extract<
+  Capability,
+  { type: "command_exec" | "network_egress" }
+>;
+
+/** Converts a strict provider tool call into the normalized policy vocabulary. */
+function capabilityForTurn(
+  turn: Extract<AgentModelTurn, { type: "tool_call" }>
+): ExecutableCapability {
+  if (turn.tool === "execute_command") {
+    return {
+      type: "command_exec",
+      argv: turn.arguments.argv,
+      cwd: "."
+    };
+  }
+  const domain = turn.arguments.domain.trim().toLowerCase();
+  const purpose = turn.arguments.purpose.trim();
+  if (
+    turn.arguments.scheme !== "https" ||
+    !isValidNetworkDomain(domain) ||
+    !Number.isSafeInteger(turn.arguments.port) ||
+    turn.arguments.port < 1 ||
+    turn.arguments.port > 65_535 ||
+    purpose.length < 1 ||
+    purpose.length > 500
+  ) {
+    throw new Error("Network egress capability is invalid");
+  }
+  // Purpose is displayed/audited but cannot broaden the endpoint fingerprint.
+  return {
+    type: "network_egress",
+    scheme: "https",
+    domain,
+    port: turn.arguments.port
+  };
+}
+
+function summarizeCapability(capability: ExecutableCapability): string {
+  return capability.type === "command_exec"
+    ? `Run ${capability.argv.join(" ")}`
+    : `Connect to ${capability.scheme}://${capability.domain}:${capability.port}`;
+}
+
+function capabilityRiskLevel(
+  capability: ExecutableCapability
+): "low" | "medium" | "high" {
+  // Network always crosses the sandbox trust boundary; commands are reviewed as high risk.
+  return capability.type === "network_egress" ? "medium" : "high";
+}
+
+function approvalConstraints(
+  capability: ExecutableCapability,
+  turn: Extract<AgentModelTurn, { type: "tool_call" }>
+) {
+  if (capability.type === "command_exec") {
+    return {
+      argv: capability.argv,
+      cwd: capability.cwd,
+      shellMode: "direct"
+    };
+  }
+  if (
+    capability.type === "network_egress" &&
+    turn.tool === "request_network_egress"
+  ) {
+    return {
+      scheme: capability.scheme,
+      domain: capability.domain,
+      port: capability.port,
+      purpose: turn.arguments.purpose.trim()
+    };
+  }
+  throw new Error("Capability constraints do not match the provider tool call");
+}
+
+function isValidNetworkDomain(domain: string): boolean {
+  return (
+    domain.length >= 1 &&
+    domain.length <= 253 &&
+    domain.includes(".") &&
+    domain.split(".").every(
+      (label) =>
+        label.length >= 1 &&
+        label.length <= 63 &&
+        /^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$/u.test(label)
+    )
+  );
 }
 
 const DEFAULT_LEASE_MILLISECONDS = 30_000;

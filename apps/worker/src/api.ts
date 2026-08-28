@@ -191,14 +191,33 @@ export function createRunApiHandler(
       }
       if (request.method === "POST" && createMatch) {
         const projectId = decodePathSegment(createMatch[1]!);
+        const role = projectIds.has(projectId)
+          ? await options.access.roleFor(principal.userId, projectId)
+          : undefined;
         if (
-          !projectIds.has(projectId) ||
-          !(await hasProjectRole(options, principal, projectId, "developer"))
+          role === undefined ||
+          roleRank(role) < roleRank("developer")
         ) {
           return errorResponse(404, "project_not_found", "Project was not found");
         }
         try {
           const input = parseCreateRunInput(await readJsonBody(request));
+          if (input.approvalMode === "full_access" && role !== "admin") {
+            // Full access skips interaction and therefore requires project ownership.
+            return errorResponse(
+              403,
+              "full_access_forbidden",
+              "Full access requires a project administrator"
+            );
+          }
+          if (input.fileAccessScope !== "workspace_only") {
+            // Server Docker Runs never inherit future PC Local Runner file scopes.
+            return errorResponse(
+              400,
+              "file_scope_unavailable",
+              "Server Runs require workspace-only file access"
+            );
+          }
           const runId = await options.runs.start({ projectId, ...input });
           // Run execution is detached from the HTTP request after queued persistence.
           queueMicrotask(() => {

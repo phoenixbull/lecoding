@@ -461,6 +461,38 @@ input:focus {
   overflow-wrap: anywhere;
 }
 
+.approval-metadata {
+  display: flex;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.approval-metadata span {
+  padding: 3px 7px;
+  border: 1px solid #765d2f;
+  border-radius: 999px;
+  color: #d7bd88;
+  font-size: 11px;
+}
+
+.approval-card .approval-reason {
+  margin: 5px 0 0;
+  color: #9f9278;
+  font: 12px/1.45 inherit;
+}
+
+.approval-scope-label {
+  display: grid;
+  gap: 4px;
+  color: #9f9278;
+  font-size: 11px;
+}
+
+.approval-scope-label select {
+  min-width: 150px;
+  padding: 7px 9px;
+}
+
 .approval-actions {
   display: flex;
   flex: 0 0 auto;

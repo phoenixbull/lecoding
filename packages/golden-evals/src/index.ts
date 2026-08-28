@@ -638,6 +638,19 @@ export function createAgentModelGoldenTaskExecutor(
               "AgentModel requested user input during unattended golden evaluation";
             break;
           }
+          if (turn.tool === "request_network_egress") {
+            // Unattended evaluations cannot manufacture a user/network approval.
+            toolResults.push({
+              callId: turn.callId,
+              ...(turn.continuationId
+                ? { continuationId: turn.continuationId }
+                : {}),
+              status: "denied",
+              reason:
+                "Network access is unavailable in unattended golden evaluation"
+            });
+            continue;
+          }
           const result = await environment.perform(handle, {
             type: "execute",
             command: turn.arguments.argv

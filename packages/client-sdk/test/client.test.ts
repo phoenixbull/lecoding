@@ -280,7 +280,7 @@ describe("LeCodingClient", () => {
     ]);
   });
 
-  it("approves or rejects exactly one pending tool call", async () => {
+  it("approves or rejects a pending capability with an explicit bounded scope", async () => {
     const commands: unknown[] = [];
     const fetch: typeof globalThis.fetch = async (_input, init) => {
       commands.push(JSON.parse(String(init?.body)));
@@ -288,12 +288,12 @@ describe("LeCodingClient", () => {
     };
     const client = createClient({ baseUrl: "https://agent.example", fetch });
 
-    await client.approveRun("run-1", "approval-1");
-    await client.rejectRun("run-1", "approval-2");
+    await client.approveRun("run-1", "approval-1", "run");
+    await client.rejectRun("run-1", "approval-2", "run");
 
     expect(commands).toEqual([
-      { type: "approve", approvalId: "approval-1", scope: "once" },
-      { type: "reject", approvalId: "approval-2", scope: "once" }
+      { type: "approve", approvalId: "approval-1", scope: "run" },
+      { type: "reject", approvalId: "approval-2", scope: "run" }
     ]);
   });
 
