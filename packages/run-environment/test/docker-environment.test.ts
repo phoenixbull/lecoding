@@ -99,6 +99,27 @@ describe("createDockerRunEnvironment (PoC)", () => {
     });
   });
 
+  it("keeps the sandbox offline even if an untrusted caller requests another network", () => {
+    const plan = createDockerRunPlan({
+      containerId: "lecoding-network-deny",
+      spec: {
+        runId: "run-network-deny",
+        projectId: "project-1",
+        environmentId: "sandbox-v1",
+        fileAccessScope: "workspace_only"
+      },
+      limits: {
+        worktreeRoot: "/srv/lecoding/runs",
+        workspacePath: "/srv/lecoding/runs/run-network-deny",
+        // Exercise the runtime trust boundary despite the intentionally narrow type.
+        network: "bridge"
+      } as Parameters<typeof createDockerRunPlan>[0]["limits"]
+    });
+
+    const networkIndex = plan.args.indexOf("--network");
+    expect(plan.args[networkIndex + 1]).toBe("none");
+  });
+
   it("rejects an unbounded memory configuration", () => {
     expect(() =>
       createDockerRunPlan({

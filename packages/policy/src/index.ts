@@ -98,15 +98,16 @@ class DefaultPolicyEngine implements PolicyEngine {
 
   async authorize(request: CapabilityRequest): Promise<PolicyDecision> {
     if (
-      request.capability.type === "sensitive_file_read" &&
+      (request.capability.type === "sensitive_file_read" ||
+        request.capability.type === "protected_file_write") &&
       isCredentialOrHostControlPath(request.capability.realpath)
     ) {
       return {
         decision: "deny",
         reason:
-          request.capability.realpath === "/var/run/docker.sock"
+          isHostControlSocketPath(request.capability.realpath)
             ? "Docker socket access is never allowed"
-            : "Credential and browser secret files are never allowed"
+            : "Credential and browser secret paths are never allowed"
       };
     }
 
@@ -235,7 +236,7 @@ function isCredentialOrHostControlPath(realpath: string): boolean {
   const normalized = realpath.toLowerCase();
   const basename = normalized.split("/").at(-1) ?? "";
   return (
-    normalized === "/var/run/docker.sock" ||
+    isHostControlSocketPath(normalized) ||
     basename === ".env" ||
     basename.startsWith(".env.") ||
     basename === ".npmrc" ||
@@ -244,12 +245,21 @@ function isCredentialOrHostControlPath(realpath: string): boolean {
     normalized.includes("/.ssh/") ||
     normalized.includes("/.gnupg/") ||
     normalized.endsWith("/.aws/credentials") ||
+    normalized.endsWith("/.docker/config.json") ||
+    normalized.includes("/.config/gcloud/") ||
+    normalized.includes("/.azure/") ||
     normalized.endsWith("/.kube/config") ||
     normalized.includes("/keychains/") ||
     normalized.includes("/google-chrome/") ||
     normalized.includes("/chromium/") ||
     normalized.includes("/firefox/")
   );
+}
+
+/** Covers canonical system and rootless container-runtime control sockets. */
+function isHostControlSocketPath(realpath: string): boolean {
+  const basename = realpath.toLowerCase().split("/").at(-1) ?? "";
+  return new Set(["docker.sock", "podman.sock", "containerd.sock"]).has(basename);
 }
 
 function isHostControlCommand(executable: string | undefined): boolean {

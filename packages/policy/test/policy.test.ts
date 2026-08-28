@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { createPolicyEngine } from "../src/index.js";
+import { createPolicyEngine, type Capability } from "../src/index.js";
 
 describe("PolicyEngine", () => {
   it("allows, asks, or denies file and command capabilities at the public seam", async () => {
@@ -120,6 +120,33 @@ describe("PolicyEngine", () => {
     }
   });
 
+  it("keeps writes to credential and host-control paths denied in every mode", async () => {
+    const policy = createPolicyEngine();
+    const protectedPaths = [
+      "/workspace/.env.local",
+      "/home/alice/.ssh/authorized_keys",
+      "/home/alice/.aws/credentials",
+      "/home/alice/.docker/config.json",
+      "/home/alice/.config/gcloud/application_default_credentials.json",
+      "/home/alice/.config/google-chrome/Default/Login Data",
+      "/var/run/docker.sock",
+      "/run/docker.sock",
+      "/run/user/1000/podman/podman.sock"
+    ];
+
+    for (const approvalMode of ["manual", "auto_review", "full_access"] as const) {
+      for (const realpath of protectedPaths) {
+        await expect(
+          policy.authorize({
+            approvalMode,
+            fileAccessScope: "host_full",
+            capability: { type: "protected_file_write", realpath }
+          })
+        ).resolves.toMatchObject({ decision: "deny" });
+      }
+    }
+  });
+
   it("uses an independent auto reviewer and audits its bounded allow decision", async () => {
     const review = vi.fn(async () => ({
       decision: "allow" as const,
@@ -179,6 +206,53 @@ describe("PolicyEngine", () => {
     ).resolves.toMatchObject({ decision: "deny" });
     expect(review).not.toHaveBeenCalled();
     expect(record).not.toHaveBeenCalled();
+  });
+
+  it("never lets a project allow rule or approval mode override the fixed-deny matrix", async () => {
+    const resolve = vi.fn(async () => "allow" as const);
+    const review = vi.fn(async () => ({
+      decision: "allow" as const,
+      riskLevel: "low" as const,
+      reason: "must not be consulted",
+      ruleVersion: "test",
+      reviewerVersion: "test"
+    }));
+    const policy = createPolicyEngine({
+      projectRules: { resolve },
+      reviewer: { review }
+    });
+    const fixedDenied: Capability[] = [
+      { type: "sensitive_file_read", realpath: "/run/docker.sock" },
+      { type: "protected_file_write", realpath: "/home/alice/.ssh/config" },
+      {
+        type: "network_egress",
+        scheme: "https",
+        domain: "169.254.169.254",
+        port: 443
+      },
+      { type: "command_exec", argv: ["/usr/bin/sudo", "id"], cwd: "/workspace" }
+    ];
+
+    for (const approvalMode of ["manual", "auto_review", "full_access"] as const) {
+      for (const capability of fixedDenied) {
+        await expect(
+          policy.authorize({
+            approvalMode,
+            fileAccessScope: "host_full",
+            capability,
+            context: {
+              runId: "run-fixed-deny",
+              projectId: "project-1",
+              toolCallId: "call-fixed-deny",
+              userTask: "Attempt a fixed-deny capability",
+              capabilityHash: "a".repeat(64)
+            }
+          })
+        ).resolves.toMatchObject({ decision: "deny" });
+      }
+    }
+    expect(resolve).not.toHaveBeenCalled();
+    expect(review).not.toHaveBeenCalled();
   });
 
   it("applies exact project rules after fixed deny and before approval mode", async () => {
