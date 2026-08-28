@@ -44,6 +44,59 @@ export interface DockerRunLimits {
   nofileLimit?: number;
   /** 单次 perform 的 docker exec 超时(毫秒);缺省 5 分钟。 */
   execTimeoutMs?: number;
+  /** 每个 stdout/stderr 流的宿主内存硬上限,默认 8 MiB。 */
+  outputBytes?: number;
+}
+
+/** Incremental byte-bounded capture used by docker exec pipe consumers. */
+export interface BoundedOutputCapture {
+  append(chunk: Buffer): void;
+  finish(): { value: string; truncated: boolean };
+}
+
+/**
+ * Creates a capture that never retains more than maximumBytes and emits only
+ * valid UTF-8, even when a multi-byte character crosses the hard boundary.
+ */
+export function createBoundedOutputCapture(
+  maximumBytes: number
+): BoundedOutputCapture {
+  if (!Number.isSafeInteger(maximumBytes) || maximumBytes < 1) {
+    throw new Error("Docker output limit must be a positive integer");
+  }
+  const chunks: Buffer[] = [];
+  let retainedBytes = 0;
+  let truncated = false;
+  return {
+    append(chunk) {
+      const available = maximumBytes - retainedBytes;
+      if (available > 0) {
+        const retained = chunk.subarray(0, available);
+        chunks.push(retained);
+        retainedBytes += retained.byteLength;
+      }
+      if (chunk.byteLength > available) {
+        truncated = true;
+      }
+    },
+    finish() {
+      const bytes = Buffer.concat(chunks, retainedBytes);
+      let end = bytes.byteLength;
+      const decoder = new TextDecoder("utf-8", { fatal: true });
+      while (end > 0) {
+        try {
+          return {
+            value: decoder.decode(bytes.subarray(0, end)),
+            truncated: truncated || end !== bytes.byteLength
+          };
+        } catch {
+          // At most one partial trailing code point is removed at the byte cap.
+          end -= 1;
+        }
+      }
+      return { value: "", truncated: truncated || bytes.byteLength > 0 };
+    }
+  };
 }
 
 /** Immutable, auditable Docker CLI plan executed by prepare(). */
@@ -206,6 +259,10 @@ export function createDockerRunEnvironment(
 ): RunEnvironment {
   const containers = new Map<string, ContainerRecord>();
   const execTimeoutMs = limits.execTimeoutMs ?? 5 * 60_000;
+  const outputBytes = limits.outputBytes ?? 8 * 1024 * 1024;
+  if (!Number.isSafeInteger(outputBytes) || outputBytes < 16_384) {
+    throw new Error("Docker output limit must be at least 16384 bytes");
+  }
 
   return {
     async prepare(spec: EnvironmentSpec): Promise<EnvironmentHandle> {
@@ -255,8 +312,8 @@ export function createDockerRunEnvironment(
           ["exec", handle.id, ...action.command],
           { stdio: ["ignore", "pipe", "pipe"] }
         );
-        let stdout = "";
-        let stderr = "";
+        const stdout = createBoundedOutputCapture(outputBytes);
+        const stderr = createBoundedOutputCapture(outputBytes);
         let killed = false;
         const timeout = setTimeout(() => {
           killed = true;
@@ -279,10 +336,10 @@ export function createDockerRunEnvironment(
         }
         signal?.addEventListener("abort", onAbort, { once: true });
         child.stdout.on("data", (chunk: Buffer) => {
-          stdout += chunk.toString("utf8");
+          stdout.append(chunk);
         });
         child.stderr.on("data", (chunk: Buffer) => {
-          stderr += chunk.toString("utf8");
+          stderr.append(chunk);
         });
         child.on("error", (err) => {
           clearTimeout(timeout);
@@ -295,10 +352,14 @@ export function createDockerRunEnvironment(
           if (killed) {
             return; // 已经 reject
           }
+          const stdoutResult = stdout.finish();
+          const stderrResult = stderr.finish();
           resolve({
             exitCode: exitCode ?? -1,
-            stdout,
-            stderr
+            stdout: stdoutResult.value,
+            stderr: stderrResult.value,
+            ...(stdoutResult.truncated ? { stdoutTruncated: true } : {}),
+            ...(stderrResult.truncated ? { stderrTruncated: true } : {})
           });
         });
       });

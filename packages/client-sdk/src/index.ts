@@ -35,6 +35,8 @@ export interface LeCodingClient {
   listProjectPolicyRules(projectId: ProjectId): Promise<ProjectPolicyRuleResult>;
   revokeProjectPolicyRule(projectId: ProjectId, ruleId: string): Promise<void>;
   getRunChanges(runId: RunId): Promise<RunChanges>;
+  /** Loads hash-verified, redacted command output through its owning Run scope. */
+  getRunArtifact(runId: RunId, artifactId: string): Promise<string>;
   /** Keeps or discards the isolated worktree only after the Run reaches a terminal state. */
   resolveRunResult(runId: RunId, outcome: "keep" | "discard"): Promise<void>;
   cancelRun(runId: RunId): Promise<void>;
@@ -314,6 +316,17 @@ export function createClient(options: ClientOptions): LeCodingClient {
         throw new LeCodingHttpError("Failed to load Run changes", response.status);
       }
       return (await response.json()) as RunChanges;
+    },
+
+    async getRunArtifact(runId: RunId, artifactId: string): Promise<string> {
+      const response = await authenticatedFetch(
+        `${baseUrl}/api/v1/runs/${encodeURIComponent(runId)}/artifacts/${encodeURIComponent(artifactId)}`,
+        { method: "GET", headers: { accept: "text/plain" } }
+      );
+      if (!response.ok) {
+        throw new LeCodingHttpError("Failed to load Run Artifact", response.status);
+      }
+      return response.text();
     },
 
     async resolveRunResult(

@@ -8,6 +8,7 @@ import {
 import {
   createRunApiHandler,
   type RunApiAccessControl,
+  type RunApiArtifactReader,
   type RunApiMembershipAdministration,
   type RunApiProjectPolicyAdministration
 } from "../src/api.js";
@@ -445,6 +446,53 @@ describe("createRunApiHandler", () => {
     expect(changes.read).toHaveBeenCalledWith("run-1");
   });
 
+  it("returns hash-verified Artifact content only through its owning Run", async () => {
+    const artifacts: RunApiArtifactReader = {
+      get: vi.fn(async () => ({
+        id: "artifact-1",
+        runId: "run-1",
+        projectId: "project-1",
+        kind: "command_stdout" as const,
+        contentHash: "a".repeat(64),
+        storageKey: "project-1/run-1/output.txt",
+        byteSize: 15,
+        createdAt: "2026-08-28T06:00:00.000Z"
+      })),
+      read: vi.fn(async () => "redacted output")
+    };
+    const handler = createHandler(
+      createRuns([]),
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      artifacts
+    );
+
+    const response = await handler.handle(
+      new Request(
+        "http://127.0.0.1:8787/api/v1/runs/run-1/artifacts/artifact-1"
+      )
+    );
+    expect(response.status).toBe(200);
+    await expect(response.text()).resolves.toBe("redacted output");
+    expect(response.headers.get("x-lecoding-artifact-hash")).toBe("a".repeat(64));
+
+    vi.mocked(artifacts.get).mockResolvedValueOnce({
+      ...(await artifacts.get("artifact-1"))!,
+      runId: "run-other"
+    });
+    const hidden = await handler.handle(
+      new Request(
+        "http://127.0.0.1:8787/api/v1/runs/run-1/artifacts/artifact-1"
+      )
+    );
+    expect(hidden.status).toBe(404);
+    expect(artifacts.read).toHaveBeenCalledTimes(1);
+  });
+
   it("discards a terminal Run result through the versioned result endpoint", async () => {
     const runs = createRuns([]);
     runs.inspect.mockResolvedValue({
@@ -784,7 +832,8 @@ function createHandler(
     roleFor: vi.fn(async () => "admin" as const)
   },
   memberships?: RunApiMembershipAdministration,
-  projectPolicy?: RunApiProjectPolicyAdministration
+  projectPolicy?: RunApiProjectPolicyAdministration,
+  artifacts?: RunApiArtifactReader
 ) {
   return createRunApiHandler({
     defaultProjectId: "project-1",
@@ -796,6 +845,7 @@ function createHandler(
     access,
     ...(memberships ? { memberships } : {}),
     ...(projectPolicy ? { projectPolicy } : {}),
+    ...(artifacts ? { artifacts } : {}),
     eventStream: {
       handle: vi.fn(async () => new Response("", { status: 200 }))
     }

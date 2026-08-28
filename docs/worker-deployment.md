@@ -29,7 +29,7 @@ For local Docker development, the Worker also accepts the exact immutable
 `sha256:<image-id>` reported by `docker image inspect`; mutable tags remain rejected.
 
 The database role must be able to connect and create/update the Worker-owned Run,
-lease, tool-call, and event tables. Startup connects the dedicated listener and
+lease, tool-call, Artifact-metadata, and event tables. Startup connects the dedicated listener and
 runs `SELECT 1` through the otherwise-lazy Pool before schema initialization.
 Any failure aborts startup and closes both resources.
 
@@ -41,6 +41,27 @@ applies bounded exponential retry, and runs only one Run per callback so one fai
 cannot retry successful peers. Terminal snapshots are excluded before enqueue.
 `LECODING_RECOVERY_INTERVAL_MS` defaults to 5000, accepts 1–3600000, and is
 rounded up to whole seconds.
+
+## Artifact storage and retention
+
+The Worker creates a private `artifacts` directory beside the first registered
+worktree root, never inside a Run worktree or Docker mount. PostgreSQL contains
+only Artifact identity, owning Run/project, content hash, storage key, byte size,
+and creation time. Local bytes are mode `0600`, re-reads verify SHA-256, and API
+access independently checks both the owning Run and current project membership.
+
+Docker retains at most 8 MiB for each stdout/stderr stream; Run snapshots, model
+context, and the tool-call ledger receive at most a valid 16 KiB UTF-8 prefix.
+Overflow within the runtime capture is redacted and written by content hash before
+the bounded reference enters durable Run state. Output beyond Docker's hard cap is
+discarded and marked truncated, preventing a hostile command from exhausting Worker
+memory. Deployment credentials and provider-shaped tokens are removed before the
+Artifact write; credential-bearing Run input, steering, or tool arguments fail
+before persistence.
+
+Retention runs once during startup and then daily. It removes local bytes and
+metadata older than seven days and writes a fixed structured record containing
+`deletedCount`, `failureCount`, and residual storage keys, never Artifact content.
 
 ## Project registration boundary
 
@@ -65,7 +86,7 @@ worktree factory, verification plan, Diff Safety checker, and change reader.
 ## Shutdown and evidence
 
 `SIGINT` and `SIGTERM` share one idempotent shutdown. Recovery stops first, then
-RunEngine subscriptions and environments are disposed, the LISTEN Client ends,
+Artifact retention and RunEngine subscriptions/environments are disposed, the LISTEN Client ends,
 and the Pool drains. Fatal lifecycle reporting uses a stable message and does not
 echo the database URI.
 

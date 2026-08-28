@@ -5,7 +5,12 @@ import type {
   EnvironmentResult,
   EnvironmentSpec
 } from "@lecoding/contracts";
-import type { AgentModel, AgentModelTurn, ModelToolResult } from "@lecoding/run-engine";
+import type {
+  AgentModel,
+  AgentModelTurn,
+  ModelToolResult,
+  ToolCallLedger
+} from "@lecoding/run-engine";
 import {
   createInMemoryApprovalLedger,
   createInMemoryRunLease,
@@ -33,6 +38,68 @@ function networkTurn(
 }
 
 describe("RunEngine", () => {
+  it("rejects deployment secrets before the initial Run snapshot is written", async () => {
+    const secret = "provider-key-123";
+    const store = new InMemoryRunStore();
+    const harness = await createTestHarness({
+      store,
+      redactOutput: (value) => value.replaceAll(secret, "[REDACTED]")
+    });
+
+    await expect(
+      harness.engine.start({
+        projectId: "project-1",
+        environmentId: "environment-1",
+        task: `Use ${secret} to run the check`,
+        acceptanceCriteria: ["The check passes"],
+        approvalMode: "manual",
+        fileAccessScope: "workspace_only"
+      })
+    ).rejects.toThrow("Run input contains a deployment secret");
+    await expect(store.get("run-1")).resolves.toBeUndefined();
+  });
+
+  it("denies secret-bearing model tool arguments before persistence or execution", async () => {
+    const secret = "provider-key-123";
+    const perform = vi.fn(async () => ({ exitCode: 0, stdout: "", stderr: "" }));
+    const store = new InMemoryRunStore();
+    const harness = await createTestHarness({
+      store,
+      modelTurns: [
+        {
+          type: "tool_call",
+          callId: "secret-call",
+          tool: "execute_command",
+          arguments: { argv: ["curl", `Authorization: Bearer ${secret}`] }
+        },
+        { type: "completed", summary: "Secret-bearing call was refused" }
+      ],
+      environment: {
+        prepare: async (spec) => ({
+          id: `handle-${spec.runId}`,
+          environmentId: spec.environmentId
+        }),
+        perform,
+        inspect: async () => ({ changedFiles: [] }),
+        dispose: async () => undefined
+      },
+      redactOutput: (value) => value.replaceAll(secret, "[REDACTED]")
+    });
+    const runId = await harness.engine.start({
+      projectId: "project-1",
+      environmentId: "environment-1",
+      task: "Run an allowed check",
+      acceptanceCriteria: ["The check passes"],
+      approvalMode: "auto_review",
+      fileAccessScope: "workspace_only"
+    });
+
+    await harness.engine.resume(runId);
+
+    expect(perform).not.toHaveBeenCalled();
+    expect(JSON.stringify(await store.get(runId))).not.toContain(secret);
+  });
+
   it("completes a run only after verification passes", async () => {
     const harness = await createTestHarness({ verificationOutcome: "passed" });
 
@@ -156,6 +223,109 @@ describe("RunEngine", () => {
         data: { status: "succeeded" }
       })
     ]);
+  });
+
+  it("keeps large secret-bearing output out of model state and writes a redacted artifact", async () => {
+    const secret = "provider-secret-value";
+    const largeOutput = `start ${secret} ${"x".repeat(80_000)} end`;
+    let observedResult: ModelToolResult | undefined;
+    let modelCalls = 0;
+    const model: AgentModel = {
+      async next(input) {
+        modelCalls += 1;
+        if (modelCalls === 1) {
+          return {
+            type: "tool_call",
+            callId: "large-output",
+            tool: "execute_command",
+            arguments: { argv: ["pnpm", "test"] }
+          };
+        }
+        observedResult = input.toolResults[0];
+        return { type: "completed", summary: "Large output retained by reference" };
+      }
+    };
+    const writes: Array<{ content: string; kind: string }> = [];
+    let durableResult: EnvironmentResult | undefined;
+    const toolCalls: ToolCallLedger = {
+      async claim() {
+        return { status: "claimed" };
+      },
+      async complete(input) {
+        durableResult = structuredClone(input.result);
+      }
+    };
+    const store = new InMemoryRunStore();
+    const harness = await createTestHarness({
+      model,
+      store,
+      toolCalls,
+      environment: {
+        prepare: async (spec) => ({
+          id: `handle-${spec.runId}`,
+          environmentId: spec.environmentId
+        }),
+        perform: async () => ({ exitCode: 0, stdout: largeOutput, stderr: "" }),
+        inspect: async () => ({ changedFiles: [] }),
+        dispose: async () => undefined
+      },
+      artifacts: {
+        async write(input) {
+          writes.push({ content: input.content, kind: input.kind });
+          return {
+            id: "artifact-stdout-1",
+            kind: input.kind,
+            contentHash: "a".repeat(64),
+            byteSize: Buffer.byteLength(input.content)
+          };
+        }
+      },
+      redactOutput: (value) => value.replaceAll(secret, "[REDACTED]")
+    });
+    const runId = await harness.engine.start({
+      projectId: "project-1",
+      environmentId: "environment-1",
+      task: "Run a verbose check",
+      acceptanceCriteria: ["Output is bounded"],
+      approvalMode: "auto_review",
+      fileAccessScope: "workspace_only"
+    });
+
+    await harness.engine.resume(runId);
+
+    expect(observedResult).toMatchObject({
+      status: "executed",
+      stdoutTruncated: true,
+      artifacts: [
+        {
+          id: "artifact-stdout-1",
+          contentHash: "a".repeat(64),
+          kind: "command_stdout"
+        }
+      ]
+    });
+    expect(observedResult?.status === "executed" ? observedResult.stdout : "")
+      .not.toContain(secret);
+    expect(
+      Buffer.byteLength(
+        observedResult?.status === "executed" ? observedResult.stdout : ""
+      )
+    ).toBeLessThanOrEqual(16_384);
+    expect(writes).toHaveLength(1);
+    expect(writes[0]?.content).toContain("[REDACTED]");
+    expect(writes[0]?.content).not.toContain(secret);
+    expect(JSON.stringify(durableResult)).not.toContain(secret);
+    const storedRun = await store.get(runId);
+    expect(JSON.stringify(storedRun)).not.toContain(secret);
+    await expect(harness.engine.inspect(runId)).resolves.toMatchObject({
+      artifacts: [
+        {
+          id: "artifact-stdout-1",
+          kind: "command_stdout",
+          contentHash: "a".repeat(64)
+        }
+      ]
+    });
   });
 
   it("persists the model continuation with a tool result for the next turn", async () => {

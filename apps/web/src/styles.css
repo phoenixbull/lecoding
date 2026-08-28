@@ -709,6 +709,18 @@ input:focus {
   text-align: center;
 }
 
+.artifact-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.artifact-item {
+  font-family: "SFMono-Regular", Consolas, monospace;
+  font-size: 11px;
+}
+
 .error-banner {
   margin-bottom: 18px;
   padding: 12px 14px;

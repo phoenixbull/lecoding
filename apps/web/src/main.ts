@@ -73,6 +73,8 @@ const changedCount = requiredElement<HTMLElement>("#changed-count");
 const changesState = requiredElement<HTMLElement>("#changes-state");
 const changedFiles = requiredElement<HTMLElement>("#changed-files");
 const diffOutput = requiredElement<HTMLElement>("#diff-output");
+const artifactList = requiredElement<HTMLElement>("#artifact-list");
+const artifactOutput = requiredElement<HTMLElement>("#artifact-output");
 
 let bootstrap: ControlPlaneConfig | undefined;
 let currentRun: RunView | undefined;
@@ -128,6 +130,15 @@ async function logout(): Promise<void> {
 
 cancelButton.addEventListener("click", () => {
   void cancelCurrentRun();
+});
+
+artifactList.addEventListener("click", (event) => {
+  const button = (event.target as HTMLElement).closest<HTMLButtonElement>(
+    "button[data-artifact-id]"
+  );
+  if (button?.dataset.artifactId && currentRun) {
+    void loadArtifact(currentRun.id, button.dataset.artifactId);
+  }
 });
 
 discardResultButton.addEventListener("click", () => {
@@ -366,6 +377,7 @@ function clearProjectView(changesMessage = "选择 Run 后显示其受管工作�
   delete statusBadge.dataset.status;
   setStreamState("就绪", "idle");
   resetChanges(changesMessage);
+  renderArtifacts(undefined);
 }
 
 function renderProjectOptions(
@@ -706,6 +718,42 @@ function renderRun(run: RunView): void {
   renderApproval(run);
   renderUserRequest(run);
   renderVerification(run.verification?.checks ?? []);
+  renderArtifacts(run);
+}
+
+function renderArtifacts(run: RunView | undefined): void {
+  artifactList.replaceChildren();
+  artifactOutput.textContent = "";
+  if (!run?.artifacts?.length) {
+    const empty = document.createElement("p");
+    empty.className = "empty-state";
+    empty.textContent = "当前 Run 没有超限命令输出。";
+    artifactList.append(empty);
+    return;
+  }
+  for (const artifact of run.artifacts) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "artifact-item secondary-button";
+    button.dataset.artifactId = artifact.id;
+    button.textContent = `${artifact.kind === "command_stdout" ? "stdout" : "stderr"} · ${artifact.byteSize} bytes · ${artifact.contentHash.slice(0, 12)}`;
+    artifactList.append(button);
+  }
+}
+
+async function loadArtifact(runId: string, artifactId: string): Promise<void> {
+  artifactOutput.textContent = "正在读取脱敏输出…";
+  try {
+    const content = await client.getRunArtifact(runId, artifactId);
+    if (currentRun?.id === runId) {
+      // Artifact content remains inert text and never enters HTML interpretation.
+      artifactOutput.textContent = content;
+    }
+  } catch {
+    if (currentRun?.id === runId) {
+      artifactOutput.textContent = "Artifact 已过保留期或当前账号无权读取。";
+    }
+  }
 }
 
 function updateResultAction(): void {

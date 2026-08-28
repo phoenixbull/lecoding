@@ -9,6 +9,8 @@ import {
 } from "@lecoding/openai-model";
 import { createPolicyEngine } from "@lecoding/policy";
 import type {
+  ArtifactRetentionReport,
+  ArtifactRetentionWorker,
   Engine,
   RecoveryJobQueue,
   RunHistory,
@@ -16,9 +18,11 @@ import type {
 } from "@lecoding/run-engine";
 import {
   createInMemoryRunHandleRegistry,
+  createIntervalArtifactRetentionWorker,
   createIntervalLeaseHeartbeat,
   createPgBossRecoveryWorker,
   createPostgresRunCancelBus,
+  createPostgresLocalArtifactStore,
   createPostgresApprovalLedger,
   createPostgresPolicyReviewAudit,
   createPostgresProjectPolicyRules,
@@ -114,6 +118,8 @@ export interface ProductionWorkerOptions {
   onBackgroundError?: (error: unknown) => void;
   /** Receives provider retry telemetry containing only stable enums and Run identity. */
   onModelRetry?: (event: OpenAiMalformedJsonRetryEvent) => void;
+  /** Receives content-free seven-day cleanup counts and residual storage keys. */
+  onArtifactRetentionReport?: (report: ArtifactRetentionReport) => void;
   /** Test/deployment seam for supplying the durable pg-boss queue adapter. */
   createRecoveryQueue?: (executor: PostgresExecutor) => RecoveryJobQueue;
 }
@@ -130,6 +136,52 @@ export function formatModelRetryLog(event: OpenAiMalformedJsonRetryEvent): strin
   });
 }
 
+/**
+ * Builds the persistence-boundary redactor from administrator-owned credentials.
+ * Exact configured values are removed before generic bearer/API-key shapes.
+ */
+export function createDeploymentSecretRedactor(
+  environment: ModelEnvironment
+): (value: string) => string {
+  const secrets = new Set<string>();
+  for (const [name, value] of Object.entries(environment)) {
+    const normalized = value?.trim();
+    if (
+      normalized &&
+      /(?:API_KEY|TOKEN|SECRET|PASSWORD)$/u.test(name) &&
+      normalized.length >= 4
+    ) {
+      secrets.add(normalized);
+    }
+  }
+  const databaseUrl = environment.LECODING_DATABASE_URL?.trim();
+  if (databaseUrl) {
+    secrets.add(databaseUrl);
+    try {
+      const password = decodeURIComponent(new URL(databaseUrl).password);
+      if (password.length >= 4) {
+        secrets.add(password);
+      }
+    } catch {
+      // Database configuration validation owns malformed-URL failure reporting.
+    }
+  }
+  const orderedSecrets = [...secrets].sort((left, right) => right.length - left.length);
+  return (value) => {
+    let redacted = value;
+    for (const secret of orderedSecrets) {
+      redacted = redacted.replaceAll(secret, "[REDACTED]");
+    }
+    /* Provider-shaped keys and bearer values can be emitted even when they were
+     * not sourced from this Worker's own deployment environment. */
+    return redacted
+      .replace(/\bBearer\s+([A-Za-z0-9._~+/=-]{4,})/giu, (match, token: string) =>
+        /[0-9._~+/=-]/u.test(token) ? "Bearer [REDACTED]" : match
+      )
+      .replace(/\bsk-[A-Za-z0-9_-]{8,}\b/gu, "[REDACTED]");
+  };
+}
+
 /** HTTP-facing seams exposed only after production composition succeeds. */
 export interface WorkerControlPlane {
   defaultProjectId: string;
@@ -138,6 +190,7 @@ export interface WorkerControlPlane {
   history: RunHistory;
   changes: RunChangesReader;
   results: RunResultManager;
+  artifacts?: import("@lecoding/run-engine").PostgresLocalArtifactStore;
   access: RunApiAccessControl;
   memberships?: RunApiMembershipAdministration;
   projectPolicy?: RunApiProjectPolicyAdministration;
@@ -152,6 +205,7 @@ export interface WorkerRuntimeResources {
   engine: Engine;
   recovery: RunRecoveryWorker;
   eventDispatch: RunEventDispatchWorker;
+  artifactRetention?: ArtifactRetentionWorker;
   control: WorkerControlPlane;
   /** Closes the query pool and dedicated LISTEN connection after engine disposal. */
   closeDatabase(): Promise<void>;
@@ -570,6 +624,15 @@ export async function composeProductionWorker(
     const toolCalls = await createPostgresToolCallLedger(
       options.database.executor
     );
+    /* Artifact bytes live beside, not inside, mutable Run worktrees so sandbox
+     * mounts can never read another Run's retained command output. */
+    const artifacts = await createPostgresLocalArtifactStore(
+      options.database.executor,
+      {
+        root: join(dirname(projects[0]!.worktreeRoot), "artifacts"),
+        now
+      }
+    );
     const approvals = await createPostgresApprovalLedger(
       options.database.executor,
       { now }
@@ -629,6 +692,8 @@ export async function composeProductionWorker(
       store,
       transitions,
       toolCalls,
+      artifacts,
+      redactOutput: createDeploymentSecretRedactor(options.environment),
       approvals,
       projectRules,
       steerMailbox,
@@ -683,10 +748,19 @@ export async function composeProductionWorker(
         ? { onError: options.onBackgroundError }
         : {})
     });
+    const artifactRetention = createIntervalArtifactRetentionWorker({
+      store: artifacts,
+      now,
+      ...(options.onArtifactRetentionReport
+        ? { onReport: options.onArtifactRetentionReport }
+        : {}),
+      ...(options.onBackgroundError ? { onError: options.onBackgroundError } : {})
+    });
     return createWorkerRuntime({
       engine,
       recovery,
       eventDispatch,
+      artifactRetention,
       control: {
         defaultProjectId: projects[0]!.projectId,
         projectIds: projects.map((project) => project.projectId),
@@ -719,6 +793,7 @@ export async function composeProductionWorker(
             }).resolve(runId, outcome);
           }
         },
+        artifacts,
         access,
         ...(memberships ? { memberships } : {}),
         projectPolicy: {
@@ -763,6 +838,7 @@ export function createWorkerRuntime(
       }
       startPromise = (async () => {
         resources.eventDispatch.start();
+        await resources.artifactRetention?.start();
         // Durable queue startup must finish before the HTTP control plane opens.
         await resources.recovery.start();
       })();
@@ -784,6 +860,7 @@ export function createWorkerRuntime(
         await startPromise?.catch(() => undefined);
         for (const cleanup of [
           () => resources.recovery.stop(),
+          () => resources.artifactRetention?.stop(),
           () => resources.engine.dispose(),
           () => resources.eventDispatch.stop(),
           () => resources.closeDatabase()

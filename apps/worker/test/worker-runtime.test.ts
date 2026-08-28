@@ -5,6 +5,7 @@ import { join } from "node:path";
 import type { Engine, RunRecoveryWorker } from "@lecoding/run-engine";
 import {
   composeProductionWorker,
+  createDeploymentSecretRedactor,
   createWorkerRuntime,
   formatModelRetryLog,
   loadWorkerConfig,
@@ -32,6 +33,29 @@ describe("formatModelRetryLog", () => {
       outcome: "recovered"
     });
     expect(line).not.toContain("must-not-leak");
+  });
+});
+
+describe("createDeploymentSecretRedactor", () => {
+  it("redacts configured credentials and common bearer tokens before persistence", () => {
+    const redact = createDeploymentSecretRedactor({
+      LECODING_MODEL_API_KEY: "provider-key-123",
+      LECODING_DATABASE_URL:
+        "postgresql://worker:database-pass@db.example/lecoding",
+      LECODING_HTTP_BEARER_TOKEN: "control-token-456"
+    });
+
+    const value = redact(
+      "provider-key-123 database-pass Bearer ad-hoc-token control-token-456"
+    );
+
+    expect(value).toBe(
+      "[REDACTED] [REDACTED] Bearer [REDACTED] [REDACTED]"
+    );
+    expect(redact(value)).toBe(value);
+    expect(redact("Use Bearer authentication for requests")).toBe(
+      "Use Bearer authentication for requests"
+    );
   });
 });
 

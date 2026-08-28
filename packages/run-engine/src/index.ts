@@ -1,4 +1,5 @@
 import type {
+  ArtifactReference,
   EditedApprovalCapability,
   EnvironmentHandle,
   EnvironmentResult,
@@ -76,6 +77,20 @@ export type {
   PolicyReviewAuditRecord,
   PostgresPolicyReviewAudit
 } from "./postgres-policy-review-audit.js";
+export {
+  ARTIFACT_SCHEMA_SQL,
+  createPostgresLocalArtifactStore
+} from "./postgres-local-artifact-store.js";
+export { createIntervalArtifactRetentionWorker } from "./artifact-retention.js";
+export type {
+  ArtifactRetentionReport,
+  ArtifactRetentionWorker
+} from "./artifact-retention.js";
+export type {
+  ArtifactMetadata,
+  ArtifactPruneResult,
+  PostgresLocalArtifactStore
+} from "./postgres-local-artifact-store.js";
 export {
   PROJECT_POLICY_RULES_SCHEMA_SQL,
   createPostgresProjectPolicyRules
@@ -249,6 +264,10 @@ export interface RunEngineDependencies {
   approvals?: ApprovalLedger;
   /** Exact administrator project rules written by project-scoped decisions. */
   projectRules?: Pick<ProjectPolicyRules, "set">;
+  /** Durable content-addressed storage used before large output enters Run state. */
+  artifacts?: ArtifactStore;
+  /** Deployment-seeded secret redactor applied before persistence or model reuse. */
+  redactOutput?: (value: string) => string;
   /** 原子保存 Run 状态和 RunEvent/outbox;生产 PostgreSQL 组合必须注入。 */
   transitions?: RunTransitionWriter;
   /** Cross-Worker mailbox that accepts steer without contending for the driver lease. */
@@ -278,6 +297,16 @@ export interface RunEngineDependencies {
    */
   retry?: RetryPolicy;
   createId(): RunId;
+}
+
+/** Large-output persistence boundary; implementations must retain only redacted bytes. */
+export interface ArtifactStore {
+  write(input: {
+    runId: RunId;
+    projectId: string;
+    kind: ArtifactReference["kind"];
+    content: string;
+  }): Promise<ArtifactReference>;
 }
 
 export interface AgentModelInput {
@@ -327,6 +356,9 @@ export type ModelToolResult =
       exitCode: number;
       stdout: string;
       stderr: string;
+      stdoutTruncated?: boolean;
+      stderrTruncated?: boolean;
+      artifacts?: ArtifactReference[];
     }
   | {
       callId: string;
@@ -375,7 +407,24 @@ export async function createRunEngine(
   return engine;
 }
 
+/** Returns a valid UTF-8 prefix without ever exceeding the persistence budget. */
+function boundedUtf8Prefix(value: string, maximumBytes: number): string {
+  const bytes = Buffer.from(value);
+  if (bytes.byteLength <= maximumBytes) {
+    return value;
+  }
+  let end = maximumBytes;
+  /* If the first excluded byte continues a multi-byte character, exclude that
+   * character in full instead of persisting an invalid replacement sequence. */
+  while (end > 0 && (bytes[end]! & 0xc0) === 0x80) {
+    end -= 1;
+  }
+  return bytes.subarray(0, end).toString("utf8");
+}
+
 class DefaultRunEngine implements RunEngine, RunResumer, DisposableEngine {
+  /** Model and durable-ledger output budget per stream, measured after redaction. */
+  private static readonly MODEL_OUTPUT_BYTES = 16_384;
   private cancelSubscriptionStop: (() => void | Promise<void>) | undefined;
   private readonly toolCalls: ToolCallLedger;
   private readonly approvals: ApprovalLedger;
@@ -437,6 +486,16 @@ class DefaultRunEngine implements RunEngine, RunResumer, DisposableEngine {
      * 环境准备与模型驱动由 Worker 侧 resume() 推进,与 HTTP 请求生命周期解耦,
      * 浏览器断线和进程重启都不会丢失 Run。
      */
+    const inputText = [
+      input.task,
+      ...input.acceptanceCriteria,
+      ...(input.deniedCommands ?? [])
+    ];
+    if (inputText.some((value) => this.containsDeploymentSecret(value))) {
+      /* Reject rather than redact original task semantics: V3 requires the exact
+       * task and acceptance criteria to remain authoritative once persisted. */
+      throw new Error("Run input contains a deployment secret");
+    }
     const id = this.dependencies.createId();
     const stored: StoredRun = {
       id,
@@ -569,6 +628,9 @@ class DefaultRunEngine implements RunEngine, RunResumer, DisposableEngine {
       validateSteeringCommandId(command.commandId);
       const value = command.type === "answer" ? command.value : command.message;
       validateSteeringMessage(value);
+      if (this.containsDeploymentSecret(value)) {
+        throw new Error("User command contains a deployment secret");
+      }
       const receipt = current.userCommandReceipts?.[command.commandId];
       if (receipt) {
         assertMatchingUserCommandReceipt(receipt, command);
@@ -599,6 +661,14 @@ class DefaultRunEngine implements RunEngine, RunResumer, DisposableEngine {
         });
         return;
       }
+    }
+    if (
+      command.type === "edit_approve" &&
+      editedCapabilityText(command.replacement).some((value) =>
+        this.containsDeploymentSecret(value)
+      )
+    ) {
+      throw new Error("Edited approval contains a deployment secret");
     }
     /*
      * 命令也要求 lease:防止用户取消/批准落入其他 Worker 正在驱动的循环,
@@ -943,6 +1013,9 @@ class DefaultRunEngine implements RunEngine, RunResumer, DisposableEngine {
 
   async inspect(runId: RunId): Promise<RunView> {
     const run = await this.requireRun(runId);
+    const artifacts = run.toolResults.flatMap((result) =>
+      result.status === "executed" ? (result.artifacts ?? []) : []
+    );
 
     return {
       id: run.id,
@@ -962,7 +1035,8 @@ class DefaultRunEngine implements RunEngine, RunResumer, DisposableEngine {
           }
         : {}),
       ...(run.failure ? { failure: run.failure } : {}),
-      ...(run.verification ? { verification: run.verification } : {})
+      ...(run.verification ? { verification: run.verification } : {}),
+      ...(artifacts.length > 0 ? { artifacts } : {})
     };
   }
 
@@ -1153,9 +1227,10 @@ class DefaultRunEngine implements RunEngine, RunResumer, DisposableEngine {
         }
         if (modelTurn.type === "user_request") {
           delete stored.pendingSteering;
+          const prompt = this.redact(modelTurn.prompt);
           stored.pendingUserRequest = {
             id: modelTurn.requestId,
-            prompt: modelTurn.prompt,
+            prompt,
             ...(modelTurn.continuationId
               ? { continuationId: modelTurn.continuationId }
               : {})
@@ -1165,13 +1240,37 @@ class DefaultRunEngine implements RunEngine, RunResumer, DisposableEngine {
               type: "agent_question",
               data: {
                 requestId: modelTurn.requestId,
-                prompt: modelTurn.prompt
+                prompt
               }
             }
           ]);
           return;
         }
         turn = modelTurn;
+        if (toolTurnText(turn).some((value) => this.containsDeploymentSecret(value))) {
+          /* Never persist credential-bearing argv/purpose text. The model receives
+           * only a stable denial and may choose a credential-free alternative. */
+          stored.toolResults.push({
+            callId: turn.callId,
+            ...(turn.continuationId
+              ? { continuationId: turn.continuationId }
+              : {}),
+            status: "denied",
+            reason: "Tool arguments contained protected credential material"
+          });
+          delete stored.pendingSteering;
+          await this.persistEvents(
+            stored,
+            [
+              {
+                type: "tool_completed",
+                data: { callId: turn.callId, outcome: "denied" }
+              }
+            ],
+            token
+          );
+          continue;
+        }
         /*
          * Persist the provider call before policy evaluation or any side effect. If this
          * Worker dies after perform, a replacement reuses callId + continuationId and the
@@ -1521,7 +1620,7 @@ class DefaultRunEngine implements RunEngine, RunResumer, DisposableEngine {
          *   这把 cancel 从"依赖 NOTIFY 广播"降级为"依赖最终一致性 store
          *   检查",任何 cancel 命令写入一定被 perform 在下个 tick 观察到。
          */
-        result = await this.dependencies.heartbeat.withHeartbeat(
+        const environmentResult = await this.dependencies.heartbeat.withHeartbeat(
           token,
           this.heartbeatIntervalMs(),
           () =>
@@ -1532,6 +1631,11 @@ class DefaultRunEngine implements RunEngine, RunResumer, DisposableEngine {
             ),
           () => this.tickCancellationFallback(stored)
         );
+        /*
+         * Normalize immediately after the external side effect returns. Raw output
+         * must never cross the tool ledger or Run snapshot persistence boundaries.
+         */
+        result = await this.normalizeEnvironmentResult(stored, environmentResult);
       } catch (error) {
         /*
          * 区分 cancel 触发的 error 与真实 I/O 失败:
@@ -1556,6 +1660,11 @@ class DefaultRunEngine implements RunEngine, RunResumer, DisposableEngine {
         callId: turn.callId,
         result
       });
+    }
+    if (claim.status === "completed") {
+      /* Legacy ledger rows may predate output bounding; recover them through the
+       * same persistence gate before allowing the model to observe their result. */
+      result = await this.normalizeEnvironmentResult(stored, result);
     }
     /*
      * perform 是真实 I/O 的 await 边界,期间租约可能被抢占。
@@ -1599,6 +1708,83 @@ class DefaultRunEngine implements RunEngine, RunResumer, DisposableEngine {
       ],
       token
     );
+  }
+
+  /**
+   * Redacts command output, stores oversized streams outside the database, and
+   * returns only a bounded prefix plus content-addressed references.
+   */
+  private async normalizeEnvironmentResult(
+    stored: StoredRun,
+    result: EnvironmentResult
+  ): Promise<EnvironmentResult> {
+    const redactor = this.dependencies.redactOutput ?? ((value: string) => value);
+    const stdout = redactor(result.stdout);
+    const stderr = redactor(result.stderr);
+    const artifacts = [...(result.artifacts ?? [])];
+    const normalized: EnvironmentResult = {
+      exitCode: result.exitCode,
+      stdout,
+      stderr,
+      ...(result.stdoutTruncated === true ? { stdoutTruncated: true } : {}),
+      ...(result.stderrTruncated === true ? { stderrTruncated: true } : {})
+    };
+
+    for (const stream of ["stdout", "stderr"] as const) {
+      const content = normalized[stream];
+      const wasRuntimeTruncated =
+        stream === "stdout"
+          ? result.stdoutTruncated === true
+          : result.stderrTruncated === true;
+      const existingKind =
+        stream === "stdout" ? "command_stdout" : "command_stderr";
+      const alreadyReferenced = artifacts.some(
+        (artifact) => artifact.kind === existingKind
+      );
+      if (
+        Buffer.byteLength(content) <= DefaultRunEngine.MODEL_OUTPUT_BYTES &&
+        !wasRuntimeTruncated
+      ) {
+        continue;
+      }
+      if (!alreadyReferenced && this.dependencies.artifacts === undefined) {
+        /* Failing closed prevents an accidental fallback that stores unbounded
+         * output in PostgreSQL when production artifact storage is unavailable. */
+        throw new Error(`Artifact storage is required for oversized ${stream}`);
+      }
+      if (!alreadyReferenced) {
+        const artifact = await this.dependencies.artifacts!.write({
+          runId: stored.id,
+          projectId: stored.input.projectId,
+          kind: existingKind,
+          content
+        });
+        artifacts.push(artifact);
+      }
+      normalized[stream] = boundedUtf8Prefix(
+        content,
+        DefaultRunEngine.MODEL_OUTPUT_BYTES
+      );
+      if (stream === "stdout") {
+        normalized.stdoutTruncated = true;
+      } else {
+        normalized.stderrTruncated = true;
+      }
+    }
+
+    if (artifacts.length > 0) {
+      normalized.artifacts = artifacts;
+    }
+    return normalized;
+  }
+
+  /** Applies the deployment redactor at every model-controlled text boundary. */
+  private redact(value: string): string {
+    return this.dependencies.redactOutput?.(value) ?? value;
+  }
+
+  private containsDeploymentSecret(value: string): boolean {
+    return this.redact(value) !== value;
   }
 
   private async recordNetworkAuthorization(
@@ -1873,6 +2059,25 @@ function capabilityForTurn(
     domain,
     port: turn.arguments.port
   };
+}
+
+/** Selects only model-authored tool text that could carry credential material. */
+function toolTurnText(
+  turn: Extract<AgentModelTurn, { type: "tool_call" }>
+): string[] {
+  return turn.tool === "execute_command"
+    ? turn.arguments.argv
+    : [
+        turn.arguments.domain,
+        turn.arguments.purpose
+      ];
+}
+
+/** Selects user-authored edited capability fields before approval persistence. */
+function editedCapabilityText(capability: EditedApprovalCapability): string[] {
+  return capability.type === "command_exec"
+    ? capability.argv
+    : [capability.domain];
 }
 
 /** Builds a strictly narrower replacement while retaining provider continuation identity. */

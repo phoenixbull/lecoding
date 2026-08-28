@@ -32,9 +32,11 @@ export {
 } from "./fake-docker-environment.js";
 
 export {
+  createBoundedOutputCapture,
   createDockerRunEnvironment,
   createDockerRunPlan,
   type DockerRunLimits,
+  type BoundedOutputCapture,
   type DockerRunPlan,
   type DockerRunPlanInput
 } from "./docker-environment.js";

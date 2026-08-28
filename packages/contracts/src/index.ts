@@ -121,6 +121,8 @@ export interface RunView {
   pendingUserRequest?: PendingUserRequest;
   failure?: RunFailure;
   verification?: VerificationReport;
+  /** Bounded references to retained large command output; content is fetched separately. */
+  artifacts?: ArtifactReference[];
 }
 
 /** Durable model question that must be answered before the Run can continue. */
@@ -358,6 +360,17 @@ export interface EnvironmentResult {
   exitCode: number;
   stdout: string;
   stderr: string;
+  stdoutTruncated?: boolean;
+  stderrTruncated?: boolean;
+  artifacts?: ArtifactReference[];
+}
+
+/** Content-addressed large-output reference safe to pass through model context. */
+export interface ArtifactReference {
+  id: string;
+  kind: "command_stdout" | "command_stderr";
+  contentHash: string;
+  byteSize: number;
 }
 
 export interface EnvironmentReport {

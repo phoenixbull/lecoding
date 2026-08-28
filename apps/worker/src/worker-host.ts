@@ -30,6 +30,8 @@ export interface WorkerProcessHostOptions {
   onFatalError?: (error: unknown) => void;
   /** Forwarded to model composition for secret-free malformed-JSON retry logs. */
   onModelRetry?: ProductionWorkerOptions["onModelRetry"];
+  /** Forwarded to the seven-day Artifact cleanup audit logger. */
+  onArtifactRetentionReport?: ProductionWorkerOptions["onArtifactRetentionReport"];
 }
 
 /** HTTP listener or equivalent service owned ahead of Worker teardown. */
@@ -113,7 +115,10 @@ export function createWorkerProcessHost(
           ...(options.onFatalError
             ? { onBackgroundError: options.onFatalError }
             : {}),
-          ...(options.onModelRetry ? { onModelRetry: options.onModelRetry } : {})
+          ...(options.onModelRetry ? { onModelRetry: options.onModelRetry } : {}),
+          ...(options.onArtifactRetentionReport
+            ? { onArtifactRetentionReport: options.onArtifactRetentionReport }
+            : {})
         });
         try {
           await runtime.start();

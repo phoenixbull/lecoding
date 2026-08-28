@@ -21,6 +21,7 @@ import {
   type AgentModelInput,
   type AgentModelTurn,
   type ApprovalLedger,
+  type ArtifactStore,
   type Engine,
   type LeaseHeartbeat,
   type RetryPolicy,
@@ -78,6 +79,10 @@ export async function createTestHarness(options: {
   approvals?: ApprovalLedger;
   /** 注入项目级精确规则写入 seam。 */
   projectRules?: Pick<ProjectPolicyRules, "set">;
+  /** Boundary used to verify large-output persistence behavior. */
+  artifacts?: ArtifactStore;
+  /** Deterministic output redactor used by security tests. */
+  redactOutput?: (value: string) => string;
   /** 注入策略以验证 RunEngine 传递的规范化授权上下文。 */
   policy?: PolicyEngine;
   /** 注入状态 + 事件原子 writer;提供时替代 legacy 两步发布路径。 */
@@ -117,6 +122,10 @@ export async function createTestHarness(options: {
     ...(options.approvals !== undefined ? { approvals: options.approvals } : {}),
     ...(options.projectRules !== undefined
       ? { projectRules: options.projectRules }
+      : {}),
+    ...(options.artifacts !== undefined ? { artifacts: options.artifacts } : {}),
+    ...(options.redactOutput !== undefined
+      ? { redactOutput: options.redactOutput }
       : {}),
     ...(options.transitions !== undefined
       ? { transitions: options.transitions }

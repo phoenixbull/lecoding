@@ -104,6 +104,7 @@ export async function startWorkerHttpServer(
     history: options.control.history,
     changes: options.control.changes,
     results: options.control.results,
+    ...(options.control.artifacts ? { artifacts: options.control.artifacts } : {}),
     access: options.control.access,
     ...(options.control.memberships
       ? { memberships: options.control.memberships }

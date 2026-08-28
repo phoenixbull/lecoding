@@ -4,6 +4,7 @@ import { chmod, mkdtemp, rm, symlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
+  createBoundedOutputCapture,
   createDockerRunEnvironment,
   createDockerRunPlan
 } from "../src/docker-environment.js";
@@ -24,6 +25,18 @@ function hasDockerDaemon(): Promise<boolean> {
 }
 
 describe("createDockerRunEnvironment (PoC)", () => {
+  it("bounds streaming command output by bytes without splitting UTF-8", () => {
+    const capture = createBoundedOutputCapture(16);
+
+    capture.append(Buffer.from("12345678901234"));
+    capture.append(Buffer.from("你好-more-output"));
+
+    const result = capture.finish();
+    expect(Buffer.byteLength(result.value)).toBeLessThanOrEqual(16);
+    expect(result.value).toBe("12345678901234");
+    expect(result.truncated).toBe(true);
+  });
+
   it("builds a non-root, read-only, resource-bounded workspace plan", () => {
     const plan = createDockerRunPlan({
       containerId: "lecoding-run-1",

@@ -8,6 +8,7 @@ import type {
   RunResumer
 } from "@lecoding/contracts";
 import type {
+  ArtifactMetadata,
   ProjectPolicyRuleRecord,
   RunHistory
 } from "@lecoding/run-engine";
@@ -66,6 +67,12 @@ export interface RunApiProjectPolicyAdministration {
   revoke(projectId: string, ruleId: string, revokedBy: string): Promise<void>;
 }
 
+/** Hash-verifying retained-output reader; authorization remains in the API layer. */
+export interface RunApiArtifactReader {
+  get(id: string): Promise<ArtifactMetadata | undefined>;
+  read(id: string): Promise<string | undefined>;
+}
+
 /** RunEngine surface consumed by the single-user HTTP control plane. */
 export type RunApiOperations = Pick<
   RunEngine,
@@ -82,6 +89,7 @@ export interface RunApiHandlerOptions {
   history: RunHistory;
   changes: RunChangesReader;
   results: RunResultManager;
+  artifacts?: RunApiArtifactReader;
   access: RunApiAccessControl;
   memberships?: RunApiMembershipAdministration;
   projectPolicy?: RunApiProjectPolicyAdministration;
@@ -306,6 +314,40 @@ export function createRunApiHandler(
           return jsonResponse(await options.changes.read(runId));
         } catch {
           return errorResponse(404, "changes_not_found", "Run changes were not found");
+        }
+      }
+
+      const artifactMatch = path.match(
+        /^\/api\/v1\/runs\/([^/]+)\/artifacts\/([^/]+)$/
+      );
+      if (request.method === "GET" && artifactMatch) {
+        try {
+          const runId = decodePathSegment(artifactMatch[1]!) as RunId;
+          const artifactId = decodePathSegment(artifactMatch[2]!);
+          const run = await inspectProjectRun(options, principal, runId, "viewer");
+          const metadata = await options.artifacts?.get(artifactId);
+          if (
+            !metadata ||
+            metadata.runId !== runId ||
+            metadata.projectId !== run.projectId
+          ) {
+            throw new Error("Artifact is outside the authorized Run");
+          }
+          const content = await options.artifacts?.read(artifactId);
+          if (content === undefined) {
+            throw new Error("Artifact content was not found");
+          }
+          return new Response(content, {
+            status: 200,
+            headers: {
+              "content-type": "text/plain; charset=utf-8",
+              "x-lecoding-artifact-hash": metadata.contentHash,
+              "x-lecoding-artifact-kind": metadata.kind
+            }
+          });
+        } catch {
+          // A uniform not-found response prevents cross-Run Artifact enumeration.
+          return errorResponse(404, "artifact_not_found", "Artifact was not found");
         }
       }
 

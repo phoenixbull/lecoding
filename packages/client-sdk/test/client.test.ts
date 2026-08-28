@@ -224,6 +224,21 @@ describe("LeCodingClient", () => {
     );
   });
 
+  it("loads retained command output through the owning Run path", async () => {
+    const fetch = vi
+      .fn<typeof globalThis.fetch>()
+      .mockResolvedValue(new Response("redacted output", { status: 200 }));
+    const client = createClient({ baseUrl: "https://agent.example", fetch });
+
+    await expect(client.getRunArtifact("run/1", "artifact/1")).resolves.toBe(
+      "redacted output"
+    );
+    expect(fetch).toHaveBeenCalledWith(
+      "https://agent.example/api/v1/runs/run%2F1/artifacts/artifact%2F1",
+      expect.objectContaining({ method: "GET" })
+    );
+  });
+
   it("resolves a terminal Run result through the versioned endpoint", async () => {
     const requests: Array<{ url: string; method: string; body: unknown }> = [];
     const client = createClient({
