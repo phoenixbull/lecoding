@@ -1,4 +1,4 @@
-import type { JsonValue, RunId } from "@lecoding/contracts";
+import type { ApprovalScope, JsonValue, RunId } from "@lecoding/contracts";
 import type { PostgresExecutor } from "./postgres-run-lease.js";
 
 /** Capability kinds currently executable through the Phase 2 approval boundary. */
@@ -20,7 +20,7 @@ export interface ApprovalDecisionInput {
   approvalId: string;
   runId: RunId;
   decision: "allow" | "deny";
-  scope: "once" | "run";
+  scope: ApprovalScope;
   decidedBy: string;
 }
 
@@ -31,7 +31,7 @@ export type ApprovalAuditRecord = ApprovalRequestInput &
     | {
         status: "decided";
         decision: "allow" | "deny";
-        scope: "once" | "run";
+        scope: ApprovalScope;
         decidedBy: string;
         decidedAt: string;
       }
@@ -111,7 +111,7 @@ CREATE TABLE IF NOT EXISTS run_engine_approvals (
   reason text NOT NULL,
   constraints jsonb NOT NULL,
   decision text CHECK (decision IN ('allow', 'deny')),
-  scope text CHECK (scope IN ('once', 'run')),
+  scope text CHECK (scope IN ('once', 'run', 'project')),
   decided_by text,
   decided_at timestamptz,
   created_at timestamptz NOT NULL DEFAULT CURRENT_TIMESTAMP
@@ -213,7 +213,7 @@ interface ApprovalRow extends Record<string, unknown> {
   reason: string;
   constraints: Record<string, JsonValue>;
   decision: "allow" | "deny" | null;
-  scope: "once" | "run" | null;
+  scope: ApprovalScope | null;
   decided_by: string | null;
   decided_at: string | Date | null;
 }

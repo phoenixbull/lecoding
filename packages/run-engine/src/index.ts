@@ -44,6 +44,7 @@ import {
   createInMemoryApprovalLedger,
   type ApprovalLedger
 } from "./postgres-approval-ledger.js";
+import type { ProjectPolicyRules } from "./postgres-project-policy-rules.js";
 
 export type { RetryPolicy, LeaseHeartbeat } from "@lecoding/contracts";
 export {
@@ -66,6 +67,23 @@ export {
   createInMemoryApprovalLedger,
   createPostgresApprovalLedger
 } from "./postgres-approval-ledger.js";
+export {
+  POLICY_REVIEW_AUDIT_SCHEMA_SQL,
+  createPostgresPolicyReviewAudit
+} from "./postgres-policy-review-audit.js";
+export type {
+  PolicyReviewAuditRecord,
+  PostgresPolicyReviewAudit
+} from "./postgres-policy-review-audit.js";
+export {
+  PROJECT_POLICY_RULES_SCHEMA_SQL,
+  createPostgresProjectPolicyRules
+} from "./postgres-project-policy-rules.js";
+export type {
+  ProjectPolicyRuleRecord,
+  ProjectPolicyRules,
+  SetProjectPolicyRuleInput
+} from "./postgres-project-policy-rules.js";
 export type {
   ApprovalAuditRecord,
   ApprovalCapabilityType,
@@ -228,6 +246,8 @@ export interface RunEngineDependencies {
   toolCalls?: ToolCallLedger;
   /** Approval audit ledger persisted outside model-controlled Run snapshots. */
   approvals?: ApprovalLedger;
+  /** Exact administrator project rules written by project-scoped decisions. */
+  projectRules?: Pick<ProjectPolicyRules, "set">;
   /** 原子保存 Run 状态和 RunEvent/outbox;生产 PostgreSQL 组合必须注入。 */
   transitions?: RunTransitionWriter;
   /** Cross-Worker mailbox that accepts steer without contending for the driver lease. */
@@ -756,6 +776,27 @@ class DefaultRunEngine implements RunEngine, RunResumer, DisposableEngine {
 
     const toolCall = stored.pendingToolCall;
     const approval = stored.pendingApproval;
+    if (command.scope === "project") {
+      if (!context?.canManageProjectRules || !this.dependencies.projectRules) {
+        throw new Error("Project-scoped approval requires a project administrator");
+      }
+      if (!approval.capabilityHash || !approval.capabilityType) {
+        throw new Error(`Approval cannot become a project rule: ${command.approvalId}`);
+      }
+      const capability = capabilityForTurn(toolCall);
+      if (hashCapability(capability) !== approval.capabilityHash) {
+        throw new Error(`Approval capability changed: ${command.approvalId}`);
+      }
+      await this.dependencies.projectRules.set({
+        projectId: stored.input.projectId,
+        capabilityType: approval.capabilityType,
+        capabilityHash: approval.capabilityHash,
+        constraints: approvalConstraints(capability, toolCall),
+        decision: command.type === "approve" ? "allow" : "deny",
+        createdBy: context.actorId,
+        sourceApprovalId: approval.id
+      });
+    }
     await this.approvals.decide({
       approvalId: approval.id,
       runId: stored.id,
@@ -763,7 +804,10 @@ class DefaultRunEngine implements RunEngine, RunResumer, DisposableEngine {
       scope: command.scope,
       decidedBy: context?.actorId ?? "system"
     });
-    if (command.type === "approve" && command.scope === "run") {
+    if (
+      command.type === "approve" &&
+      (command.scope === "run" || command.scope === "project")
+    ) {
       if (!approval.capabilityHash) {
         throw new Error(`Approval cannot be reused for this Run: ${command.approvalId}`);
       }
@@ -774,7 +818,10 @@ class DefaultRunEngine implements RunEngine, RunResumer, DisposableEngine {
         ])
       );
     }
-    if (command.type === "reject" && command.scope === "run") {
+    if (
+      command.type === "reject" &&
+      (command.scope === "run" || command.scope === "project")
+    ) {
       if (!approval.capabilityHash) {
         throw new Error(`Approval cannot be denied for this Run: ${command.approvalId}`);
       }
@@ -1088,7 +1135,15 @@ class DefaultRunEngine implements RunEngine, RunResumer, DisposableEngine {
         ...(stored.input.deniedCommands
           ? { deniedCommands: stored.input.deniedCommands }
           : {}),
-        capability
+        capability,
+        context: {
+          runId: stored.id,
+          projectId: stored.input.projectId,
+          toolCallId: turn.callId,
+          userTask: stored.input.task,
+          // Exact project rules resolve only against the canonical capability digest.
+          capabilityHash
+        }
       });
       // A Run grant can replace only an interactive ask; fixed deny is re-evaluated.
       const decision =
@@ -1131,8 +1186,9 @@ class DefaultRunEngine implements RunEngine, RunResumer, DisposableEngine {
           capabilityType: capability.type,
           capabilityHash,
           reason: decision.reason,
-          riskLevel: capabilityRiskLevel(capability),
-          allowedScopes: ["once", "run"]
+          riskLevel:
+            decision.review?.riskLevel ?? capabilityRiskLevel(capability),
+          allowedScopes: ["once", "run", "project"]
         };
         stored.pendingApproval = pendingApproval;
         await this.approvals.request({
@@ -1142,7 +1198,18 @@ class DefaultRunEngine implements RunEngine, RunResumer, DisposableEngine {
           capabilityType: capability.type,
           capabilityHash,
           reason: decision.reason,
-          constraints: approvalConstraints(capability, turn)
+          constraints: {
+            ...approvalConstraints(capability, turn),
+            ...(decision.review
+              ? {
+                  autoReview: {
+                    riskLevel: decision.review.riskLevel,
+                    ruleVersion: decision.review.ruleVersion,
+                    reviewerVersion: decision.review.reviewerVersion
+                  }
+                }
+              : {})
+          }
         });
         await this.transition(stored, "waiting_approval", token, [
           {

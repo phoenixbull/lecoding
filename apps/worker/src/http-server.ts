@@ -108,6 +108,9 @@ export async function startWorkerHttpServer(
     ...(options.control.memberships
       ? { memberships: options.control.memberships }
       : {}),
+    ...(options.control.projectPolicy
+      ? { projectPolicy: options.control.projectPolicy }
+      : {}),
     eventStream: options.control.eventStream,
     ...(options.onBackgroundError
       ? { onBackgroundError: options.onBackgroundError }

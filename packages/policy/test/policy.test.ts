@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { createPolicyEngine } from "../src/index.js";
 
 describe("PolicyEngine", () => {
@@ -118,5 +118,111 @@ describe("PolicyEngine", () => {
         });
       }
     }
+  });
+
+  it("uses an independent auto reviewer and audits its bounded allow decision", async () => {
+    const review = vi.fn(async () => ({
+      decision: "allow" as const,
+      riskLevel: "low" as const,
+      reason: "Exact read-only status command",
+      ruleVersion: "policy-v2",
+      reviewerVersion: "risk-reviewer-v1"
+    }));
+    const record = vi.fn(async () => undefined);
+    const policy = createPolicyEngine({ reviewer: { review }, audit: { record } });
+    const request = {
+      approvalMode: "auto_review" as const,
+      fileAccessScope: "workspace_only" as const,
+      capability: {
+        type: "command_exec" as const,
+        argv: ["git", "status"],
+        cwd: "/workspace"
+      },
+      context: {
+        runId: "run-1",
+        projectId: "project-1",
+        toolCallId: "call-1",
+        userTask: "Inspect repository status"
+      }
+    };
+
+    await expect(policy.authorize(request)).resolves.toEqual({
+      decision: "allow",
+      review: {
+        decision: "allow",
+        riskLevel: "low",
+        reason: "Exact read-only status command",
+        ruleVersion: "policy-v2",
+        reviewerVersion: "risk-reviewer-v1"
+      }
+    });
+    expect(review).toHaveBeenCalledWith(request);
+    expect(record).toHaveBeenCalledWith({ request, result: expect.any(Object) });
+  });
+
+  it("never invokes the auto reviewer for a fixed-deny capability", async () => {
+    const review = vi.fn();
+    const record = vi.fn();
+    const policy = createPolicyEngine({ reviewer: { review }, audit: { record } });
+
+    await expect(
+      policy.authorize({
+        approvalMode: "auto_review",
+        fileAccessScope: "workspace_only",
+        capability: {
+          type: "network_egress",
+          scheme: "https",
+          domain: "169.254.169.254",
+          port: 443
+        }
+      })
+    ).resolves.toMatchObject({ decision: "deny" });
+    expect(review).not.toHaveBeenCalled();
+    expect(record).not.toHaveBeenCalled();
+  });
+
+  it("applies exact project rules after fixed deny and before approval mode", async () => {
+    const resolve = vi.fn(async (input: { capabilityHash: string }) =>
+      input.capabilityHash === "allow-hash" ? ("allow" as const) : ("deny" as const)
+    );
+    const policy = createPolicyEngine({ projectRules: { resolve } });
+
+    await expect(
+      policy.authorize({
+        approvalMode: "manual",
+        fileAccessScope: "workspace_only",
+        capability: {
+          type: "network_egress",
+          scheme: "https",
+          domain: "registry.npmjs.org",
+          port: 443
+        },
+        context: {
+          runId: "run-1",
+          projectId: "project-1",
+          toolCallId: "call-allow",
+          userTask: "Install dependencies",
+          capabilityHash: "allow-hash"
+        }
+      })
+    ).resolves.toEqual({ decision: "allow", projectRule: "allow" });
+    await expect(
+      policy.authorize({
+        approvalMode: "full_access",
+        fileAccessScope: "workspace_only",
+        capability: { type: "command_exec", argv: ["pnpm", "test"], cwd: "." },
+        context: {
+          runId: "run-1",
+          projectId: "project-1",
+          toolCallId: "call-deny",
+          userTask: "Run tests",
+          capabilityHash: "deny-hash"
+        }
+      })
+    ).resolves.toEqual({
+      decision: "deny",
+      reason: "Project policy denies this exact capability",
+      projectRule: "deny"
+    });
   });
 });

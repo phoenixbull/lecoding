@@ -5,6 +5,7 @@ import {
   type ControlPlaneConfig,
   type ProjectId,
   type ProjectMembershipResult,
+  type ProjectPolicyRuleResult,
   type ProjectRole,
   type RunEventV1,
   type RunChanges,
@@ -30,6 +31,8 @@ export interface LeCodingClient {
     role: ProjectRole
   ): Promise<void>;
   removeProjectMembership(projectId: ProjectId, userId: string): Promise<void>;
+  listProjectPolicyRules(projectId: ProjectId): Promise<ProjectPolicyRuleResult>;
+  revokeProjectPolicyRule(projectId: ProjectId, ruleId: string): Promise<void>;
   getRunChanges(runId: RunId): Promise<RunChanges>;
   /** Keeps or discards the isolated worktree only after the Run reaches a terminal state. */
   resolveRunResult(runId: RunId, outcome: "keep" | "discard"): Promise<void>;
@@ -37,12 +40,12 @@ export interface LeCodingClient {
   approveRun(
     runId: RunId,
     approvalId: string,
-    scope?: "once" | "run"
+    scope?: "once" | "run" | "project"
   ): Promise<void>;
   rejectRun(
     runId: RunId,
     approvalId: string,
-    scope?: "once" | "run"
+    scope?: "once" | "run" | "project"
   ): Promise<void>;
   answerRun(
     runId: RunId,
@@ -263,6 +266,33 @@ export function createClient(options: ClientOptions): LeCodingClient {
       if (!response.ok) {
         throw new LeCodingHttpError(
           "Failed to remove project membership",
+          response.status
+        );
+      }
+    },
+
+    async listProjectPolicyRules(projectId): Promise<ProjectPolicyRuleResult> {
+      const response = await authenticatedFetch(
+        `${baseUrl}/api/v1/projects/${encodeURIComponent(projectId)}/policy-rules`,
+        { method: "GET", headers: { accept: "application/json" } }
+      );
+      if (!response.ok) {
+        throw new LeCodingHttpError(
+          "Failed to list project policy rules",
+          response.status
+        );
+      }
+      return (await response.json()) as ProjectPolicyRuleResult;
+    },
+
+    async revokeProjectPolicyRule(projectId, ruleId): Promise<void> {
+      const response = await authenticatedFetch(
+        `${baseUrl}/api/v1/projects/${encodeURIComponent(projectId)}/policy-rules/${encodeURIComponent(ruleId)}`,
+        { method: "DELETE" }
+      );
+      if (!response.ok) {
+        throw new LeCodingHttpError(
+          "Failed to revoke project policy rule",
           response.status
         );
       }

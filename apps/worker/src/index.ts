@@ -20,6 +20,8 @@ import {
   createPgBossRecoveryWorker,
   createPostgresRunCancelBus,
   createPostgresApprovalLedger,
+  createPostgresPolicyReviewAudit,
+  createPostgresProjectPolicyRules,
   createPostgresRunLease,
   createPostgresRunStore,
   createPostgresRunSteerMailbox,
@@ -61,7 +63,8 @@ import {
 import { createProductionPgBossRecoveryQueue } from "./pg-boss-recovery.js";
 import type {
   RunApiAccessControl,
-  RunApiMembershipAdministration
+  RunApiMembershipAdministration,
+  RunApiProjectPolicyAdministration
 } from "./api.js";
 import { createPostgresRunApiAccessControl } from "./postgres-access-control.js";
 import {
@@ -137,6 +140,7 @@ export interface WorkerControlPlane {
   results: RunResultManager;
   access: RunApiAccessControl;
   memberships?: RunApiMembershipAdministration;
+  projectPolicy?: RunApiProjectPolicyAdministration;
   login?: GitHubOAuthLogin & {
     revokeRequestSession(request: Request): Promise<void>;
   };
@@ -570,6 +574,14 @@ export async function composeProductionWorker(
       options.database.executor,
       { now }
     );
+    const policyReviewAudit = await createPostgresPolicyReviewAudit(
+      options.database.executor,
+      { now }
+    );
+    const projectRules = await createPostgresProjectPolicyRules(
+      options.database.executor,
+      { now }
+    );
     const steerMailbox = await createPostgresRunSteerMailbox({
       database: options.database.executor,
       now
@@ -618,6 +630,7 @@ export async function composeProductionWorker(
       transitions,
       toolCalls,
       approvals,
+      projectRules,
       steerMailbox,
       lease,
       heartbeat: createIntervalLeaseHeartbeat(lease),
@@ -630,7 +643,10 @@ export async function composeProductionWorker(
           ? { onMalformedJsonRetry: options.onModelRetry }
           : {})
       }),
-      policy: createPolicyEngine(),
+      policy: createPolicyEngine({
+        audit: policyReviewAudit,
+        projectRules
+      }),
       events,
       verifier,
       workerId: config.workerId,
@@ -705,6 +721,11 @@ export async function composeProductionWorker(
         },
         access,
         ...(memberships ? { memberships } : {}),
+        projectPolicy: {
+          list: (projectId) => projectRules.list(projectId),
+          revoke: (projectId, ruleId, revokedBy) =>
+            projectRules.revoke(projectId, ruleId, revokedBy)
+        },
         ...(login ? { login } : {}),
         eventStream: createRunEventSseHandler({
           journal: events,

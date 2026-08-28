@@ -293,8 +293,27 @@ input:focus {
 .run-overview,
 .evidence-panel,
 .history-panel,
+.policy-rules-panel,
 .changes-panel {
   padding: 25px;
+}
+
+.policy-rule-list {
+  display: grid;
+  gap: 8px;
+}
+
+.policy-rule-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 11px 12px;
+  border: 1px solid #27332e;
+  border-radius: 9px;
+  background: #0a0f0d;
+  color: #b8c8c0;
+  font-size: 12px;
 }
 
 .history-list {

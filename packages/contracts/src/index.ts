@@ -63,6 +63,31 @@ export interface ProjectMembershipResult {
   memberships: ProjectMembership[];
 }
 
+/** Immutable exact project policy rule visible only to project administrators. */
+export interface ProjectPolicyRule {
+  id: string;
+  projectId: ProjectId;
+  capabilityType:
+    | "command_exec"
+    | "network_egress"
+    | "sensitive_file_read"
+    | "protected_file_write"
+    | "model_upgrade";
+  capabilityHash: string;
+  constraints: { [key: string]: JsonValue };
+  decision: "allow" | "deny";
+  createdBy: string;
+  sourceApprovalId: string;
+  createdAt: string;
+  revokedAt?: string;
+  revokedBy?: string;
+}
+
+/** Complete version history for one authorized project's exact policy rules. */
+export interface ProjectPolicyRuleResult {
+  rules: ProjectPolicyRule[];
+}
+
 /** Non-secret bootstrap values required by the Web client. */
 export interface ControlPlaneConfig {
   /** Backward-compatible default project identity. */
@@ -142,8 +167,11 @@ export interface PendingApproval {
   /** Deterministic presentation severity assigned before user interaction. */
   riskLevel?: "low" | "medium" | "high";
   /** Maximum scopes the current normalized capability can safely reuse. */
-  allowedScopes?: Array<"once" | "run">;
+  allowedScopes?: ApprovalScope[];
 }
+
+/** Maximum persistence boundary for an approval decision. */
+export type ApprovalScope = "once" | "run" | "project";
 
 export type RunCommand =
   | { type: "cancel" }
@@ -152,12 +180,12 @@ export type RunCommand =
   | {
       type: "reject";
       approvalId: string;
-      scope: "once" | "run";
+      scope: ApprovalScope;
     }
   | {
       type: "approve";
       approvalId: string;
-      scope: "once" | "run";
+      scope: ApprovalScope;
     }
   /**
    * Worker 主动放弃当前环境:把 Run 转为 environment_offline,释放本地句柄,
@@ -168,6 +196,8 @@ export type RunCommand =
 /** Trusted caller context supplied by the authenticated control-plane adapter. */
 export interface RunCommandContext {
   actorId: string;
+  /** Set only by an API authorization check for a current project admin. */
+  canManageProjectRules?: boolean;
 }
 
 export interface RunEngine {

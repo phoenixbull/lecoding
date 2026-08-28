@@ -1,6 +1,7 @@
 import { createClient, LeCodingHttpError } from "@lecoding/client-sdk";
 import type {
   ControlPlaneConfig,
+  ProjectPolicyRule,
   RunChanges,
   RunEventV1,
   RunSummary,
@@ -12,6 +13,7 @@ import {
   canResolveRunResult,
   formatApprovalDetails,
   formatEventTitle,
+  formatProjectPolicyRule,
   formatRunEventDetail,
   isTerminalStatus,
   isTerminalRunEvent,
@@ -56,6 +58,8 @@ const emptyVerification = requiredElement<HTMLElement>("#verification-empty");
 const errorBanner = requiredElement<HTMLElement>("#error-banner");
 const environmentInput = requiredElement<HTMLInputElement>("#environment-id");
 const runHistory = requiredElement<HTMLElement>("#run-history");
+const policyRulesPanel = requiredElement<HTMLElement>("#policy-rules-panel");
+const policyRules = requiredElement<HTMLElement>("#policy-rules");
 const changedCount = requiredElement<HTMLElement>("#changed-count");
 const changesState = requiredElement<HTMLElement>("#changes-state");
 const changedFiles = requiredElement<HTMLElement>("#changed-files");
@@ -162,6 +166,17 @@ projectValue.addEventListener("change", () => {
   void loadHistory(true).catch(() => {
     showError("所选项目的 Run 历史暂时不可用；仍可创建新的 Run。");
   });
+  void loadProjectPolicyRules();
+});
+
+policyRules.addEventListener("click", (event) => {
+  if (!(event.target instanceof Element)) {
+    return;
+  }
+  const button = event.target.closest<HTMLButtonElement>("button[data-rule-id]");
+  if (button?.dataset.ruleId) {
+    void revokeProjectPolicyRule(button.dataset.ruleId);
+  }
 });
 
 async function initialize(): Promise<void> {
@@ -192,6 +207,67 @@ async function initialize(): Promise<void> {
     await loadHistory(true);
   } catch {
     showError("Run 历史暂时不可用；仍可创建新的 Run。");
+  }
+  await loadProjectPolicyRules();
+}
+
+async function loadProjectPolicyRules(): Promise<void> {
+  if (!selectedProjectId) {
+    policyRulesPanel.hidden = true;
+    return;
+  }
+  try {
+    const result = await client.listProjectPolicyRules(selectedProjectId);
+    renderProjectPolicyRules(result.rules);
+    policyRulesPanel.hidden = false;
+  } catch (error) {
+    // The API deliberately returns 404 to hide this admin-only surface.
+    if (error instanceof LeCodingHttpError && error.status === 404) {
+      policyRulesPanel.hidden = true;
+      policyRules.replaceChildren();
+      return;
+    }
+    policyRulesPanel.hidden = false;
+    policyRules.textContent = "项目审批规则暂时不可用。";
+  }
+}
+
+function renderProjectPolicyRules(rules: ProjectPolicyRule[]): void {
+  const activeRules = rules.filter((rule) => rule.revokedAt === undefined);
+  if (activeRules.length === 0) {
+    const empty = document.createElement("p");
+    empty.className = "empty-state";
+    empty.textContent = "当前没有生效中的项目规则。";
+    policyRules.replaceChildren(empty);
+    return;
+  }
+  policyRules.replaceChildren(
+    ...activeRules.map((rule) => {
+      const details = formatProjectPolicyRule(rule);
+      const row = document.createElement("div");
+      row.className = "policy-rule-row";
+      const summary = document.createElement("span");
+      summary.textContent = `${details.capability} · ${details.decision} · ${details.fingerprint}`;
+      const revoke = document.createElement("button");
+      revoke.type = "button";
+      revoke.className = "secondary-button compact";
+      revoke.dataset.ruleId = details.id;
+      revoke.textContent = "撤销";
+      row.replaceChildren(summary, revoke);
+      return row;
+    })
+  );
+}
+
+async function revokeProjectPolicyRule(ruleId: string): Promise<void> {
+  if (!selectedProjectId) {
+    return;
+  }
+  try {
+    await client.revokeProjectPolicyRule(selectedProjectId, ruleId);
+    await loadProjectPolicyRules();
+  } catch {
+    showError("项目审批规则撤销失败，请刷新后重试。");
   }
 }
 
@@ -257,6 +333,8 @@ function clearProjectView(changesMessage = "选择 Run 后显示其受管工作�
   historyPlaceholder.className = "empty-state";
   historyPlaceholder.textContent = "正在加载最近 Run…";
   runHistory.append(historyPlaceholder);
+  policyRules.replaceChildren();
+  policyRulesPanel.hidden = true;
   verification.replaceChildren();
   verification.append(emptyVerification);
   emptyVerification.hidden = false;
@@ -694,7 +772,12 @@ async function resolveCurrentApproval(
   if (!run || !approval || approvalCommandPending) {
     return;
   }
-  const scope = approvalScope.value === "run" ? "run" : "once";
+  const scope =
+    approvalScope.value === "project"
+      ? "project"
+      : approvalScope.value === "run"
+        ? "run"
+        : "once";
   hideError();
   approvalCommandPending = true;
   renderApproval(run);

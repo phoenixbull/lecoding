@@ -163,6 +163,47 @@ describe("LeCodingClient", () => {
     ]);
   });
 
+  it("lists and revokes exact project policy rules through admin endpoints", async () => {
+    const requests: Array<{ url: string; method: string }> = [];
+    const fetch: typeof globalThis.fetch = async (input, init) => {
+      requests.push({ url: String(input), method: init?.method ?? "GET" });
+      return init?.method === "DELETE"
+        ? new Response(null, { status: 204 })
+        : Response.json({
+            rules: [
+              {
+                id: "rule-1",
+                projectId: "project-1",
+                capabilityType: "network_egress",
+                capabilityHash: "a".repeat(64),
+                constraints: { host: "registry.npmjs.org", port: 443 },
+                decision: "allow",
+                createdBy: "user-admin",
+                sourceApprovalId: "approval-1",
+                createdAt: "2026-08-28T00:00:00.000Z"
+              }
+            ]
+          });
+    };
+    const client = createClient({ baseUrl: "https://agent.example", fetch });
+
+    await expect(client.listProjectPolicyRules("project/1")).resolves.toMatchObject({
+      rules: [{ id: "rule-1", decision: "allow" }]
+    });
+    await client.revokeProjectPolicyRule("project/1", "rule/1");
+
+    expect(requests).toEqual([
+      {
+        url: "https://agent.example/api/v1/projects/project%2F1/policy-rules",
+        method: "GET"
+      },
+      {
+        url: "https://agent.example/api/v1/projects/project%2F1/policy-rules/rule%2F1",
+        method: "DELETE"
+      }
+    ]);
+  });
+
   it("loads a bounded Git change projection for a Run", async () => {
     const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(
       Response.json({

@@ -1,11 +1,35 @@
 import type {
   ControlPlaneConfig,
   PendingApproval,
+  ProjectPolicyRule,
   RunEventV1,
   RunEventType,
   RunStatus,
   VerificationOutcome
 } from "@lecoding/contracts";
+
+/** Minimal inert project-rule projection used by the administrator settings UI. */
+export interface ProjectPolicyRuleDetails {
+  id: string;
+  capability: string;
+  decision: string;
+  fingerprint: string;
+  active: boolean;
+}
+
+/** Formats only policy-owned fields; arbitrary stored constraints stay out of the DOM. */
+export function formatProjectPolicyRule(
+  rule: ProjectPolicyRule
+): ProjectPolicyRuleDetails {
+  return {
+    id: rule.id,
+    capability:
+      rule.capabilityType === "network_egress" ? "网络访问" : "受控命令",
+    decision: rule.decision === "allow" ? "允许" : "拒绝",
+    fingerprint: rule.capabilityHash.slice(0, 12),
+    active: rule.revokedAt === undefined
+  };
+}
 
 /** Safe approval-card projection rendered without reflecting arbitrary constraints. */
 export interface ApprovalDetails {
@@ -13,7 +37,10 @@ export interface ApprovalDetails {
   risk: string;
   reason: string;
   target: string;
-  allowedScopes: Array<{ value: "once" | "run"; label: string }>;
+  allowedScopes: Array<{
+    value: "once" | "run" | "project";
+    label: string;
+  }>;
 }
 
 /** Formats bounded, policy-owned approval metadata for the interactive card. */
@@ -37,9 +64,13 @@ export function formatApprovalDetails(
       label:
         value === "once"
           ? "仅本次调用"
-          : network
-            ? "本 Run 内相同端点"
-            : "本 Run 内相同能力"
+          : value === "run"
+            ? network
+              ? "本 Run 内相同端点"
+              : "本 Run 内相同能力"
+            : network
+              ? "项目内相同端点（管理员）"
+              : "项目内相同能力（管理员）"
     }))
   };
 }

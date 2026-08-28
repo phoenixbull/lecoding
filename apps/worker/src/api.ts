@@ -7,7 +7,10 @@ import type {
   RunId,
   RunResumer
 } from "@lecoding/contracts";
-import type { RunHistory } from "@lecoding/run-engine";
+import type {
+  ProjectPolicyRuleRecord,
+  RunHistory
+} from "@lecoding/run-engine";
 import type { RunEventSseHandler } from "@lecoding/run-events";
 import type { RunChangesReader, RunResultManager } from "@lecoding/workspace";
 
@@ -57,6 +60,12 @@ export interface RunApiMembershipAdministration {
   remove(projectId: string, userId: string): Promise<void>;
 }
 
+/** Administrator-only project rule projection and revocation seam. */
+export interface RunApiProjectPolicyAdministration {
+  list(projectId: string): Promise<ProjectPolicyRuleRecord[]>;
+  revoke(projectId: string, ruleId: string, revokedBy: string): Promise<void>;
+}
+
 /** RunEngine surface consumed by the single-user HTTP control plane. */
 export type RunApiOperations = Pick<
   RunEngine,
@@ -75,6 +84,7 @@ export interface RunApiHandlerOptions {
   results: RunResultManager;
   access: RunApiAccessControl;
   memberships?: RunApiMembershipAdministration;
+  projectPolicy?: RunApiProjectPolicyAdministration;
   eventStream: RunEventSseHandler;
   /** Observes detached resume failures without exposing them to HTTP clients. */
   onBackgroundError?: (error: unknown) => void;
@@ -172,6 +182,41 @@ export function createRunApiHandler(
         }
         await options.memberships.remove(projectId, userId);
         return new Response(null, { status: 204 });
+      }
+      const policyRuleCollectionMatch = path.match(
+        /^\/api\/v1\/projects\/([^/]+)\/policy-rules$/
+      );
+      if (request.method === "GET" && policyRuleCollectionMatch) {
+        const projectId = decodePathSegment(policyRuleCollectionMatch[1]!);
+        if (
+          !options.projectPolicy ||
+          !projectIds.has(projectId) ||
+          !(await hasProjectRole(options, principal, projectId, "admin"))
+        ) {
+          // Hide the existence of policy configuration from non-administrators.
+          return errorResponse(404, "project_not_found", "Project was not found");
+        }
+        return jsonResponse({ rules: await options.projectPolicy.list(projectId) });
+      }
+      const policyRuleMatch = path.match(
+        /^\/api\/v1\/projects\/([^/]+)\/policy-rules\/([^/]+)$/
+      );
+      if (request.method === "DELETE" && policyRuleMatch) {
+        const projectId = decodePathSegment(policyRuleMatch[1]!);
+        const ruleId = decodePathSegment(policyRuleMatch[2]!);
+        if (
+          !options.projectPolicy ||
+          !projectIds.has(projectId) ||
+          !(await hasProjectRole(options, principal, projectId, "admin"))
+        ) {
+          return errorResponse(404, "project_not_found", "Project was not found");
+        }
+        try {
+          await options.projectPolicy.revoke(projectId, ruleId, principal.userId);
+          return new Response(null, { status: 204 });
+        } catch {
+          return errorResponse(404, "policy_rule_not_found", "Policy rule was not found");
+        }
       }
       const createMatch = path.match(/^\/api\/v1\/projects\/([^/]+)\/runs$/);
       if (request.method === "GET" && createMatch) {
@@ -305,18 +350,37 @@ export function createRunApiHandler(
       const commandMatch = path.match(/^\/api\/v1\/runs\/([^/]+)\/commands$/);
       if (request.method === "POST" && commandMatch) {
         let runId: RunId;
+        let run: Awaited<ReturnType<typeof inspectProjectRun>>;
         try {
           runId = decodePathSegment(commandMatch[1]!) as RunId;
-          await inspectProjectRun(options, principal, runId, "developer");
+          run = await inspectProjectRun(options, principal, runId, "developer");
         } catch {
           return errorResponse(404, "run_not_found", "Run was not found");
         }
         try {
           const command = parseMinimalRunCommand(await readJsonBody(request));
           if (command.type === "approve" || command.type === "reject") {
-            await options.runs.command(runId, command, {
-              actorId: principal.userId
-            });
+            const role = await options.access.roleFor(
+              principal.userId,
+              run.projectId
+            );
+            if (command.scope === "project" && role !== "admin") {
+              return errorResponse(
+                403,
+                "project_rule_forbidden",
+                "Project policy rules require an administrator"
+              );
+            }
+            await options.runs.command(
+              runId,
+              command,
+              command.scope === "project"
+                ? {
+                    actorId: principal.userId,
+                    canManageProjectRules: true
+                  }
+                : { actorId: principal.userId }
+            );
           } else {
             await options.runs.command(runId, command);
           }
@@ -338,12 +402,25 @@ async function inspectProjectRun(
   minimumRole: RunApiProjectRole
 ) {
   const run = await options.runs.inspect(runId);
-  if (
-    !options.projectIds.includes(run.projectId) ||
-    !(await hasProjectRole(options, principal, run.projectId, minimumRole))
-  ) {
+  const role = options.projectIds.includes(run.projectId)
+    ? await options.access.roleFor(principal.userId, run.projectId)
+    : undefined;
+  if (role === undefined || roleRank(role) < roleRank(minimumRole)) {
     // Return the same not-found surface so cross-project identities are not disclosed.
     throw new Error("Run is outside the registered project");
+  }
+  if (role !== "admin" && run.pendingApproval?.allowedScopes?.includes("project")) {
+    // The response itself is an authorization surface: do not offer an action
+    // that the authenticated caller cannot perform.
+    return {
+      ...run,
+      pendingApproval: {
+        ...run.pendingApproval,
+        allowedScopes: run.pendingApproval.allowedScopes.filter(
+          (scope) => scope !== "project"
+        )
+      }
+    };
   }
   return run;
 }
@@ -458,7 +535,9 @@ function parseMinimalRunCommand(value: unknown): RunCommand {
     (value.type === "approve" || value.type === "reject") &&
     typeof value.approvalId === "string" &&
     value.approvalId.trim() !== "" &&
-    (value.scope === "once" || value.scope === "run")
+    (value.scope === "once" ||
+      value.scope === "run" ||
+      value.scope === "project")
   ) {
     // The engine binds Run scope to the pending normalized capability fingerprint.
     return {

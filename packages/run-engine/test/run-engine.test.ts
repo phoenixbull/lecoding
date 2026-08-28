@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import type {
   EnvironmentHandle,
   EnvironmentReport,
@@ -310,6 +310,103 @@ describe("RunEngine", () => {
       (event) => event.type === "approval_requested"
     );
     expect(approvalEvents).toHaveLength(1);
+  });
+
+  it("persists an admin project approval and reuses it for the current Run", async () => {
+    const projectRules = {
+      set: vi.fn(async () => "rule-1")
+    };
+    const harness = await createTestHarness({
+      expectedChangedFile: "src/generated.ts",
+      projectRules,
+      modelTurns: [
+        {
+          type: "tool_call",
+          callId: "project-rule-first",
+          tool: "execute_command",
+          arguments: { argv: ["pnpm", "test"] }
+        },
+        {
+          type: "tool_call",
+          callId: "project-rule-second",
+          tool: "execute_command",
+          arguments: { argv: ["pnpm", "test"] }
+        },
+        { type: "completed", summary: "Used the exact project rule" }
+      ]
+    });
+    const runId = await harness.engine.start({
+      projectId: "project-1",
+      environmentId: "environment-1",
+      task: "Persist an exact project capability",
+      acceptanceCriteria: ["src/generated.ts exists"],
+      approvalMode: "manual",
+      fileAccessScope: "workspace_only"
+    });
+
+    await harness.engine.resume(runId);
+    await harness.engine.command(
+      runId,
+      {
+        type: "approve",
+        approvalId: "approval-project-rule-first",
+        scope: "project"
+      },
+      { actorId: "github_42", canManageProjectRules: true }
+    );
+
+    await expect(harness.engine.inspect(runId)).resolves.toMatchObject({
+      status: "succeeded"
+    });
+    expect(projectRules.set).toHaveBeenCalledWith({
+      projectId: "project-1",
+      capabilityType: "command_exec",
+      capabilityHash: expect.stringMatching(/^[a-f0-9]{64}$/u),
+      constraints: {
+        argv: ["pnpm", "test"],
+        cwd: ".",
+        shellMode: "direct"
+      },
+      decision: "allow",
+      createdBy: "github_42",
+      sourceApprovalId: "approval-project-rule-first"
+    });
+  });
+
+  it("passes the exact capability fingerprint to project policy resolution", async () => {
+    const authorize = vi.fn(async () => ({ decision: "allow" as const }));
+    const harness = await createTestHarness({
+      policy: { authorize },
+      modelTurns: [
+        {
+          type: "tool_call",
+          callId: "project-rule-lookup",
+          tool: "execute_command",
+          arguments: { argv: ["pnpm", "test"] }
+        },
+        { type: "completed", summary: "Project rule resolved" }
+      ]
+    });
+    const runId = await harness.engine.start({
+      projectId: "project-1",
+      environmentId: "environment-1",
+      task: "Use an existing exact project rule",
+      acceptanceCriteria: ["The command runs"],
+      approvalMode: "manual",
+      fileAccessScope: "workspace_only"
+    });
+
+    await harness.engine.resume(runId);
+
+    expect(authorize).toHaveBeenCalledWith(
+      expect.objectContaining({
+        context: expect.objectContaining({
+          projectId: "project-1",
+          toolCallId: "project-rule-lookup",
+          capabilityHash: expect.stringMatching(/^[a-f0-9]{64}$/u)
+        })
+      })
+    );
   });
 
   it("rejects a pending tool call without executing it", async () => {

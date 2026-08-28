@@ -8,7 +8,8 @@ import {
 import {
   createRunApiHandler,
   type RunApiAccessControl,
-  type RunApiMembershipAdministration
+  type RunApiMembershipAdministration,
+  type RunApiProjectPolicyAdministration
 } from "../src/api.js";
 
 describe("createRunApiHandler", () => {
@@ -319,6 +320,105 @@ describe("createRunApiHandler", () => {
     expect(runs.command).toHaveBeenCalledWith("run-1", { type: "cancel" });
   });
 
+  it("does not advertise administrator project scope to a developer", async () => {
+    const runs = createRuns([]);
+    runs.inspect.mockResolvedValue({
+      id: "run-1",
+      projectId: "project-1",
+      environmentId: "server-docker",
+      task: "Review dependency",
+      status: "waiting_approval",
+      pendingApproval: {
+        id: "approval-1",
+        callId: "call-1",
+        summary: "Connect to https://registry.npmjs.org:443",
+        allowedScopes: ["once", "run", "project"]
+      }
+    });
+    const access: RunApiAccessControl = {
+      authenticate: vi.fn(async () => ({ userId: "user-developer" })),
+      roleFor: vi.fn(async () => "developer" as const)
+    };
+
+    const response = await createHandler(
+      runs,
+      undefined,
+      undefined,
+      undefined,
+      access
+    ).handle(new Request("http://127.0.0.1:8787/api/v1/runs/run-1"));
+
+    await expect(response.json()).resolves.toMatchObject({
+      pendingApproval: { allowedScopes: ["once", "run"] }
+    });
+  });
+
+  it("lets only administrators list and revoke project policy rules", async () => {
+    const rules: RunApiProjectPolicyAdministration = {
+      list: vi.fn(async () => [
+        {
+          id: "rule-1",
+          projectId: "project-1",
+          capabilityType: "network_egress" as const,
+          capabilityHash: "a".repeat(64),
+          constraints: { host: "registry.npmjs.org", port: 443 },
+          decision: "allow" as const,
+          createdBy: "user-admin",
+          sourceApprovalId: "approval-1",
+          createdAt: "2026-08-28T00:00:00.000Z"
+        }
+      ]),
+      revoke: vi.fn(async () => undefined)
+    };
+    const handler = createHandler(
+      createRuns([]),
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      rules
+    );
+
+    const listed = await handler.handle(
+      new Request("http://127.0.0.1:8787/api/v1/projects/project-1/policy-rules")
+    );
+    const revoked = await handler.handle(
+      new Request(
+        "http://127.0.0.1:8787/api/v1/projects/project-1/policy-rules/rule-1",
+        { method: "DELETE" }
+      )
+    );
+    const developerHandler = createHandler(
+      createRuns([]),
+      undefined,
+      undefined,
+      undefined,
+      {
+        authenticate: vi.fn(async () => ({ userId: "user-developer" })),
+        roleFor: vi.fn(async () => "developer" as const)
+      },
+      undefined,
+      rules
+    );
+    const hiddenFromDeveloper = await developerHandler.handle(
+      new Request("http://127.0.0.1:8787/api/v1/projects/project-1/policy-rules")
+    );
+
+    expect(listed.status).toBe(200);
+    await expect(listed.json()).resolves.toMatchObject({
+      rules: [{ id: "rule-1", decision: "allow" }]
+    });
+    expect(revoked.status).toBe(204);
+    expect(hiddenFromDeveloper.status).toBe(404);
+    expect(rules.list).toHaveBeenCalledWith("project-1");
+    expect(rules.revoke).toHaveBeenCalledWith(
+      "project-1",
+      "rule-1",
+      "local-user"
+    );
+  });
+
   it("returns bounded changes only after project ownership is verified", async () => {
     const runs = createRuns([]);
     const changes = {
@@ -409,9 +509,41 @@ describe("createRunApiHandler", () => {
       approvalId: "approval-1",
       scope: "run"
     });
+    const projectScope = await command({
+      type: "reject",
+      approvalId: "approval-3",
+      scope: "project"
+    });
+    const developerHandler = createHandler(
+      createRuns([]),
+      undefined,
+      undefined,
+      undefined,
+      {
+        authenticate: vi.fn(async () => ({ userId: "developer-user" })),
+        roleFor: vi.fn(async () => "developer" as const)
+      }
+    );
+    const forbiddenProjectScope = await developerHandler.handle(
+      new Request("http://127.0.0.1:8787/api/v1/runs/run-1/commands", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          type: "approve",
+          approvalId: "approval-4",
+          scope: "project"
+        })
+      })
+    );
 
-    expect([approved.status, rejected.status, broadScope.status]).toEqual([
-      202, 202, 202
+    expect([
+      approved.status,
+      rejected.status,
+      broadScope.status,
+      projectScope.status,
+      forbiddenProjectScope.status
+    ]).toEqual([
+      202, 202, 202, 202, 403
     ]);
     expect(runs.command).toHaveBeenNthCalledWith(1, "run-1", {
       type: "approve",
@@ -428,6 +560,11 @@ describe("createRunApiHandler", () => {
       approvalId: "approval-1",
       scope: "run"
     }, { actorId: "local-user" });
+    expect(runs.command).toHaveBeenNthCalledWith(4, "run-1", {
+      type: "reject",
+      approvalId: "approval-3",
+      scope: "project"
+    }, { actorId: "local-user", canManageProjectRules: true });
   });
 
   it("accepts strict user answers and waiting-turn steering", async () => {
@@ -601,7 +738,8 @@ function createHandler(
     authenticate: vi.fn(async () => ({ userId: "local-user" })),
     roleFor: vi.fn(async () => "admin" as const)
   },
-  memberships?: RunApiMembershipAdministration
+  memberships?: RunApiMembershipAdministration,
+  projectPolicy?: RunApiProjectPolicyAdministration
 ) {
   return createRunApiHandler({
     defaultProjectId: "project-1",
@@ -612,6 +750,7 @@ function createHandler(
     results,
     access,
     ...(memberships ? { memberships } : {}),
+    ...(projectPolicy ? { projectPolicy } : {}),
     eventStream: {
       handle: vi.fn(async () => new Response("", { status: 200 }))
     }

@@ -5,6 +5,7 @@ import {
   canResolveRunResult,
   formatEventTitle,
   formatApprovalDetails,
+  formatProjectPolicyRule,
   formatRunEventDetail,
   isTerminalStatus,
   isTerminalRunEvent,
@@ -136,6 +137,28 @@ describe("Web Run presentation", () => {
         { value: "once", label: "仅本次调用" },
         { value: "run", label: "本 Run 内相同端点" }
       ]
+    });
+  });
+
+  it("presents an active project rule without exposing raw constraints", () => {
+    expect(
+      formatProjectPolicyRule({
+        id: "rule-1",
+        projectId: "project-1",
+        capabilityType: "network_egress",
+        capabilityHash: "a".repeat(64),
+        constraints: { host: "registry.npmjs.org", secret: "must-not-render" },
+        decision: "allow",
+        createdBy: "user-admin",
+        sourceApprovalId: "approval-1",
+        createdAt: "2026-08-28T00:00:00.000Z"
+      })
+    ).toEqual({
+      id: "rule-1",
+      capability: "网络访问",
+      decision: "允许",
+      fingerprint: "aaaaaaaaaaaa",
+      active: true
     });
   });
 });

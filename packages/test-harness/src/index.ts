@@ -26,11 +26,12 @@ import {
   type RetryPolicy,
   type RunStore,
   type ToolCallLedger,
+  type ProjectPolicyRules,
   type RunTransitionWriter,
   type RunCancelBus
 } from "@lecoding/run-engine";
 import type { RunEnvironment } from "@lecoding/run-environment";
-import { createPolicyEngine } from "@lecoding/policy";
+import { createPolicyEngine, type PolicyEngine } from "@lecoding/policy";
 import {
   createInMemoryRunEventJournal,
   type RunEventJournal
@@ -75,6 +76,10 @@ export async function createTestHarness(options: {
   toolCalls?: ToolCallLedger;
   /** 注入审批审计账本；跨 Worker 测试可共享 PostgreSQL 实现。 */
   approvals?: ApprovalLedger;
+  /** 注入项目级精确规则写入 seam。 */
+  projectRules?: Pick<ProjectPolicyRules, "set">;
+  /** 注入策略以验证 RunEngine 传递的规范化授权上下文。 */
+  policy?: PolicyEngine;
   /** 注入状态 + 事件原子 writer;提供时替代 legacy 两步发布路径。 */
   transitions?: RunTransitionWriter;
 }): Promise<TestHarness> {
@@ -103,13 +108,16 @@ export async function createTestHarness(options: {
         ],
         options.modelError
       ),
-    policy: createPolicyEngine(),
+    policy: options.policy ?? createPolicyEngine(),
     events,
     verifier,
     handles: createInMemoryRunHandleRegistry(),
     lease,
     ...(options.toolCalls !== undefined ? { toolCalls: options.toolCalls } : {}),
     ...(options.approvals !== undefined ? { approvals: options.approvals } : {}),
+    ...(options.projectRules !== undefined
+      ? { projectRules: options.projectRules }
+      : {}),
     ...(options.transitions !== undefined
       ? { transitions: options.transitions }
       : {}),
