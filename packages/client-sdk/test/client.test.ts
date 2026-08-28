@@ -55,6 +55,22 @@ describe("LeCodingClient", () => {
     expect(String(failure)).not.toContain("proxy detail");
   });
 
+  it("owns the GitHub login URL and cookie-session logout endpoint", async () => {
+    const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(
+      new Response(null, { status: 204 })
+    );
+    const client = createClient({ baseUrl: "https://agent.example/", fetch });
+
+    expect(client.getGitHubLoginUrl()).toBe(
+      "https://agent.example/api/v1/auth/github/start"
+    );
+    await expect(client.logout()).resolves.toBeUndefined();
+    expect(fetch).toHaveBeenCalledWith(
+      "https://agent.example/api/v1/auth/logout",
+      expect.objectContaining({ method: "POST" })
+    );
+  });
+
   it("inspects a run through the versioned public endpoint", async () => {
     const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(
       new Response(
@@ -104,6 +120,47 @@ describe("LeCodingClient", () => {
       "https://agent.example/api/v1/projects/project-1/runs?limit=20",
       expect.objectContaining({ method: "GET" })
     );
+  });
+
+  it("manages project memberships through admin-only versioned endpoints", async () => {
+    const requests: Array<{ url: string; method: string; body: unknown }> = [];
+    const fetch: typeof globalThis.fetch = async (input, init) => {
+      requests.push({
+        url: String(input),
+        method: init?.method ?? "GET",
+        body: init?.body ? JSON.parse(String(init.body)) : undefined
+      });
+      return init?.method === "GET" || init?.method === undefined
+        ? Response.json({
+            memberships: [{ userId: "user-alice", role: "developer" }]
+          })
+        : new Response(null, { status: 204 });
+    };
+    const client = createClient({ baseUrl: "https://agent.example", fetch });
+
+    await expect(client.listProjectMemberships("project/1")).resolves.toEqual({
+      memberships: [{ userId: "user-alice", role: "developer" }]
+    });
+    await client.setProjectMembership("project/1", "user/alice", "admin");
+    await client.removeProjectMembership("project/1", "user/alice");
+
+    expect(requests).toEqual([
+      {
+        url: "https://agent.example/api/v1/projects/project%2F1/memberships",
+        method: "GET",
+        body: undefined
+      },
+      {
+        url: "https://agent.example/api/v1/projects/project%2F1/memberships/user%2Falice",
+        method: "PUT",
+        body: { role: "admin" }
+      },
+      {
+        url: "https://agent.example/api/v1/projects/project%2F1/memberships/user%2Falice",
+        method: "DELETE",
+        body: undefined
+      }
+    ]);
   });
 
   it("loads a bounded Git change projection for a Run", async () => {

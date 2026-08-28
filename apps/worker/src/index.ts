@@ -58,6 +58,16 @@ import {
   type RunResultManager
 } from "@lecoding/workspace";
 import { createProductionPgBossRecoveryQueue } from "./pg-boss-recovery.js";
+import type {
+  RunApiAccessControl,
+  RunApiMembershipAdministration
+} from "./api.js";
+import { createPostgresRunApiAccessControl } from "./postgres-access-control.js";
+import {
+  createGitHubOAuthLogin,
+  loadGitHubOAuthConfig,
+  type GitHubOAuthLogin
+} from "./github-oauth.js";
 
 /** Durable PostgreSQL resources supplied by the deployment-specific adapter. */
 export interface WorkerDatabase {
@@ -124,6 +134,11 @@ export interface WorkerControlPlane {
   history: RunHistory;
   changes: RunChangesReader;
   results: RunResultManager;
+  access: RunApiAccessControl;
+  memberships?: RunApiMembershipAdministration;
+  login?: GitHubOAuthLogin & {
+    revokeRequestSession(request: Request): Promise<void>;
+  };
   eventStream: RunEventSseHandler;
 }
 
@@ -365,11 +380,34 @@ export type {
   WorkerProcessSignals
 } from "./worker-host.js";
 export { createRunApiHandler } from "./api.js";
+export { createPostgresRunApiAccessControl } from "./postgres-access-control.js";
+export { createGitHubOAuthLogin, loadGitHubOAuthConfig } from "./github-oauth.js";
 export type {
+  RunApiAccessControl,
   RunApiHandler,
   RunApiHandlerOptions,
-  RunApiOperations
+  RunApiMembershipAdministration,
+  RunApiOperations,
+  RunApiPrincipal,
+  RunApiProjectMembership,
+  RunApiProjectRole
 } from "./api.js";
+export type {
+  IssueSessionInput,
+  IssuedSession,
+  PostgresRunApiAccessControl,
+  PostgresRunApiAccessControlOptions,
+  ProvisionProjectInput,
+  ProvisionUserInput,
+  SetProjectMembershipInput
+} from "./postgres-access-control.js";
+export type {
+  CompleteGitHubOAuthInput,
+  GitHubOAuthConfig,
+  GitHubOAuthLogin,
+  GitHubOAuthLoginOptions,
+  GitHubOAuthStateStore
+} from "./github-oauth.js";
 export {
   loadWorkerHttpConfig,
   startWorkerHttpServer
@@ -391,10 +429,75 @@ export async function composeProductionWorker(
 ): Promise<WorkerRuntime> {
   try {
     const config = loadWorkerConfig(options.environment);
+    const authMode = options.environment.LECODING_AUTH_MODE?.trim();
+    if (authMode && authMode !== "database_sessions") {
+      // Composition must fail closed even when used without the HTTP host loader.
+      throw new Error("LECODING_AUTH_MODE must be database_sessions when set");
+    }
     const projects = await loadWorkerProjectRegistry(options.environment);
     const projectById = new Map(
       projects.map((project) => [project.projectId, project] as const)
     );
+    let access: RunApiAccessControl;
+    let memberships: RunApiMembershipAdministration | undefined;
+    let login: WorkerControlPlane["login"];
+    if (authMode === "database_sessions") {
+      const persistentAccess = await createPostgresRunApiAccessControl(
+        options.database.executor,
+        options.now ? { now: options.now } : {}
+      );
+      for (const project of projects) {
+        // Registry ownership is established before memberships can reference a project.
+        await persistentAccess.provisionProject({
+          id: project.projectId,
+          name: project.projectId,
+          repository: project.projectSourcePath,
+          defaultBranch: "HEAD"
+        });
+      }
+      const oauthConfig = loadGitHubOAuthConfig(options.environment);
+      const bootstrapAdminEmails = new Set(oauthConfig.bootstrapAdminEmails);
+      const oauth = createGitHubOAuthLogin({
+        ...oauthConfig,
+        stateStore: persistentAccess,
+        sessions: persistentAccess,
+        async onProvisionedUser(identity) {
+          if (!bootstrapAdminEmails.has(identity.email.toLowerCase())) {
+            return;
+          }
+          for (const project of projects) {
+            // The configured bootstrap identity can claim each project only once.
+            await persistentAccess.bootstrapProjectAdmin(
+              project.projectId,
+              identity.userId
+            );
+          }
+        },
+        ...(options.now ? { now: options.now } : {})
+      });
+      login = {
+        ...oauth,
+        revokeRequestSession: (request) =>
+          persistentAccess.revokeRequestSession(request)
+      };
+      memberships = {
+        list: (projectId) => persistentAccess.listMemberships(projectId),
+        set: (input) => persistentAccess.setMembership(input),
+        remove: (projectId, userId) =>
+          persistentAccess.removeMembership(projectId, userId)
+      };
+      access = persistentAccess;
+    } else {
+      access = {
+        async authenticate() {
+          // Legacy loopback/static-token deployments retain one explicit local admin.
+          return { userId: "local-admin" };
+        },
+        async roleFor(_userId, projectId) {
+          return projectById.has(projectId) ? "admin" : undefined;
+        }
+      };
+    }
     const modelConfig = loadOpenAiCompatibleModelConfig(options.environment);
     const now = options.now ?? (() => new Date().toISOString());
     const runtimeFactories = new Map(
@@ -594,6 +697,9 @@ export async function composeProductionWorker(
             }).resolve(runId, outcome);
           }
         },
+        access,
+        ...(memberships ? { memberships } : {}),
+        ...(login ? { login } : {}),
         eventStream: createRunEventSseHandler({
           journal: events,
           broadcaster: eventBroadcaster

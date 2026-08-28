@@ -20,10 +20,11 @@ const CONTENT_SECURITY_POLICY = [
   "form-action 'self'"
 ].join("; ");
 
-/** API authentication modes accepted by the single-user control plane. */
+/** API authentication modes accepted before project membership authorization. */
 export type WorkerHttpAuth =
   | { mode: "none" }
-  | { mode: "bearer"; token: string };
+  | { mode: "bearer"; token: string }
+  | { mode: "database_sessions" };
 
 /** Validated single-user HTTP listener settings. */
 export interface WorkerHttpConfig {
@@ -59,10 +60,26 @@ export function loadWorkerHttpConfig(
     throw new Error("LECODING_HTTP_PORT must be an integer from 1 to 65535");
   }
   const token = environment.LECODING_HTTP_AUTH_TOKEN;
-  const auth: WorkerHttpAuth = token ? loadBearerAuth(token) : { mode: "none" };
+  const authMode = environment.LECODING_AUTH_MODE?.trim();
+  if (authMode && authMode !== "database_sessions") {
+    throw new Error("LECODING_AUTH_MODE must be database_sessions when set");
+  }
+  if (authMode === "database_sessions" && token) {
+    throw new Error(
+      "LECODING_HTTP_AUTH_TOKEN cannot be combined with database sessions"
+    );
+  }
+  const auth: WorkerHttpAuth =
+    authMode === "database_sessions"
+      ? { mode: "database_sessions" }
+      : token
+        ? loadBearerAuth(token)
+        : { mode: "none" };
   if (!LOOPBACK_HOSTS.has(host)) {
     if (auth.mode === "none") {
-      throw new Error("Non-loopback HTTP requires LECODING_HTTP_AUTH_TOKEN");
+      throw new Error(
+        "Non-loopback HTTP requires database sessions or LECODING_HTTP_AUTH_TOKEN"
+      );
     }
     if (environment.LECODING_HTTP_BEHIND_TLS_PROXY !== "1") {
       throw new Error(
@@ -87,6 +104,10 @@ export async function startWorkerHttpServer(
     history: options.control.history,
     changes: options.control.changes,
     results: options.control.results,
+    access: options.control.access,
+    ...(options.control.memberships
+      ? { memberships: options.control.memberships }
+      : {}),
     eventStream: options.control.eventStream,
     ...(options.onBackgroundError
       ? { onBackgroundError: options.onBackgroundError }
@@ -150,6 +171,10 @@ async function handleNodeRequest(
   const host = incoming.headers.host ?? `${options.host}:${options.port}`;
   const url = new URL(incoming.url ?? "/", `http://${host}`);
   if (url.pathname.startsWith("/api/")) {
+    if (url.pathname.startsWith("/api/v1/auth/")) {
+      await handleLoginRequest(incoming, outgoing, url, options);
+      return;
+    }
     if (!isApiAuthorized(incoming, options.auth)) {
       sendUnauthorized(outgoing);
       return;
@@ -168,6 +193,92 @@ async function handleNodeRequest(
     return;
   }
   await serveStatic(outgoing, options.webRoot, url.pathname);
+}
+
+async function handleLoginRequest(
+  incoming: IncomingMessage,
+  outgoing: ServerResponse,
+  url: URL,
+  options: StartWorkerHttpServerOptions
+): Promise<void> {
+  applySecurityHeaders(outgoing);
+  outgoing.setHeader("cache-control", "no-store");
+  const login = options.control.login;
+  if (!login) {
+    outgoing.writeHead(404, { "content-type": "application/json" });
+    outgoing.end(
+      '{"error":{"code":"login_unavailable","message":"Login is unavailable"}}'
+    );
+    return;
+  }
+  try {
+    if (
+      incoming.method === "GET" &&
+      url.pathname === "/api/v1/auth/github/start"
+    ) {
+      outgoing.writeHead(302, { location: await login.begin() });
+      outgoing.end();
+      return;
+    }
+    if (
+      incoming.method === "GET" &&
+      url.pathname === "/api/v1/auth/github/callback"
+    ) {
+      const codes = url.searchParams.getAll("code");
+      const states = url.searchParams.getAll("state");
+      if (
+        codes.length !== 1 ||
+        states.length !== 1 ||
+        !codes[0] ||
+        !states[0] ||
+        [...url.searchParams.keys()].some(
+          (key) => key !== "code" && key !== "state"
+        )
+      ) {
+        // Exact cardinality prevents query-parameter smuggling across parsers.
+        throw new Error("OAuth callback parameters are invalid");
+      }
+      const session = await login.complete({ code: codes[0], state: states[0] });
+      outgoing.writeHead(303, {
+        location: "/",
+        "set-cookie": sessionCookie(session.accessToken)
+      });
+      outgoing.end();
+      return;
+    }
+    if (
+      incoming.method === "POST" &&
+      url.pathname === "/api/v1/auth/logout"
+    ) {
+      await login.revokeRequestSession(
+        new Request(url, {
+          method: "POST",
+          headers: nodeHeadersToWeb(incoming.headers)
+        })
+      );
+      outgoing.writeHead(204, { "set-cookie": clearSessionCookie() });
+      outgoing.end();
+      return;
+    }
+    outgoing.writeHead(404, { "content-type": "application/json" });
+    outgoing.end(
+      '{"error":{"code":"route_not_found","message":"Route was not found"}}'
+    );
+  } catch {
+    // Provider errors, identities, and credentials remain opaque at the public boundary.
+    outgoing.writeHead(401, { "content-type": "application/json" });
+    outgoing.end(
+      '{"error":{"code":"login_failed","message":"Login was not accepted"}}'
+    );
+  }
+}
+
+function sessionCookie(accessToken: string): string {
+  return `lecoding_session=${accessToken}; Path=/; Max-Age=86400; HttpOnly; Secure; SameSite=Lax`;
+}
+
+function clearSessionCookie(): string {
+  return "lecoding_session=; Path=/; Max-Age=0; HttpOnly; Secure; SameSite=Lax";
 }
 
 function loadBearerAuth(token: string): WorkerHttpAuth {
@@ -195,7 +306,8 @@ function isApiAuthorized(
   incoming: IncomingMessage,
   auth: WorkerHttpAuth
 ): boolean {
-  if (auth.mode === "none") {
+  if (auth.mode === "none" || auth.mode === "database_sessions") {
+    // Database sessions are authenticated by the API access-control authority.
     return true;
   }
   const header = incoming.headers.authorization;

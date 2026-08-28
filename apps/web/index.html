@@ -23,7 +23,7 @@
           </select>
         </div>
         <button id="clear-auth" class="secondary-button compact" type="button" hidden>
-          清除访问令牌
+          退出登录
         </button>
       </header>
 
@@ -31,20 +31,25 @@
         <div>
           <p class="eyebrow">Authenticated control plane</p>
           <h2>连接 LeCoding Worker</h2>
-          <p class="muted">输入部署管理员提供的访问令牌。令牌仅保存在当前标签页。</p>
+          <p class="muted">使用获准的 GitHub 账号登录，或输入部署管理员提供的兼容访问令牌。</p>
         </div>
-        <form id="auth-form" class="auth-form">
-          <label for="auth-token">访问令牌</label>
-          <input
-            id="auth-token"
-            name="authToken"
-            type="password"
-            autocomplete="current-password"
-            minlength="32"
-            required
-          />
-          <button class="primary-button compact" type="submit">连接</button>
-        </form>
+        <div class="auth-actions">
+          <button id="github-login" class="primary-button compact" type="button">
+            使用 GitHub 登录
+          </button>
+          <form id="auth-form" class="auth-form">
+            <label for="auth-token">兼容访问令牌</label>
+            <input
+              id="auth-token"
+              name="authToken"
+              type="password"
+              autocomplete="current-password"
+              minlength="32"
+              required
+            />
+            <button class="secondary-button compact" type="submit">使用令牌连接</button>
+          </form>
+        </div>
       </section>
 
       <main class="workspace-grid">

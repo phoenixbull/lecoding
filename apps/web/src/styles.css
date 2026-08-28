@@ -148,6 +148,11 @@ button:disabled {
   gap: 10px;
 }
 
+.auth-actions {
+  display: grid;
+  gap: 14px;
+}
+
 .left-column,
 .run-column {
   display: grid;

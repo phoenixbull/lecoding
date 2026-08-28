@@ -160,6 +160,10 @@ function createControlPlane() {
     history: { list: vi.fn(async () => []) },
     changes: { read: vi.fn(async () => ({ changedFiles: [], unifiedDiff: "", truncated: false })) },
     results: { resolve: vi.fn(async () => undefined) },
+    access: {
+      authenticate: vi.fn(async () => ({ userId: "local-admin" })),
+      roleFor: vi.fn(async () => "admin" as const)
+    },
     eventStream: { handle: vi.fn() }
   };
 }

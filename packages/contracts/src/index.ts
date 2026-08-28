@@ -1,5 +1,7 @@
 export type RunId = string;
 export type ProjectId = string;
+/** Membership authority ordered from read-only visibility to administration. */
+export type ProjectRole = "viewer" | "developer" | "admin";
 export type EnvironmentId = string;
 
 export type ApprovalMode = "manual" | "auto_review" | "full_access";
@@ -48,6 +50,17 @@ export interface CreateRunResult {
 /** Non-secret registered project exposed to authenticated control-plane clients. */
 export interface ControlPlaneProject {
   id: ProjectId;
+}
+
+/** Non-secret membership projection returned only to a project administrator. */
+export interface ProjectMembership {
+  userId: string;
+  role: ProjectRole;
+}
+
+/** Complete current membership list for one authorized project. */
+export interface ProjectMembershipResult {
+  memberships: ProjectMembership[];
 }
 
 /** Non-secret bootstrap values required by the Web client. */

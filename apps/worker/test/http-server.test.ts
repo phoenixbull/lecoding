@@ -42,6 +42,128 @@ describe("Worker HTTP server", () => {
     ).toThrow("at least 32 characters");
   });
 
+  it("allows database sessions behind TLS without a process-wide bearer secret", () => {
+    expect(
+      loadWorkerHttpConfig({
+        LECODING_HTTP_HOST: "0.0.0.0",
+        LECODING_AUTH_MODE: "database_sessions",
+        LECODING_HTTP_BEHIND_TLS_PROXY: "1"
+      })
+    ).toEqual({
+      host: "0.0.0.0",
+      port: 8787,
+      auth: { mode: "database_sessions" }
+    });
+  });
+
+  it("completes GitHub login with an HttpOnly session cookie and supports logout", async () => {
+    const webRoot = await mkdtemp(join(tmpdir(), "lecoding-oauth-web-root-"));
+    await writeFile(join(webRoot, "index.html"), "<main>Authenticate</main>", "utf8");
+    const login = {
+      begin: vi.fn(async () =>
+        "https://github.com/login/oauth/authorize?state=durable-state"
+      ),
+      complete: vi.fn(async () => ({ accessToken: "application-session-token" })),
+      revokeRequestSession: vi.fn(async () => undefined)
+    };
+    const server = await startWorkerHttpServer({
+      host: "127.0.0.1",
+      port: 0,
+      auth: { mode: "database_sessions" },
+      webRoot,
+      control: {
+        defaultProjectId: "project-1",
+        projectIds: ["project-1"],
+        runs: {} as Engine,
+        history: { list: vi.fn(async () => []) },
+        changes: { read: vi.fn(async () => ({ changedFiles: [], unifiedDiff: "", truncated: false })) },
+        results: { resolve: vi.fn(async () => undefined) },
+        access: {
+          authenticate: vi.fn(async () => undefined),
+          roleFor: vi.fn(async () => undefined)
+        },
+        login,
+        eventStream: { handle: vi.fn() }
+      }
+    });
+    try {
+      const start = await fetch(`${server.origin}/api/v1/auth/github/start`, {
+        redirect: "manual"
+      });
+      const callback = await fetch(
+        `${server.origin}/api/v1/auth/github/callback?code=oauth-code&state=oauth-state`,
+        { redirect: "manual" }
+      );
+      const cookie = callback.headers.get("set-cookie")!;
+      const logout = await fetch(`${server.origin}/api/v1/auth/logout`, {
+        method: "POST",
+        headers: { cookie: cookie.split(";", 1)[0]! }
+      });
+
+      expect(start.status).toBe(302);
+      expect(start.headers.get("location")).toContain("github.com/login/oauth");
+      expect(callback.status).toBe(303);
+      expect(callback.headers.get("location")).toBe("/");
+      expect(cookie).toContain("lecoding_session=application-session-token");
+      expect(cookie).toContain("HttpOnly");
+      expect(cookie).toContain("Secure");
+      expect(cookie).toContain("SameSite=Lax");
+      expect(logout.status).toBe(204);
+      expect(logout.headers.get("set-cookie")).toContain("Max-Age=0");
+      expect(login.complete).toHaveBeenCalledWith({
+        code: "oauth-code",
+        state: "oauth-state"
+      });
+      expect(login.revokeRequestSession).toHaveBeenCalledTimes(1);
+    } finally {
+      await server.stop();
+      await rm(webRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects duplicate OAuth callback parameters before completing login", async () => {
+    const webRoot = await mkdtemp(join(tmpdir(), "lecoding-oauth-duplicate-"));
+    await writeFile(join(webRoot, "index.html"), "<main>Authenticate</main>", "utf8");
+    const complete = vi.fn(async () => ({ accessToken: "must-not-be-issued" }));
+    const server = await startWorkerHttpServer({
+      host: "127.0.0.1",
+      port: 0,
+      auth: { mode: "database_sessions" },
+      webRoot,
+      control: {
+        defaultProjectId: "project-1",
+        projectIds: ["project-1"],
+        runs: {} as Engine,
+        history: { list: vi.fn(async () => []) },
+        changes: { read: vi.fn(async () => ({ changedFiles: [], unifiedDiff: "", truncated: false })) },
+        results: { resolve: vi.fn(async () => undefined) },
+        access: {
+          authenticate: vi.fn(async () => undefined),
+          roleFor: vi.fn(async () => undefined)
+        },
+        login: {
+          begin: vi.fn(async () => "https://github.com/login/oauth/authorize"),
+          complete,
+          revokeRequestSession: vi.fn(async () => undefined)
+        },
+        eventStream: { handle: vi.fn() }
+      }
+    });
+    try {
+      // Parameter smuggling must not let one parser validate a different state.
+      const response = await fetch(
+        `${server.origin}/api/v1/auth/github/callback?code=first&code=second&state=valid`,
+        { redirect: "manual" }
+      );
+
+      expect(response.status).toBe(401);
+      expect(complete).not.toHaveBeenCalled();
+    } finally {
+      await server.stop();
+      await rm(webRoot, { recursive: true, force: true });
+    }
+  });
+
   it("protects every API route while leaving the static login shell available", async () => {
     const webRoot = await mkdtemp(join(tmpdir(), "lecoding-auth-web-root-"));
     await writeFile(join(webRoot, "index.html"), "<main>Authenticate</main>", "utf8");
@@ -71,6 +193,7 @@ describe("Worker HTTP server", () => {
         history: { list: vi.fn(async () => []) },
         changes: { read: vi.fn(async () => ({ changedFiles: [], unifiedDiff: "", truncated: false })) },
         results: { resolve: vi.fn(async () => undefined) },
+        access: localAdminAccess(),
         eventStream: { handle: eventHandle }
       }
     });
@@ -146,6 +269,7 @@ describe("Worker HTTP server", () => {
         history: { list: vi.fn(async () => []) },
         changes: { read: vi.fn(async () => ({ changedFiles: [], unifiedDiff: "", truncated: false })) },
         results: { resolve: vi.fn(async () => undefined) },
+        access: localAdminAccess(),
         eventStream: {
           handle: vi.fn(async () => new Response("", { status: 200 }))
         }
@@ -221,6 +345,7 @@ describe("Worker HTTP server", () => {
         history: { list: vi.fn(async () => []) },
         changes: { read: vi.fn(async () => ({ changedFiles: [], unifiedDiff: "", truncated: false })) },
         results: { resolve: resolveResult },
+        access: localAdminAccess(),
         eventStream: {
           handle: vi.fn(async () =>
             new Response(encodeRunEventSse(event), {
@@ -259,3 +384,10 @@ describe("Worker HTTP server", () => {
     }
   });
 });
+
+function localAdminAccess() {
+  return {
+    authenticate: vi.fn(async () => ({ userId: "local-admin" })),
+    roleFor: vi.fn(async () => "admin" as const)
+  };
+}

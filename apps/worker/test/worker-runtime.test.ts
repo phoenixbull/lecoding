@@ -161,6 +161,10 @@ function createControlPlane(engine: Engine) {
     history: { list: vi.fn(async () => []) },
     changes: { read: vi.fn(async () => ({ changedFiles: [], unifiedDiff: "", truncated: false })) },
     results: { resolve: vi.fn(async () => undefined) },
+    access: {
+      authenticate: vi.fn(async () => ({ userId: "local-admin" })),
+      roleFor: vi.fn(async () => "admin" as const)
+    },
     eventStream: {
       handle: vi.fn(async () => new Response("", { status: 200 }))
     }
@@ -530,6 +534,29 @@ describe("composeProductionWorker", () => {
         environment: {}
       })
     ).rejects.toThrow("LECODING_WORKER_ID");
+    expect(close).toHaveBeenCalledTimes(1);
+  });
+
+  it("fails closed on an unknown authentication mode before composing local-admin access", async () => {
+    const close = vi.fn(async () => undefined);
+
+    await expect(
+      composeProductionWorker({
+        database: {
+          executor: { query: vi.fn() },
+          notifications: {
+            query: vi.fn(),
+            listen: vi.fn(),
+            onClientDisconnect: vi.fn()
+          },
+          close
+        },
+        environment: {
+          ...validWorkerEnvironment,
+          LECODING_AUTH_MODE: "unexpected-mode"
+        }
+      })
+    ).rejects.toThrow("LECODING_AUTH_MODE");
     expect(close).toHaveBeenCalledTimes(1);
   });
 });

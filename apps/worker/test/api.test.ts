@@ -5,7 +5,11 @@ import {
   createRunEventLiveBroadcaster,
   createRunEventSseHandler
 } from "@lecoding/run-events";
-import { createRunApiHandler } from "../src/api.js";
+import {
+  createRunApiHandler,
+  type RunApiAccessControl,
+  type RunApiMembershipAdministration
+} from "../src/api.js";
 
 describe("createRunApiHandler", () => {
   it("exposes only non-secret registered-project bootstrap configuration", async () => {
@@ -18,6 +22,77 @@ describe("createRunApiHandler", () => {
       projects: [{ id: "project-1" }, { id: "project-2" }],
       defaultEnvironmentId: "server-docker"
     });
+  });
+
+  it("hides every cross-project surface from an authenticated non-member", async () => {
+    const runs = createRuns([]);
+    runs.inspect.mockResolvedValue({
+      id: "run-project-2",
+      projectId: "project-2",
+      environmentId: "server-docker",
+      task: "Project two secret",
+      status: "running"
+    });
+    const history = { list: vi.fn(async () => []) };
+    const changes = {
+      read: vi.fn(async () => ({ changedFiles: [], unifiedDiff: "", truncated: false }))
+    };
+    const results = { resolve: vi.fn(async () => undefined) };
+    const access = {
+      authenticate: vi.fn(async () => ({ userId: "user-alice" })),
+      roleFor: vi.fn(async (_userId: string, projectId: string) =>
+        projectId === "project-1" ? ("developer" as const) : undefined
+      )
+    };
+    const handler = createHandler(runs, history, changes, results, access);
+    const request = (path: string, init?: RequestInit) =>
+      handler.handle(new Request(`http://127.0.0.1:8787${path}`, init));
+
+    const config = await request("/api/v1/config");
+    const historyIdor = await request("/api/v1/projects/project-2/runs");
+    const createIdor = await request("/api/v1/projects/project-2/runs", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        environmentId: "server-docker",
+        task: "Steal project",
+        acceptanceCriteria: ["Must not run"],
+        approvalMode: "manual",
+        fileAccessScope: "workspace_only"
+      })
+    });
+    const inspectIdor = await request("/api/v1/runs/run-project-2");
+    const eventsIdor = await request("/api/v1/runs/run-project-2/events");
+    const changesIdor = await request("/api/v1/runs/run-project-2/changes");
+    const resultIdor = await request("/api/v1/runs/run-project-2/result", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ outcome: "discard" })
+    });
+    const commandIdor = await request("/api/v1/runs/run-project-2/commands", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ type: "cancel" })
+    });
+
+    await expect(config.json()).resolves.toMatchObject({
+      projectId: "project-1",
+      projects: [{ id: "project-1" }]
+    });
+    expect([
+      historyIdor.status,
+      createIdor.status,
+      inspectIdor.status,
+      eventsIdor.status,
+      changesIdor.status,
+      resultIdor.status,
+      commandIdor.status
+    ]).toEqual([404, 404, 404, 404, 404, 404, 404]);
+    expect(history.list).not.toHaveBeenCalled();
+    expect(runs.start).not.toHaveBeenCalled();
+    expect(runs.command).not.toHaveBeenCalled();
+    expect(changes.read).not.toHaveBeenCalled();
+    expect(results.resolve).not.toHaveBeenCalled();
   });
 
   it("creates a configured-project Run and resumes it after returning 202", async () => {
@@ -49,6 +124,79 @@ describe("createRunApiHandler", () => {
       approvalMode: "manual",
       fileAccessScope: "workspace_only"
     });
+  });
+
+  it("lets only a project admin assign a bounded membership role", async () => {
+    const memberships = {
+      list: vi.fn(async () => []),
+      set: vi.fn(async () => undefined),
+      remove: vi.fn(async () => undefined)
+    };
+    const adminAccess: RunApiAccessControl = {
+      authenticate: vi.fn(async () => ({ userId: "admin-user" })),
+      roleFor: vi.fn(async () => "admin" as const)
+    };
+    const developerAccess: RunApiAccessControl = {
+      authenticate: vi.fn(async () => ({ userId: "developer-user" })),
+      roleFor: vi.fn(async () => "developer" as const)
+    };
+    const assign = (access: RunApiAccessControl) =>
+      createHandler(
+        createRuns([]),
+        undefined,
+        undefined,
+        undefined,
+        access,
+        memberships
+      ).handle(
+        new Request(
+          "http://127.0.0.1:8787/api/v1/projects/project-1/memberships/user-alice",
+          {
+            method: "PUT",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ role: "developer" })
+          }
+        )
+      );
+
+    const accepted = await assign(adminAccess);
+    const denied = await assign(developerAccess);
+    const adminHandler = createHandler(
+      createRuns([]),
+      undefined,
+      undefined,
+      undefined,
+      adminAccess,
+      memberships
+    );
+    const listed = await adminHandler.handle(
+      new Request(
+        "http://127.0.0.1:8787/api/v1/projects/project-1/memberships"
+      )
+    );
+    const removed = await adminHandler.handle(
+      new Request(
+        "http://127.0.0.1:8787/api/v1/projects/project-1/memberships/user-alice",
+        { method: "DELETE" }
+      )
+    );
+
+    expect(accepted.status).toBe(204);
+    expect(denied.status).toBe(404);
+    expect(listed.status).toBe(200);
+    await expect(listed.json()).resolves.toEqual({ memberships: [] });
+    expect(removed.status).toBe(204);
+    expect(memberships.set).toHaveBeenCalledTimes(1);
+    expect(memberships.set).toHaveBeenCalledWith({
+      projectId: "project-1",
+      userId: "user-alice",
+      role: "developer"
+    });
+    expect(memberships.list).toHaveBeenCalledWith("project-1");
+    expect(memberships.remove).toHaveBeenCalledWith(
+      "project-1",
+      "user-alice"
+    );
   });
 
   it("creates a Run for another registered project without accepting unknown identities", async () => {
@@ -364,6 +512,10 @@ describe("createRunApiHandler", () => {
       history: { list: vi.fn(async () => []) },
       changes: { read: vi.fn(async () => ({ changedFiles: [], unifiedDiff: "", truncated: false })) },
       results: { resolve: vi.fn(async () => undefined) },
+      access: {
+        authenticate: vi.fn(async () => ({ userId: "local-user" })),
+        roleFor: vi.fn(async () => "admin" as const)
+      },
       eventStream
     });
     const response = await handler.handle(
@@ -404,7 +556,12 @@ function createHandler(
   runs: ReturnType<typeof createRuns>,
   history = { list: vi.fn(async () => []) },
   changes = { read: vi.fn(async () => ({ changedFiles: [], unifiedDiff: "", truncated: false })) },
-  results = { resolve: vi.fn(async () => undefined) }
+  results = { resolve: vi.fn(async () => undefined) },
+  access: RunApiAccessControl = {
+    authenticate: vi.fn(async () => ({ userId: "local-user" })),
+    roleFor: vi.fn(async () => "admin" as const)
+  },
+  memberships?: RunApiMembershipAdministration
 ) {
   return createRunApiHandler({
     defaultProjectId: "project-1",
@@ -413,6 +570,8 @@ function createHandler(
     history,
     changes,
     results,
+    access,
+    ...(memberships ? { memberships } : {}),
     eventStream: {
       handle: vi.fn(async () => new Response("", { status: 200 }))
     }

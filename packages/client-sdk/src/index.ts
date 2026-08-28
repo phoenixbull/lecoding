@@ -4,6 +4,8 @@ import {
   type CreateRunResult,
   type ControlPlaneConfig,
   type ProjectId,
+  type ProjectMembershipResult,
+  type ProjectRole,
   type RunEventV1,
   type RunChanges,
   type RunHistoryResult,
@@ -13,10 +15,21 @@ import {
 
 /** Shared Web/PC client interface for versioned Run operations. */
 export interface LeCodingClient {
+  /** Returns the same-origin login entry without exposing provider configuration. */
+  getGitHubLoginUrl(): string;
+  /** Revokes the current bearer or HttpOnly cookie session. */
+  logout(): Promise<void>;
   getControlPlaneConfig(): Promise<ControlPlaneConfig>;
   createRun(projectId: ProjectId, input: CreateRunInput): Promise<CreateRunResult>;
   inspectRun(runId: RunId): Promise<RunView>;
   listRuns(projectId: ProjectId, limit?: number): Promise<RunHistoryResult>;
+  listProjectMemberships(projectId: ProjectId): Promise<ProjectMembershipResult>;
+  setProjectMembership(
+    projectId: ProjectId,
+    userId: string,
+    role: ProjectRole
+  ): Promise<void>;
+  removeProjectMembership(projectId: ProjectId, userId: string): Promise<void>;
   getRunChanges(runId: RunId): Promise<RunChanges>;
   /** Keeps or discards the isolated worktree only after the Run reaches a terminal state. */
   resolveRunResult(runId: RunId, outcome: "keep" | "discard"): Promise<void>;
@@ -122,6 +135,20 @@ export function createClient(options: ClientOptions): LeCodingClient {
   };
 
   return {
+    getGitHubLoginUrl(): string {
+      return `${baseUrl}/api/v1/auth/github/start`;
+    },
+
+    async logout(): Promise<void> {
+      const response = await authenticatedFetch(
+        `${baseUrl}/api/v1/auth/logout`,
+        { method: "POST", credentials: "include" }
+      );
+      if (!response.ok) {
+        throw new LeCodingHttpError("Failed to log out", response.status);
+      }
+    },
+
     async getControlPlaneConfig(): Promise<ControlPlaneConfig> {
       const response = await authenticatedFetch(`${baseUrl}/api/v1/config`, {
         method: "GET",
@@ -182,6 +209,55 @@ export function createClient(options: ClientOptions): LeCodingClient {
         throw new LeCodingHttpError("Failed to list Runs", response.status);
       }
       return (await response.json()) as RunHistoryResult;
+    },
+
+    async listProjectMemberships(
+      projectId: ProjectId
+    ): Promise<ProjectMembershipResult> {
+      const response = await authenticatedFetch(
+        `${baseUrl}/api/v1/projects/${encodeURIComponent(projectId)}/memberships`,
+        { method: "GET", headers: { accept: "application/json" } }
+      );
+      if (!response.ok) {
+        throw new LeCodingHttpError(
+          "Failed to list project memberships",
+          response.status
+        );
+      }
+      return (await response.json()) as ProjectMembershipResult;
+    },
+
+    async setProjectMembership(projectId, userId, role): Promise<void> {
+      const response = await authenticatedFetch(
+        `${baseUrl}/api/v1/projects/${encodeURIComponent(projectId)}/memberships/${encodeURIComponent(userId)}`,
+        {
+          method: "PUT",
+          headers: {
+            accept: "application/json",
+            "content-type": "application/json"
+          },
+          body: JSON.stringify({ role })
+        }
+      );
+      if (!response.ok) {
+        throw new LeCodingHttpError(
+          "Failed to set project membership",
+          response.status
+        );
+      }
+    },
+
+    async removeProjectMembership(projectId, userId): Promise<void> {
+      const response = await authenticatedFetch(
+        `${baseUrl}/api/v1/projects/${encodeURIComponent(projectId)}/memberships/${encodeURIComponent(userId)}`,
+        { method: "DELETE" }
+      );
+      if (!response.ok) {
+        throw new LeCodingHttpError(
+          "Failed to remove project membership",
+          response.status
+        );
+      }
     },
 
     async getRunChanges(runId: RunId): Promise<RunChanges> {

@@ -126,6 +126,9 @@ Run `pnpm build` before starting the Worker so `apps/web/dist` is available. The
 same loopback listener then serves the Web console and these versioned endpoints:
 
 - `GET /api/v1/config` returns the server-owned default project, registered project allowlist, and default environment.
+- `GET /api/v1/auth/github/start` begins a GitHub OAuth Web Flow with a hashed, expiring, one-time state; the callback creates an application session in an HttpOnly cookie.
+- `POST /api/v1/auth/logout` revokes the presented database session and clears its cookie.
+- `GET /api/v1/projects/:projectId/memberships` lists memberships for project administrators; `PUT` or `DELETE /api/v1/projects/:projectId/memberships/:userId` assigns or removes an exact `viewer`, `developer`, or `admin` role.
 - `GET /api/v1/projects/:projectId/runs?limit=20` returns up to 50 newest summaries for refresh recovery.
 - `POST /api/v1/projects/:projectId/runs` persists a queued Run and detaches resume.
 - `GET /api/v1/runs/:runId` returns current status and verification evidence.
@@ -150,6 +153,26 @@ forward the Authorization header unchanged. Without both the token and assertion
 startup fails before binding. Rotate the token through the deployment secret
 manager and reload the Worker; do not place it in source control or proxy access
 logs.
+
+For Phase 2 multi-user mode, set `LECODING_AUTH_MODE=database_sessions` and do
+not set `LECODING_HTTP_AUTH_TOKEN`. Configure the HTTPS
+`LECODING_PUBLIC_ORIGIN`, GitHub OAuth client ID/secret, and at least one
+organization or email login allowlist. The callback verifies a primary GitHub
+email, checks the configured organization/email allowlist, and replaces the
+short-lived provider credential with a 24-hour application session. PostgreSQL
+stores only SHA-256 session/state digests; state is consumed atomically and
+cannot be replayed. Provider response bodies and tokens are never copied into
+public failures.
+
+`LECODING_GITHUB_BOOTSTRAP_ADMIN_EMAILS` is a separate explicit bootstrap
+allowlist. When one of those identities first logs in, it may atomically claim
+the initial `admin` membership for a registered project only while that
+project's bootstrap flag is unused. Later logins cannot claim it, even if the
+membership is subsequently removed. Successful login by any other allowed
+identity grants no repository access until a project administrator creates a
+membership. Every config, history, create, inspect, SSE, changes, result, and
+command request rechecks membership and returns the same 404 surface for a
+missing project and a cross-project IDOR attempt.
 SSE delivery is at least once; clients deduplicate by the event sequence and may
 resume with `Last-Event-ID`. The Web console reconnects after transport EOF or
 failure, refreshes status during the retry window, and stops after replaying the

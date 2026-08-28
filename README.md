@@ -7,6 +7,8 @@ accepted development target. The target-Linux isolation run remains explicit
 environmental evidence debt; see [`docs/phase-1-completion.md`](docs/phase-1-completion.md).
 The requirement-by-requirement closure record is
 [`docs/phase-0-1-completion-audit.md`](docs/phase-0-1-completion-audit.md).
+Phase 2 production hardening is now in progress; current row-level status is in
+[`docs/phase-2-status.md`](docs/phase-2-status.md).
 
 ## Current vertical slices
 

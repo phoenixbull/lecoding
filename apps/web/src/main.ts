@@ -27,6 +27,7 @@ const form = requiredElement<HTMLFormElement>("#run-form");
 const authPanel = requiredElement<HTMLElement>("#auth-panel");
 const authForm = requiredElement<HTMLFormElement>("#auth-form");
 const authTokenInput = requiredElement<HTMLInputElement>("#auth-token");
+const githubLoginButton = requiredElement<HTMLButtonElement>("#github-login");
 const clearAuthButton = requiredElement<HTMLButtonElement>("#clear-auth");
 const submitButton = requiredElement<HTMLButtonElement>("#create-run");
 const cancelButton = requiredElement<HTMLButtonElement>("#cancel-run");
@@ -88,14 +89,23 @@ authForm.addEventListener("submit", (event) => {
 });
 
 clearAuthButton.addEventListener("click", () => {
+  void logout();
+});
+
+githubLoginButton.addEventListener("click", () => {
+  window.location.assign(client.getGitHubLoginUrl());
+});
+
+async function logout(): Promise<void> {
   streamController?.abort();
+  await client.logout().catch(() => undefined);
   writeSessionToken(undefined);
   client = createSessionClient(undefined);
   bootstrap = undefined;
   clearAuthButton.hidden = true;
   clearAuthenticatedView();
   void initialize();
-});
+}
 
 cancelButton.addEventListener("click", () => {
   void cancelCurrentRun();
@@ -153,7 +163,7 @@ async function initialize(): Promise<void> {
   try {
     bootstrap = await client.getControlPlaneConfig();
     authPanel.hidden = true;
-    clearAuthButton.hidden = readSessionToken() === undefined;
+    clearAuthButton.hidden = false;
     submitButton.disabled = false;
     hideError();
     const selection = resolveProjectSelection(bootstrap, selectedProjectId);
@@ -215,7 +225,7 @@ function requireAuthentication(): void {
   clearAuthButton.hidden = true;
   renderProjectOptions([], undefined, "需要认证");
   submitButton.disabled = true;
-  showError("控制面需要访问令牌，请完成认证后继续。");
+  showError("控制面需要登录，请使用获准的 GitHub 账号或访问令牌。");
   setStreamState("需要认证", "warning");
   authTokenInput.focus();
 }
