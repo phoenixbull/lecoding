@@ -125,7 +125,7 @@ event/outbox, and counter fixtures were deleted and absence was rechecked. See
 Run `pnpm build` before starting the Worker so `apps/web/dist` is available. The
 same loopback listener then serves the Web console and these versioned endpoints:
 
-- `GET /api/v1/config` returns the server-owned default project, registered project allowlist, and default environment.
+- `GET /api/v1/config` returns the server-owned default project, registered project allowlist, current caller role per visible project, and default environment. Repository paths, provider settings, and credentials remain server-only. The Web composer uses the role to expose manual/auto-review to developers and reserves full access for administrators; the API independently rechecks creation authority.
 - `GET /api/v1/auth/github/start` begins a GitHub OAuth Web Flow with a hashed, expiring, one-time state; the callback creates an application session in an HttpOnly cookie.
 - `POST /api/v1/auth/logout` revokes the presented database session and clears its cookie.
 - `GET /api/v1/projects/:projectId/memberships` lists memberships for project administrators; `PUT` or `DELETE /api/v1/projects/:projectId/memberships/:userId` assigns or removes an exact `viewer`, `developer`, or `admin` role.

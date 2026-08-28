@@ -86,7 +86,12 @@
             <div class="field">
               <label for="environment-id">执行环境</label>
               <input id="environment-id" name="environmentId" required />
-              <small>当前固定为 workspace-only + manual 审批模式。</small>
+              <small>服务器 Run 固定为 workspace-only 隔离范围。</small>
+            </div>
+            <div class="field">
+              <label for="approval-mode">审批模式</label>
+              <select id="approval-mode" name="approvalMode" required></select>
+              <small id="approval-mode-help"></small>
             </div>
             <button id="create-run" class="primary-button" type="submit">
               创建并运行

@@ -2,11 +2,28 @@ import type {
   ControlPlaneConfig,
   PendingApproval,
   ProjectPolicyRule,
+  ProjectRole,
   RunEventV1,
   RunEventType,
   RunStatus,
   VerificationOutcome
 } from "@lecoding/contracts";
+
+/** Run approval modes exposed for the caller's selected-project authority. */
+export function approvalModeOptions(
+  role: ProjectRole
+): Array<{ value: "manual" | "auto_review" | "full_access"; label: string }> {
+  if (role === "viewer") {
+    return [];
+  }
+  const options = [
+    { value: "manual" as const, label: "请求批准" },
+    { value: "auto_review" as const, label: "替我审批" }
+  ];
+  return role === "admin"
+    ? [...options, { value: "full_access", label: "完全访问权限" }]
+    : options;
+}
 
 /** Minimal inert project-rule projection used by the administrator settings UI. */
 export interface ProjectPolicyRuleDetails {

@@ -112,20 +112,17 @@ export function createRunApiHandler(
         return errorResponse(401, "unauthorized", "Authentication required");
       }
       if (request.method === "GET" && path === "/api/v1/config") {
-        const visibleProjectIds = await filterAccessibleProjects(
-          options,
-          principal,
-          "viewer"
-        );
-        if (visibleProjectIds.length === 0) {
+        const visibleProjects = await listAccessibleProjects(options, principal);
+        if (visibleProjects.length === 0) {
           return errorResponse(403, "project_access_denied", "No project access");
         }
+        const visibleProjectIds = visibleProjects.map(({ id }) => id);
         const defaultProjectId = visibleProjectIds.includes(options.defaultProjectId)
           ? options.defaultProjectId
           : visibleProjectIds[0]!;
         return jsonResponse({
           projectId: defaultProjectId,
-          projects: visibleProjectIds.map((id) => ({ id })),
+          projects: visibleProjects,
           defaultEnvironmentId: "server-docker"
         });
       }
@@ -433,18 +430,21 @@ async function inspectProjectRun(
   return run;
 }
 
-async function filterAccessibleProjects(
+async function listAccessibleProjects(
   options: RunApiHandlerOptions,
-  principal: RunApiPrincipal,
-  minimumRole: RunApiProjectRole
-): Promise<string[]> {
-  const decisions = await Promise.all(
+  principal: RunApiPrincipal
+): Promise<Array<{ id: string; role: RunApiProjectRole }>> {
+  const projects = await Promise.all(
     options.projectIds.map(async (projectId) => ({
-      projectId,
-      allowed: await hasProjectRole(options, principal, projectId, minimumRole)
+      id: projectId,
+      role: await options.access.roleFor(principal.userId, projectId)
     }))
   );
-  return decisions.filter(({ allowed }) => allowed).map(({ projectId }) => projectId);
+  // Undefined memberships remain completely absent from bootstrap discovery.
+  return projects.filter(
+    (project): project is { id: string; role: RunApiProjectRole } =>
+      project.role !== undefined
+  );
 }
 
 async function hasProjectRole(

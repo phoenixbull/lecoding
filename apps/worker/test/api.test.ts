@@ -20,7 +20,10 @@ describe("createRunApiHandler", () => {
 
     await expect(response.json()).resolves.toEqual({
       projectId: "project-1",
-      projects: [{ id: "project-1" }, { id: "project-2" }],
+      projects: [
+        { id: "project-1", role: "admin" },
+        { id: "project-2", role: "admin" }
+      ],
       defaultEnvironmentId: "server-docker"
     });
   });

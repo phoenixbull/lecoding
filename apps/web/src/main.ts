@@ -9,6 +9,7 @@ import type {
   VerificationCheck
 } from "@lecoding/contracts";
 import {
+  approvalModeOptions,
   canLoadRunChanges,
   canResolveRunResult,
   formatApprovalDetails,
@@ -63,6 +64,8 @@ const verification = requiredElement<HTMLElement>("#verification");
 const emptyVerification = requiredElement<HTMLElement>("#verification-empty");
 const errorBanner = requiredElement<HTMLElement>("#error-banner");
 const environmentInput = requiredElement<HTMLInputElement>("#environment-id");
+const approvalModeInput = requiredElement<HTMLSelectElement>("#approval-mode");
+const approvalModeHelp = requiredElement<HTMLElement>("#approval-mode-help");
 const runHistory = requiredElement<HTMLElement>("#run-history");
 const policyRulesPanel = requiredElement<HTMLElement>("#policy-rules-panel");
 const policyRules = requiredElement<HTMLElement>("#policy-rules");
@@ -173,11 +176,16 @@ projectValue.addEventListener("change", () => {
   }
   // Switching projects severs the old SSE/read model before loading the new scope.
   selectedProjectId = projectValue.value;
+  renderApprovalModeOptions();
   clearProjectView("正在加载所选项目的 Run…");
   void loadHistory(true).catch(() => {
     showError("所选项目的 Run 历史暂时不可用；仍可创建新的 Run。");
   });
   void loadProjectPolicyRules();
+});
+
+approvalModeInput.addEventListener("change", () => {
+  renderApprovalModeHelp();
 });
 
 policyRules.addEventListener("click", (event) => {
@@ -195,11 +203,11 @@ async function initialize(): Promise<void> {
     bootstrap = await client.getControlPlaneConfig();
     authPanel.hidden = true;
     clearAuthButton.hidden = false;
-    submitButton.disabled = false;
     hideError();
     const selection = resolveProjectSelection(bootstrap, selectedProjectId);
     selectedProjectId = selection.selectedProjectId;
     renderProjectOptions(selection.projectIds, selectedProjectId);
+    renderApprovalModeOptions();
     environmentInput.value = bootstrap.defaultEnvironmentId;
     setStreamState("就绪", "idle");
   } catch (error) {
@@ -384,6 +392,38 @@ function renderProjectOptions(
   projectValue.disabled = projectIds.length === 1;
 }
 
+function renderApprovalModeOptions(): void {
+  const project = bootstrap?.projects.find(({ id }) => id === selectedProjectId);
+  const previous = approvalModeInput.value;
+  const options = project ? approvalModeOptions(project.role) : [];
+  approvalModeInput.replaceChildren(
+    ...options.map(({ value, label }) => {
+      const option = document.createElement("option");
+      option.value = value;
+      option.textContent = label;
+      return option;
+    })
+  );
+  if (options.some(({ value }) => value === previous)) {
+    approvalModeInput.value = previous;
+  }
+  const canCreate = options.length > 0;
+  approvalModeInput.disabled = !canCreate;
+  submitButton.disabled = !canCreate;
+  renderApprovalModeHelp();
+}
+
+function renderApprovalModeHelp(): void {
+  approvalModeHelp.textContent =
+    approvalModeInput.value === "full_access"
+      ? "仅管理员可用；仍受工作区隔离、固定拒绝和硬限制约束。"
+      : approvalModeInput.value === "auto_review"
+        ? "独立风险审查器自动放行低风险操作，其余仍会请求批准。"
+        : approvalModeInput.disabled
+          ? "当前项目只有查看权限，不能创建 Run。"
+          : "按能力规则请求批准，固定拒绝始终不可绕过。";
+}
+
 async function createRun(): Promise<void> {
   if (!bootstrap || !selectedProjectId) {
     return;
@@ -404,11 +444,19 @@ async function createRun(): Promise<void> {
     .map((criterion) => criterion.trim())
     .filter(Boolean);
   try {
+    const project = bootstrap.projects.find(({ id }) => id === selectedProjectId);
+    const approvalModes = project ? approvalModeOptions(project.role) : [];
+    const approvalMode = approvalModes.find(
+      ({ value }) => value === approvalModeInput.value
+    )?.value;
+    if (!approvalMode) {
+      throw new Error("Selected project cannot create Runs");
+    }
     const { runId } = await client.createRun(selectedProjectId, {
       environmentId: String(data.get("environmentId") ?? "").trim(),
       task: String(data.get("task") ?? "").trim(),
       acceptanceCriteria,
-      approvalMode: "manual",
+      approvalMode,
       fileAccessScope: "workspace_only"
     });
     selectedRunId = runId;

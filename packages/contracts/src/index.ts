@@ -50,6 +50,8 @@ export interface CreateRunResult {
 /** Non-secret registered project exposed to authenticated control-plane clients. */
 export interface ControlPlaneProject {
   id: ProjectId;
+  /** Current authenticated caller's authority within this project. */
+  role: ProjectRole;
 }
 
 /** Non-secret membership projection returned only to a project administrator. */

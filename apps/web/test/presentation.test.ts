@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { JsonValue } from "@lecoding/contracts";
 import {
+  approvalModeOptions,
   canLoadRunChanges,
   canResolveRunResult,
   formatEventTitle,
@@ -19,7 +20,10 @@ describe("Web Run presentation", () => {
   it("preserves a registered project selection and falls back to the server default", () => {
     const config = {
       projectId: "project-a",
-      projects: [{ id: "project-a" }, { id: "project-b" }],
+      projects: [
+        { id: "project-a", role: "admin" as const },
+        { id: "project-b", role: "developer" as const }
+      ],
       defaultEnvironmentId: "local"
     };
 
@@ -37,6 +41,18 @@ describe("Web Run presentation", () => {
       projectIds: ["project-a", "project-b"],
       selectedProjectId: "project-a"
     });
+  });
+
+  it("offers full access only for the selected project administrator", () => {
+    expect(approvalModeOptions("developer")).toEqual([
+      { value: "manual", label: "请求批准" },
+      { value: "auto_review", label: "替我审批" }
+    ]);
+    expect(approvalModeOptions("admin")).toEqual([
+      { value: "manual", label: "请求批准" },
+      { value: "auto_review", label: "替我审批" },
+      { value: "full_access", label: "完全访问权限" }
+    ]);
   });
 
   it("maps terminal and verification states without treating inconclusive as pass", () => {
