@@ -279,12 +279,16 @@ describe("loadOpenAiCompatibleModelConfig", () => {
   it("retries one invalid Chat Completions HTTP JSON body through compatible composition", async () => {
     let requestCount = 0;
     const retryEvents: unknown[] = [];
+    const retryAdmissions: unknown[] = [];
     const model = createOpenAiCompatibleAgentModel({
       config: {
         protocol: "openai_chat_completions",
         baseUrl: "https://model.vendor.example/v2",
         apiKey: "vendor-secret",
         model: "vendor-coder-v3"
+      },
+      onBeforeModelRetry: async (retry) => {
+        retryAdmissions.push(retry);
       },
       onMalformedJsonRetry: (event) => retryEvents.push(event),
       fetch: async () => {
@@ -327,6 +331,14 @@ describe("loadOpenAiCompatibleModelConfig", () => {
       summary: "Recovered"
     });
     expect(requestCount).toBe(2);
+    expect(retryAdmissions).toEqual([
+      {
+        runId: "run-retry",
+        protocol: "openai_chat_completions",
+        retryCount: 1,
+        failureCategory: "http_body_invalid_json"
+      }
+    ]);
     expect(retryEvents).toEqual([
       expect.objectContaining({
         runId: "run-retry",

@@ -17,6 +17,7 @@ export interface RunBudgetDetails {
   cost: string;
   wallTime: string;
   toolCalls: string;
+  modelRetries: string;
   teamCost: string;
   warnings: string[];
   tone: "positive" | "warning";
@@ -30,6 +31,7 @@ const BUDGET_WARNING_LABELS: Record<
   cost_warning: "成本接近上限",
   wall_time_warning: "运行时间接近上限",
   tool_call_warning: "工具调用接近上限",
+  retry_warning: "模型重试接近上限",
   team_monthly_cost_warning: "团队月预算接近上限"
 };
 
@@ -42,6 +44,7 @@ export function formatRunBudget(budget: RunBudgetView): RunBudgetDetails {
     cost: `${formatUsd(budget.costUsd)} / ${formatUsd(budget.maxCostUsd)}（${formatUsd(budget.warningCostUsd)} 起预警）`,
     wallTime: `${formatDuration(budget.elapsedMs)} / ${formatDuration(budget.maxWallTimeMs)}`,
     toolCalls: `${formatCount(budget.toolCalls)} / ${formatCount(budget.maxToolCalls)}`,
+    modelRetries: `${formatCount(budget.modelRetries)} / ${formatCount(budget.maxModelRetries)}`,
     teamCost: `${formatUsd(budget.teamMonthlyCostUsd)} / ${formatUsd(budget.teamMonthlyMaxUsd)}`,
     warnings,
     tone: warnings.length > 0 ? "warning" : "positive"

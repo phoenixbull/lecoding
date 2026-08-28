@@ -164,6 +164,8 @@ export interface OpenAiCompatibleAgentModelOptions {
   onRequestStart?: (request: OpenAiModelRequestReservation) => void | Promise<void>;
   /** Conservatively accounts the reservation when provider usage cannot be read. */
   onRequestFailure?: (request: OpenAiModelRequestReference) => void | Promise<void>;
+  /** Must durably authorize a classified retry before another billable call starts. */
+  onBeforeModelRetry?: (retry: OpenAiModelRetryRequest) => void | Promise<void>;
   /** Receives secret-free lifecycle events for the bounded malformed-JSON replay. */
   onMalformedJsonRetry?: (event: OpenAiMalformedJsonRetryEvent) => void;
 }
@@ -189,6 +191,14 @@ export interface OpenAiModelRequestReservation {
 export interface OpenAiModelRequestReference {
   runId: string;
   requestId: string;
+}
+
+/** Secret-free identity for a classified model retry awaiting durable admission. */
+export interface OpenAiModelRetryRequest {
+  runId: string;
+  protocol: OpenAiCompatibleProtocol;
+  retryCount: number;
+  failureCategory: OpenAiMalformedJsonFailureCategory;
 }
 
 /** Stable failure categories that never contain provider-controlled text. */
@@ -222,6 +232,8 @@ export interface OpenAiResponsesAgentModelOptions {
   onRequestStart?: (request: OpenAiModelRequestReservation) => void | Promise<void>;
   /** Conservatively settles requests whose actual provider usage is unavailable. */
   onRequestFailure?: (request: OpenAiModelRequestReference) => void | Promise<void>;
+  /** Must durably authorize the retry before the adapter replays a request. */
+  onBeforeModelRetry?: (retry: OpenAiModelRetryRequest) => void | Promise<void>;
   /** Observer errors are ignored so telemetry cannot alter the model turn. */
   onMalformedJsonRetry?: (event: OpenAiMalformedJsonRetryEvent) => void;
 }
@@ -243,6 +255,8 @@ export interface OpenAiChatCompletionsAgentModelOptions {
   onRequestStart?: (request: OpenAiModelRequestReservation) => void | Promise<void>;
   /** Conservatively settles requests whose actual provider usage is unavailable. */
   onRequestFailure?: (request: OpenAiModelRequestReference) => void | Promise<void>;
+  /** Must durably authorize the retry before the adapter replays a request. */
+  onBeforeModelRetry?: (retry: OpenAiModelRetryRequest) => void | Promise<void>;
   /** Observer errors are ignored so telemetry cannot alter the model turn. */
   onMalformedJsonRetry?: (event: OpenAiMalformedJsonRetryEvent) => void;
 }
@@ -377,6 +391,9 @@ export function createOpenAiCompatibleAgentModel(
       ...(options.onRequestFailure
         ? { onRequestFailure: options.onRequestFailure }
         : {}),
+      ...(options.onBeforeModelRetry
+        ? { onBeforeModelRetry: options.onBeforeModelRetry }
+        : {}),
       ...(options.onUsage !== undefined ? { onUsage: options.onUsage } : {}),
       ...(options.onMalformedJsonRetry !== undefined
         ? { onMalformedJsonRetry: options.onMalformedJsonRetry }
@@ -405,6 +422,9 @@ export function createOpenAiCompatibleAgentModel(
     ...(options.onRequestStart ? { onRequestStart: options.onRequestStart } : {}),
     ...(options.onRequestFailure
       ? { onRequestFailure: options.onRequestFailure }
+      : {}),
+    ...(options.onBeforeModelRetry
+      ? { onBeforeModelRetry: options.onBeforeModelRetry }
       : {}),
     ...(options.onUsage !== undefined ? { onUsage: options.onUsage } : {}),
     ...(options.onMalformedJsonRetry !== undefined
@@ -560,6 +580,7 @@ export function createOpenAiResponsesAgentModel(
         "openai_responses",
         options.onUsage,
         input.runId,
+        options.onBeforeModelRetry,
         options.onMalformedJsonRetry,
         {
           maxInputTokens,
@@ -652,6 +673,7 @@ export function createOpenAiChatCompletionsAgentModel(
         "openai_chat_completions",
         options.onUsage,
         input.runId,
+        options.onBeforeModelRetry,
         options.onMalformedJsonRetry,
         {
           maxInputTokens,
@@ -677,6 +699,9 @@ async function requestValidatedTurn(
     | ((usage: OpenAiModelUsage) => void | Promise<void>)
     | undefined,
   runId: string,
+  onBeforeModelRetry:
+    | ((retry: OpenAiModelRetryRequest) => void | Promise<void>)
+    | undefined,
   onMalformedJsonRetry:
     | ((event: OpenAiMalformedJsonRetryEvent) => void)
     | undefined,
@@ -759,6 +784,14 @@ async function requestValidatedTurn(
       }
       retryCount += 1;
       initialFailureCategory = error.category;
+      // This awaited gate is authoritative across turns, processes, and retries;
+      // telemetry below remains deliberately unable to authorize provider I/O.
+      await onBeforeModelRetry?.({
+        runId,
+        protocol,
+        retryCount,
+        failureCategory: initialFailureCategory
+      });
       emitMalformedJsonRetry(onMalformedJsonRetry, {
         runId,
         protocol,

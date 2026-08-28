@@ -26,12 +26,14 @@ describe("Web Run presentation", () => {
         totalTokens: 200_000,
         costUsd: 1.25,
         toolCalls: 48,
+        modelRetries: 3,
         elapsedMs: 1_500_000,
         maxTotalTokens: 1_000_000,
         warningCostUsd: 1,
         maxCostUsd: 2,
         maxWallTimeMs: 1_800_000,
         maxToolCalls: 60,
+        maxModelRetries: 3,
         teamMonthlyCostUsd: 336,
         teamMonthlyWarningUsd: 336,
         teamMonthlyMaxUsd: 420,
@@ -41,6 +43,7 @@ describe("Web Run presentation", () => {
           "cost_warning",
           "wall_time_warning",
           "tool_call_warning",
+          "retry_warning",
           "team_monthly_cost_warning"
         ]
       })
@@ -50,11 +53,13 @@ describe("Web Run presentation", () => {
       cost: "$1.25 / $2.00（$1.00 起预警）",
       wallTime: "25分 / 30分",
       toolCalls: "48 / 60",
+      modelRetries: "3 / 3",
       teamCost: "$336.00 / $420.00",
       warnings: [
         "成本接近上限",
         "运行时间接近上限",
         "工具调用接近上限",
+        "模型重试接近上限",
         "团队月预算接近上限"
       ],
       tone: "warning"

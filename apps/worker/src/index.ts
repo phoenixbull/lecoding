@@ -335,6 +335,12 @@ export function loadWorkerConfig(environment: ModelEnvironment): WorkerConfig {
         60,
         10_000
       ),
+      maxModelRetries: readPositiveInteger(
+        environment,
+        "LECODING_RUN_MAX_MODEL_RETRIES",
+        3,
+        100
+      ),
       maxActiveRunsPerUser: readPositiveInteger(
         environment,
         "LECODING_USER_MAX_ACTIVE_RUNS",
@@ -847,6 +853,14 @@ export async function composeProductionWorker(
         // Unknowable billing is conservatively charged at the reserved maximum.
         onRequestFailure: async (request) => {
           const decision = await budgets.forfeitModelRequest(request);
+          if (!decision.allowed) {
+            throw new RunBudgetExceededError(decision.reason);
+          }
+        },
+        // Retry admission is persisted before another provider request can begin,
+        // so another Worker or a resumed turn observes the same Run-wide count.
+        onBeforeModelRetry: async ({ runId }) => {
+          const decision = await budgets.recordModelRetry(runId);
           if (!decision.allowed) {
             throw new RunBudgetExceededError(decision.reason);
           }

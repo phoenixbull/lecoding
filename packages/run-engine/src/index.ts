@@ -2589,6 +2589,8 @@ function budgetFailureMessage(
       return "Run wall-clock limit exceeded";
     case "tool_call_limit":
       return "Run tool-call limit exceeded";
+    case "retry_limit":
+      return "Run model retry limit exceeded";
     case "team_monthly_cost_limit":
       return "Team monthly cost limit exceeded";
     case "user_concurrency_limit":
@@ -2612,12 +2614,14 @@ function toRunBudgetView(
     totalTokens: snapshot.totalTokens,
     costUsd: snapshot.costUsd,
     toolCalls: snapshot.toolCalls,
+    modelRetries: snapshot.modelRetries,
     elapsedMs: snapshot.elapsedMs,
     maxTotalTokens: snapshot.maxTotalTokens,
     warningCostUsd: snapshot.warningCostUsd,
     maxCostUsd: snapshot.maxCostUsd,
     maxWallTimeMs: snapshot.maxWallTimeMs,
     maxToolCalls: snapshot.maxToolCalls,
+    maxModelRetries: snapshot.maxModelRetries,
     teamMonthlyCostUsd: snapshot.teamMonthlyCostUsd,
     teamMonthlyWarningUsd: snapshot.teamMonthlyWarningUsd,
     teamMonthlyMaxUsd: snapshot.teamMonthlyMaxUsd,

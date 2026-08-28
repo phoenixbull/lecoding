@@ -82,6 +82,7 @@ const budgetTokens = requiredElement<HTMLElement>("#budget-tokens");
 const budgetCost = requiredElement<HTMLElement>("#budget-cost");
 const budgetWallTime = requiredElement<HTMLElement>("#budget-wall-time");
 const budgetToolCalls = requiredElement<HTMLElement>("#budget-tool-calls");
+const budgetModelRetries = requiredElement<HTMLElement>("#budget-model-retries");
 const budgetTeamCost = requiredElement<HTMLElement>("#budget-team-cost");
 const budgetWarnings = requiredElement<HTMLElement>("#budget-warnings");
 
@@ -741,6 +742,7 @@ function renderBudget(run: RunView | undefined): void {
     budgetCost.textContent = "";
     budgetWallTime.textContent = "";
     budgetToolCalls.textContent = "";
+    budgetModelRetries.textContent = "";
     budgetTeamCost.textContent = "";
     return;
   }
@@ -752,6 +754,7 @@ function renderBudget(run: RunView | undefined): void {
   budgetCost.textContent = details.cost;
   budgetWallTime.textContent = details.wallTime;
   budgetToolCalls.textContent = details.toolCalls;
+  budgetModelRetries.textContent = details.modelRetries;
   budgetTeamCost.textContent = details.teamCost;
   for (const warning of details.warnings) {
     const chip = document.createElement("span");

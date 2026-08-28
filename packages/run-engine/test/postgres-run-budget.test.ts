@@ -311,6 +311,51 @@ describe("PostgreSQL Run budget manager", () => {
     await database.close();
   });
 
+  it("allows three retryable model errors across a Run and rejects the fourth", async () => {
+    const database = new PGlite();
+    const budgets = await createPostgresRunBudgetManager(database, {
+      limits: {
+        maxTotalTokens: 10_000,
+        warningCostUsd: 1,
+        maxCostUsd: 2,
+        maxWallTimeMs: 30 * 60_000,
+        maxToolCalls: 60,
+        maxModelRetries: 3,
+        maxActiveRunsPerUser: 2,
+        maxActiveRunsPerProject: 5,
+        teamMonthlyWarningUsd: 350,
+        teamMonthlyMaxUsd: 420
+      },
+      pricing: {
+        modelId: "vendor-model-v1",
+        version: "pricing-2026-08-28",
+        inputUsdPerMillion: 0.14,
+        outputUsdPerMillion: 0.28
+      }
+    });
+    await budgets.open({
+      runId: "run-retries",
+      projectId: "project-1",
+      userId: "user-1"
+    });
+
+    await expect(budgets.recordModelRetry("run-retries")).resolves.toMatchObject({
+      allowed: true,
+      snapshot: { modelRetries: 1, maxModelRetries: 3 }
+    });
+    await budgets.recordModelRetry("run-retries");
+    await expect(budgets.recordModelRetry("run-retries")).resolves.toMatchObject({
+      allowed: true,
+      snapshot: { modelRetries: 3, warnings: ["retry_warning"] }
+    });
+    await expect(budgets.recordModelRetry("run-retries")).resolves.toMatchObject({
+      allowed: false,
+      reason: "retry_limit",
+      snapshot: { modelRetries: 4, maxModelRetries: 3 }
+    });
+    await database.close();
+  });
+
   it("keeps the wall-clock deadline across later checks", async () => {
     const database = new PGlite();
     let now = "2026-08-28T08:00:00.000Z";

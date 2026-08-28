@@ -708,6 +708,27 @@ describe("createOpenAiResponsesAgentModel", () => {
     ]);
   });
 
+  it("awaits the durable retry gate before issuing the replay", async () => {
+    let requestCount = 0;
+    const model = createOpenAiChatCompletionsAgentModel({
+      model: "chat-test",
+      onBeforeModelRetry: async () => {
+        throw new Error("retry budget exhausted");
+      },
+      client: {
+        async create() {
+          requestCount += 1;
+          return chatCommandResponse('{"argv":["pnpm","test"]');
+        }
+      }
+    });
+
+    await expect(model.next(baseInput([]))).rejects.toThrow(
+      "retry budget exhausted"
+    );
+    expect(requestCount).toBe(1);
+  });
+
   it("ignores retry telemetry receiver failures without exposing malformed actions", async () => {
     let requestCount = 0;
     const model = createOpenAiChatCompletionsAgentModel({

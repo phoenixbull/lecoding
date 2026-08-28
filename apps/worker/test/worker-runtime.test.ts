@@ -535,6 +535,7 @@ describe("composeProductionWorker", () => {
         maxCostUsd: 2,
         maxWallTimeMs: 1_800_000,
         maxToolCalls: 60,
+        maxModelRetries: 3,
         maxActiveRunsPerUser: 2,
         maxActiveRunsPerProject: 5,
         teamMonthlyWarningUsd: 336,

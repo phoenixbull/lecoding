@@ -7,6 +7,8 @@ export interface RunBudgetLimits {
   maxCostUsd: number;
   maxWallTimeMs: number;
   maxToolCalls: number;
+  /** Defaults to the V3 limit of three for older composition callers. */
+  maxModelRetries?: number;
   maxActiveRunsPerUser: number;
   maxActiveRunsPerProject: number;
   teamMonthlyWarningUsd: number;
@@ -31,12 +33,14 @@ export interface RunBudgetSnapshot {
   totalTokens: number;
   costUsd: number;
   toolCalls: number;
+  modelRetries: number;
   elapsedMs: number;
   maxTotalTokens: number;
   warningCostUsd: number;
   maxCostUsd: number;
   maxWallTimeMs: number;
   maxToolCalls: number;
+  maxModelRetries: number;
   teamMonthlyCostUsd: number;
   teamMonthlyWarningUsd: number;
   teamMonthlyMaxUsd: number;
@@ -52,6 +56,7 @@ export type RunBudgetWarning =
   | "cost_warning"
   | "wall_time_warning"
   | "tool_call_warning"
+  | "retry_warning"
   | "team_monthly_cost_warning";
 
 /** Stable hard-limit categories suitable for Run failure and metrics labels. */
@@ -60,6 +65,7 @@ export type RunBudgetLimitReason =
   | "cost_limit"
   | "wall_time_limit"
   | "tool_call_limit"
+  | "retry_limit"
   | "user_concurrency_limit"
   | "project_concurrency_limit"
   | "team_monthly_cost_limit";
@@ -114,6 +120,8 @@ export interface RunBudgetManager {
   /** Charges any active reservation left by a crashed request before recovery. */
   reconcileModelRequests(runId: string): Promise<RunBudgetDecision>;
   recordToolCall(runId: string): Promise<RunBudgetDecision>;
+  /** Counts one classified retryable model failure before another attempt. */
+  recordModelRetry(runId: string): Promise<RunBudgetDecision>;
   check(runId: string): Promise<RunBudgetDecision>;
   close(runId: string): Promise<void>;
   get(runId: string): Promise<RunBudgetSnapshot | undefined>;
@@ -137,6 +145,8 @@ CREATE TABLE IF NOT EXISTS run_engine_budgets (
   max_cost_microusd bigint NOT NULL CHECK (max_cost_microusd > 0),
   max_wall_time_ms bigint NOT NULL CHECK (max_wall_time_ms > 0),
   max_tool_calls integer NOT NULL CHECK (max_tool_calls > 0),
+  model_retries integer NOT NULL DEFAULT 0 CHECK (model_retries >= 0),
+  max_model_retries integer NOT NULL DEFAULT 3 CHECK (max_model_retries >= 0),
   team_monthly_warning_microusd bigint NOT NULL CHECK (team_monthly_warning_microusd >= 0),
   team_monthly_max_microusd bigint NOT NULL CHECK (team_monthly_max_microusd > 0),
   model_id text NOT NULL,
@@ -154,6 +164,12 @@ const RUN_BUDGET_ACTIVE_USER_INDEX_SQL = `CREATE INDEX IF NOT EXISTS
 const RUN_BUDGET_ACTIVE_PROJECT_INDEX_SQL = `CREATE INDEX IF NOT EXISTS
   run_engine_budgets_active_project_idx ON run_engine_budgets (project_id)
   WHERE finished_at IS NULL;`;
+const RUN_BUDGET_MODEL_RETRIES_MIGRATION_SQL = `ALTER TABLE run_engine_budgets
+  ADD COLUMN IF NOT EXISTS model_retries integer NOT NULL DEFAULT 0
+  CHECK (model_retries >= 0);`;
+const RUN_BUDGET_MAX_MODEL_RETRIES_MIGRATION_SQL = `ALTER TABLE run_engine_budgets
+  ADD COLUMN IF NOT EXISTS max_model_retries integer NOT NULL DEFAULT 3
+  CHECK (max_model_retries >= 0);`;
 
 const RUN_MODEL_RESERVATION_SCHEMA_SQL = `
 CREATE TABLE IF NOT EXISTS run_engine_model_reservations (
@@ -187,6 +203,8 @@ export async function createPostgresRunBudgetManager(
   await database.query(RUN_BUDGET_SCHEMA_SQL);
   await database.query(RUN_BUDGET_ACTIVE_USER_INDEX_SQL);
   await database.query(RUN_BUDGET_ACTIVE_PROJECT_INDEX_SQL);
+  await database.query(RUN_BUDGET_MODEL_RETRIES_MIGRATION_SQL);
+  await database.query(RUN_BUDGET_MAX_MODEL_RETRIES_MIGRATION_SQL);
   await database.query(RUN_MODEL_RESERVATION_SCHEMA_SQL);
   await database.query(RUN_MODEL_RESERVATION_ACTIVE_INDEX_SQL);
   const now = options.now ?? (() => new Date().toISOString());
@@ -198,6 +216,10 @@ export async function createPostgresRunBudgetManager(
   const teamMonthlyWarningMicrousd = usdToMicrousd(
     options.limits.teamMonthlyWarningUsd
   );
+  const maxModelRetries = options.limits.maxModelRetries ?? 3;
+  if (!Number.isSafeInteger(maxModelRetries) || maxModelRetries < 0) {
+    throw new Error("maxModelRetries must be a non-negative integer");
+  }
 
   const get = async (runId: string): Promise<RunBudgetSnapshot | undefined> => {
     validateIdentifier(runId, "Run ID");
@@ -248,11 +270,11 @@ export async function createPostgresRunBudgetManager(
            INSERT INTO run_engine_budgets
              (run_id, project_id, user_id, max_total_tokens,
               warning_cost_microusd, max_cost_microusd, max_wall_time_ms,
-              max_tool_calls, team_monthly_warning_microusd,
+              max_tool_calls, max_model_retries, team_monthly_warning_microusd,
               team_monthly_max_microusd, model_id, pricing_version, input_usd_per_million,
               output_usd_per_million, started_at)
            SELECT $1, $2, $3, $4::bigint, $5::bigint, $6::bigint, $7::bigint,
-                  $8::integer, $17::bigint, $16::bigint,
+                  $8::integer, $18::integer, $17::bigint, $16::bigint,
                   $9, $10, $11::numeric, $12::numeric,
                   $13::timestamptz
              FROM active_counts
@@ -284,7 +306,8 @@ export async function createPostgresRunBudgetManager(
           options.limits.maxActiveRunsPerUser,
           options.limits.maxActiveRunsPerProject,
           teamMonthlyMaxMicrousd,
-          teamMonthlyWarningMicrousd
+          teamMonthlyWarningMicrousd,
+          maxModelRetries
         ]
       );
       const row = admitted.rows[0];
@@ -612,6 +635,25 @@ export async function createPostgresRunBudgetManager(
       return decide(snapshot);
     },
 
+    async recordModelRetry(runId) {
+      validateIdentifier(runId, "Run ID");
+      const result = await database.query<RunBudgetRow>(
+        `UPDATE run_engine_budgets
+            SET model_retries = model_retries + 1
+          WHERE run_id = $1 AND finished_at IS NULL
+          RETURNING *`,
+        [runId]
+      );
+      if (!result.rows[0]) {
+        throw new Error("Run budget is not active");
+      }
+      const snapshot = await get(runId);
+      if (!snapshot) {
+        throw new Error("Run budget disappeared after retry persistence");
+      }
+      return decide(snapshot);
+    },
+
     async check(runId) {
       const snapshot = await get(runId);
       if (!snapshot || !snapshot.active) {
@@ -659,11 +701,13 @@ interface RunBudgetRow extends Record<string, unknown> {
   output_tokens: string | number;
   cost_microusd: string | number;
   tool_calls: string | number;
+  model_retries: string | number;
   max_total_tokens: string | number;
   warning_cost_microusd: string | number;
   max_cost_microusd: string | number;
   max_wall_time_ms: string | number;
   max_tool_calls: string | number;
+  max_model_retries: string | number;
   team_monthly_warning_microusd: string | number;
   team_monthly_max_microusd: string | number;
   team_monthly_cost: string | number;
@@ -697,6 +741,7 @@ function mapSnapshot(row: RunBudgetRow, observedAt: string): RunBudgetSnapshot {
     totalTokens: inputTokens + outputTokens,
     costUsd: microusdToUsd(safeInteger(row.cost_microusd, "cost")),
     toolCalls: safeInteger(row.tool_calls, "tool calls"),
+    modelRetries: safeInteger(row.model_retries, "model retries"),
     elapsedMs: Math.max(0, Date.parse(observedAt) - startedAt),
     maxTotalTokens: safeInteger(row.max_total_tokens, "token limit"),
     warningCostUsd: microusdToUsd(
@@ -707,6 +752,7 @@ function mapSnapshot(row: RunBudgetRow, observedAt: string): RunBudgetSnapshot {
     ),
     maxWallTimeMs: safeInteger(row.max_wall_time_ms, "wall-time limit"),
     maxToolCalls: safeInteger(row.max_tool_calls, "tool-call limit"),
+    maxModelRetries: safeInteger(row.max_model_retries, "model retry limit"),
     teamMonthlyCostUsd: microusdToUsd(
       safeInteger(row.team_monthly_cost, "team monthly cost")
     ),
@@ -742,6 +788,12 @@ function warningsFor(
   if (snapshot.toolCalls >= snapshot.maxToolCalls * 0.8) {
     warnings.push("tool_call_warning");
   }
+  if (
+    snapshot.maxModelRetries > 0 &&
+    snapshot.modelRetries >= snapshot.maxModelRetries * 0.8
+  ) {
+    warnings.push("retry_warning");
+  }
   if (snapshot.teamMonthlyCostUsd >= snapshot.teamMonthlyWarningUsd) {
     warnings.push("team_monthly_cost_warning");
   }
@@ -763,6 +815,9 @@ function decide(snapshot: RunBudgetSnapshot): RunBudgetDecision {
   }
   if (snapshot.toolCalls > snapshot.maxToolCalls) {
     return { allowed: false, reason: "tool_call_limit", snapshot };
+  }
+  if (snapshot.modelRetries > snapshot.maxModelRetries) {
+    return { allowed: false, reason: "retry_limit", snapshot };
   }
   return { allowed: true, snapshot };
 }

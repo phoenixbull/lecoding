@@ -42,6 +42,15 @@ cannot retry successful peers. Terminal snapshots are excluded before enqueue.
 `LECODING_RECOVERY_INTERVAL_MS` defaults to 5000, accepts 1–3600000, and is
 rounded up to whole seconds.
 
+Run quotas default to the reviewed V3 policy documented in `.env.example`.
+`LECODING_RUN_MAX_MODEL_RETRIES` defaults to 3 and accepts 1–100; the Worker
+persists one count before each classified replay, so replacement Workers and
+later turns share the same limit. Input/output request envelopes are reserved
+before provider I/O, while user/project concurrency and team monthly limits are
+also enforced in PostgreSQL. The authenticated Run response and Web quota card
+show current usage, limits, model/pricing identity, and stable warning labels.
+See [`phase-2-quota-monitoring-audit.md`](phase-2-quota-monitoring-audit.md).
+
 ## Artifact storage and retention
 
 The Worker creates a private `artifacts` directory beside the first registered

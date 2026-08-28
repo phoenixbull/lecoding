@@ -134,12 +134,14 @@ export interface RunBudgetView {
   totalTokens: number;
   costUsd: number;
   toolCalls: number;
+  modelRetries: number;
   elapsedMs: number;
   maxTotalTokens: number;
   warningCostUsd: number;
   maxCostUsd: number;
   maxWallTimeMs: number;
   maxToolCalls: number;
+  maxModelRetries: number;
   teamMonthlyCostUsd: number;
   teamMonthlyWarningUsd: number;
   teamMonthlyMaxUsd: number;
@@ -150,6 +152,7 @@ export interface RunBudgetView {
     | "cost_warning"
     | "wall_time_warning"
     | "tool_call_warning"
+    | "retry_warning"
     | "team_monthly_cost_warning"
   >;
 }
