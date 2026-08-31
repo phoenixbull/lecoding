@@ -125,6 +125,18 @@ importers:
         specifier: workspace:*
         version: link:../run-environment
 
+  packages/local-runner:
+    dependencies:
+      '@lecoding/contracts':
+        specifier: workspace:*
+        version: link:../contracts
+      '@lecoding/run-environment':
+        specifier: workspace:*
+        version: link:../run-environment
+      '@lecoding/workspace':
+        specifier: workspace:*
+        version: link:../workspace
+
   packages/openai-model:
     dependencies:
       '@lecoding/run-engine':

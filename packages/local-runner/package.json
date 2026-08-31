@@ -1,0 +1,15 @@
+{
+  "name": "@lecoding/local-runner",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": "./src/index.ts",
+  "scripts": {
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@lecoding/contracts": "workspace:*",
+    "@lecoding/run-environment": "workspace:*",
+    "@lecoding/workspace": "workspace:*"
+  }
+}
