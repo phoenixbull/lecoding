@@ -15,6 +15,11 @@ import {
   type RunOperationalMetrics,
   type RunView
 } from "@lecoding/contracts";
+import {
+  createDeviceCredentialStore,
+  type DeviceCredentialStore,
+  type SecureStore
+} from "@lecoding/secure-store";
 
 /** Shared Web/PC client interface for versioned Run operations. */
 export interface LeCodingClient {
@@ -82,11 +87,10 @@ export interface LeCodingClient {
   /** Revokes a device, invalidating its access token for future authenticate() calls. */
   revokeDevice(deviceId: string): Promise<void>;
   /**
-   * Returns the cached device credential if this Client was constructed with
-   * one; callers that build a long-lived PC client persist the result of
-   * `exchangeDeviceCode` and pass it back here.
+   * Returns the persisted device credential, falling back to the value
+   * supplied at construction time when no SecureStore is configured.
    */
-  deviceCredential(): ExchangedDevice | undefined;
+  deviceCredential(): Promise<ExchangedDevice | undefined>;
   openRunEventStream(
     runId: RunId,
     options?: OpenRunEventStreamOptions
@@ -147,8 +151,19 @@ export interface ClientOptions {
   baseUrl: string;
   /** Optional single-user bearer token; it is sent only in the Authorization header. */
   accessToken?: string;
-  /** Optional pre-existing device credential; enables headless device access. */
+  /**
+   * Pre-existing device credential for headless device clients. When
+   * `secureStore` is also supplied, this option is only used as a one-shot
+   * bootstrap value: it is written to the store and ignored on subsequent
+   * reads.
+   */
   deviceCredential?: ExchangedDevice;
+  /**
+   * Cross-platform secure store used to persist device credentials between
+   * process restarts. When present, `exchangeDeviceCode` and `revokeDevice`
+   * route through the store so the latest credential is durable.
+   */
+  secureStore?: SecureStore;
   fetch?: typeof globalThis.fetch;
 }
 
@@ -174,6 +189,15 @@ export function createClient(options: ClientOptions): LeCodingClient {
     }
     return fetchImplementation(input, { ...init, headers });
   };
+
+  // The credential store is only built when the caller supplies a
+  // SecureStore. It wraps save/load/remove so the SDK's device methods
+  // automatically keep the persisted credential in sync.
+  let deviceStore: DeviceCredentialStore | undefined;
+  if (options.secureStore) {
+    deviceStore = createDeviceCredentialStore({ backend: options.secureStore });
+  }
+  let cachedCredential: ExchangedDevice | undefined = options.deviceCredential;
 
   const openRunEventStream = async (
     runId: RunId,
@@ -529,7 +553,14 @@ export function createClient(options: ClientOptions): LeCodingClient {
           response.status
         );
       }
-      return (await response.json()) as ExchangedDevice;
+      const credential = (await response.json()) as ExchangedDevice;
+      cachedCredential = credential;
+      if (deviceStore) {
+        // Persist synchronously so a process crash right after the exchange
+        // does not strand the user without credentials.
+        await deviceStore.save(credential);
+      }
+      return credential;
     },
 
     async listDevices(): Promise<DeviceListing> {
@@ -553,10 +584,28 @@ export function createClient(options: ClientOptions): LeCodingClient {
       if (!response.ok) {
         throw new LeCodingHttpError("Failed to revoke device", response.status);
       }
+      if (deviceStore) {
+        // Removing from the local store matches the server-side revocation
+        // so a re-launched process does not re-authenticate as a dead device.
+        await deviceStore.remove(deviceId);
+      }
+      if (cachedCredential?.deviceId === deviceId) {
+        cachedCredential = undefined;
+      }
     },
 
-    deviceCredential() {
-      return options.deviceCredential;
+    async deviceCredential(): Promise<ExchangedDevice | undefined> {
+      // The persisted store is the source of truth once the Client is
+      // configured with one; the constructor-supplied value only acts as a
+      // one-shot bootstrap that the exchange call later overwrites.
+      if (deviceStore) {
+        const keys = await deviceStore.list();
+        if (keys.length === 0) {
+          return undefined;
+        }
+        return deviceStore.load(keys[0]!);
+      }
+      return cachedCredential;
     }
   };
 }

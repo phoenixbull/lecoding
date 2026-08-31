@@ -3,62 +3,59 @@
 Updated: 2026-08-31
 
 Phase 4 starts the PC client and extension surface. The PRD splits it into
-4A (Connected Desktop) and 4B (Local Runner). The bulk of Phase 4 is
-client-side work — Electron + React shell, device binding, OS keychain,
-desktop adapter — and depends on environment-specific tooling and signing
-pipelines that are intentionally outside the current session. This document
-records what was closed during the Phase 4-A bridge work: the runtime
-consumer for the project-level `protectedPaths` field that Phase 3 surfaced
-through `VerificationPlanProvider.loadProjectConfig`.
+4A (Connected Desktop) and 4B (Local Runner). This document records what
+was closed during the Phase 4-A bridge work plus the first two waves of
+Phase 4-A forward work that landed after the initial bridge.
 
-## Closed in the Phase 4-A bridge
+## Wave plan (Phase 4-A)
 
-| Task | Status | Current evidence |
-|---|---|---|
-| Runtime consumer for project-declared `protectedPaths` | Complete | New [`packages/project-policy-globs`](file:///Users/letv_lzb/Documents/LeCodex/packages/project-policy-globs) matcher handles the `*` / `**` operators the YAML loader already advertises, with strict project-relative validation that rejects empty strings, backslashes, null bytes, leading `/`, Windows drive letters, and `..` escapes. [`PolicyEngine`](file:///Users/letv_lzb/Documents/LeCodex/packages/policy/src/index.ts#L78-L92) accepts the matcher via a new `protectedPaths` DI option and returns `decision: "ask"` for any `protected_file_write` whose realpath matches a project glob, in every approval mode. The fixed-deny paths (credentials, host-control sockets) still take precedence so an attacker cannot lift `.env` out of the deny list by listing it in the project rules. |
-| Phase 4 PRD forward dependencies | Intact | The PC client scope documented in `AI_Coding_Agent_PRD与技术设计方案书v3.md` § 14 and § 15 (Electron + React shell, device binding, OS keychain, `DesktopLocalEnvironment`, Local Runner) is unchanged. Phase 4-A / 4-B work remains in front of the project and is recorded below as the next scope. |
+Phase 4-A is split into three dependency-ordered waves:
 
-## Verification baseline (bridge work)
+- **Wave 1 — server-only foundation.** Pieces the PC client will consume
+  but that can be built and tested entirely on the server side: the
+  `network.askDomains` runtime consumer, device binding (service + HTTP +
+  Postgres store + client SDK surface), and the local worktree/sandbox
+  adapter behind the `RunEnvironment` interface.
+- **Wave 2 — adapter / OS integration.** Pieces that cross the OS
+  boundary but still don't require an Electron build: OS keychain
+  abstraction (with encrypted-file fallback) wired into the client SDK
+  as the device credential store, and the `DesktopLocalEnvironment`
+  adapter using the Wave-1 worktree.
+- **Wave 3 — Electron shell + signing.** The actual desktop app,
+  windowing, native safeStorage, code signing, and auto-update.
 
-- `pnpm typecheck`: **15/15** workspace tasks passed.
-- `pnpm test`: **414 passed + 2 skipped** across 78 files. The four known
+## Closed in Phase 4-A so far
+
+| Task | Status | Wave | Current evidence |
+|---|---|---|---|
+| Runtime consumer for project-declared `protectedPaths` | Complete | Bridge | New [`packages/project-policy-globs`](file:///Users/letv_lzb/Documents/LeCodex/packages/project-policy-globs) matcher handles `*` / `**` with strict project-relative validation. [`PolicyEngine`](file:///Users/letv_lzb/Documents/LeCodex/packages/policy/src/index.ts#L78-L92) accepts it via `protectedPaths` DI and returns `decision: "ask"` for matching `protected_file_write` in every approval mode. Fixed-deny paths still take precedence. |
+| Runtime consumer for `network.askDomains` | Complete | Wave 1 | [`PolicyEngine`](file:///Users/letv_lzb/Documents/LeCodex/packages/policy/src/index.ts) accepts `askDomains` DI (matcher or `string[]`). Any domain *not* on the allow list is forced to `ask` even in `full_access` mode. Placed between fixed-deny and project rules so an allow-list cannot override fixed-deny entries. Empty array means no restriction. |
+| Device binding (server API + client SDK) | Complete | Wave 1 | [`packages/device-binding`](file:///Users/letv_lzb/Documents/LeCodex/packages/device-binding) — service (`issueCode` / `exchangeCode` / `authenticate` / `touchDevice` / `revokeDevice` / `listDevicesForUser`), in-memory store, Postgres store (`device_binding_codes` + `device_binding_devices` tables), and HTTP handler (4 endpoints). Base32 9-char one-time codes, SHA-256 hashed storage, `DeviceBindingError` with 7 error codes. [`packages/client-sdk`](file:///Users/letv_lzb/Documents/LeCodex/packages/client-sdk/src/index.ts) exposes `createDeviceCode` / `exchangeDeviceCode` / `listDevices` / `revokeDevice` / `deviceCredential`. 23 service+HTTP tests pass. |
+| Local worktree / sandbox (`RunEnvironment` adapter) | Complete | Wave 1 | [`packages/local-runner`](file:///Users/letv_lzb/Documents/LeCodex/packages/local-runner/src/index.ts) — `createLocalRunEnvironment` implements `RunEnvironment` (prepare / perform / inspect / dispose). Uses `git worktree add --detach` for isolation, `child_process.spawn` with `BoundedOutputCapture`, `AbortSignal` (SIGTERM) + `execTimeoutMs` (SIGKILL) cancellation. executable limited to bare names (rejects absolute paths and `/`). 7 tests pass. |
+| OS keychain abstraction + client SDK integration | Complete | Wave 2 | [`packages/secure-store`](file:///Users/letv_lzb/Documents/LeCodex/packages/secure-store/src/index.ts) — `SecureStore` interface (getItem / setItem / deleteItem / listKeys), `SecureStoreUnavailableError`, `createInMemorySecureStore()`. [`encrypted-file-store`](file:///Users/letv_lzb/Documents/LeCodex/packages/secure-store/src/encrypted-file-store.ts) — AES-256-GCM + PBKDF2-HMAC-SHA256 (200k iterations), atomic writes. [`device-credential-store`](file:///Users/letv_lzb/Documents/LeCodex/packages/secure-store/src/device-credential-store.ts) — namespace-prefixed device credential persistence with deviceId mismatch guard. Client SDK accepts `secureStore` option; exchangeDeviceCode persists, revokeDevice clears, `deviceCredential()` reads from store first. 32 tests (21 + 11) pass. |
+| Phase 4 PRD forward dependencies | Intact | — | Electron shell, `DesktopLocalEnvironment` full adapter, native safeStorage / keytar, code signing + auto-update remain ahead. |
+
+## Verification baseline
+
+- `pnpm typecheck`: **18/18** workspace tasks passed.
+- `pnpm test`: **489 passed + 2 skipped** across 83 files. The four known
   failures remain parked under the user-approved Phase 0 environment
   exception: two `docker-environment` daemon-backed cases and two
-  `run-events` Postgres frozen-time drift cases. None of the four are
-  introduced or affected by the Phase 4-A bridge work; they predate the
-  `project-policy-globs` package and the `PolicyEngine.protectedPaths`
-  extension.
-- Focused Phase 4-A bridge suites:
-  - `packages/project-policy-globs/test/matcher.test.ts`: 16/16.
-  - `packages/policy/test/policy.test.ts`: 13/13 (the four new
-    `Project protectedPaths` cases prove the runtime contract).
-  - `packages/policy/test/adversarial-eval.test.ts`: 2/2.
+  `run-events` Postgres frozen-time drift cases. None are introduced by
+  the Wave 1 / Wave 2 work.
+- Focused new suites:
+  - `packages/secure-store/test/secure-store.test.ts`: 21/21.
+  - `packages/secure-store/test/device-credential-store.test.ts`: 11/11.
+  - `packages/client-sdk/test/client.test.ts`: 23/23.
+  - `packages/device-binding/test/*.test.ts`: 23/23.
+  - `packages/local-runner/test/environment.test.ts`: 7/7.
+  - `packages/policy/test/policy.test.ts`: network.askDomains cases pass.
 
-## Phase 4-A / 4-B remaining work
+## Remaining Phase 4 work
 
-The PRD exit conditions that remain in front of the project:
-
-- **Electron + React shell** that reuses `packages/contracts` and
-  `packages/client-sdk` and is installable on Windows and macOS.
-- **Device binding** end-to-end: browser-backed identity proof,
-  one-time device code exchange, the `/api/v1/devices` surface, and the
-  device-revocation path.
-- **`DesktopLocalEnvironment` adapter** matching the
-  `ServerDockerEnvironment` interface contract tests, plus the local
-  worktree/sandbox that supports keep/discard, cancellation, and recovery
-  without polluting the source checkout.
-- **OS keychain** integration for credentials that the Local Runner holds
-  on behalf of the server Worker.
-- **Code signing and auto-update** pipelines for the desktop artefact.
-- **Runtime consumer** for the project-level `network.askDomains`
-  surfaced by `loadProjectConfig`: the YAML parser already returns the
-  list, the next phase wires it through `PolicyEngine.networkEgress`.
-
-The bridge work above does **not** touch any of these seams. It only
-extends the policy package with a protected-path matcher that the Worker
-process can already wire through the existing `PolicyEngineOptions`
-constructor because the `PolicyEngine` itself is constructed outside
-`RunEngine` and injected as a dependency.
-
-The final mapping is recorded in
-[`phase-4-completion-audit.md`](phase-4-completion-audit.md).
+- **Wave 2 (in progress):** `DesktopLocalEnvironment` full adapter
+  wiring the local-runner worktree behind a desktop-safe entry point
+  with user-facing keep/discard UI hooks.
+- **Wave 3:** Electron + React shell (Windows + macOS), native
+  `safeStorage` / keytar backend for `SecureStore`, code signing and
+  auto-update pipelines.

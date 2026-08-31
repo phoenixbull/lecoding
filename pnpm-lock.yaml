@@ -104,6 +104,9 @@ importers:
       '@lecoding/contracts':
         specifier: workspace:*
         version: link:../contracts
+      '@lecoding/secure-store':
+        specifier: workspace:*
+        version: link:../secure-store
 
   packages/contracts: {}
 
@@ -205,6 +208,8 @@ importers:
       '@electric-sql/pglite':
         specifier: ^0.5.5
         version: 0.5.5
+
+  packages/secure-store: {}
 
   packages/test-harness:
     dependencies:

@@ -575,7 +575,7 @@ describe("LeCodingClient", () => {
     expect(deleteCall[1]?.method).toBe("DELETE");
   });
 
-  it("surfaces the pre-existing device credential when the Client was constructed with one", () => {
+  it("surfaces the pre-existing device credential when the Client was constructed with one", async () => {
     const client = createClient({
       baseUrl: "https://agent.example",
       deviceCredential: {
@@ -591,12 +591,12 @@ describe("LeCodingClient", () => {
         createdAt: "2026-08-31T10:00:00.000Z"
       }
     });
-    expect(client.deviceCredential()?.deviceId).toBe("device-1");
+    expect((await client.deviceCredential())?.deviceId).toBe("device-1");
   });
 
-  it("returns undefined for deviceCredential when none was supplied", () => {
+  it("returns undefined for deviceCredential when none was supplied", async () => {
     const client = createClient({ baseUrl: "https://agent.example" });
-    expect(client.deviceCredential()).toBeUndefined();
+    expect(await client.deviceCredential()).toBeUndefined();
   });
 
   it("maps non-OK responses on device endpoints to LeCodingHttpError", async () => {
