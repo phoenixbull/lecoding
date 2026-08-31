@@ -479,4 +479,146 @@ describe("LeCodingClient", () => {
       })
     ]);
   });
+
+  it("creates a device code with the bearer session", async () => {
+    const fetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      expect(new Headers(init?.headers).get("authorization")).toBe(
+        "Bearer browser-session"
+      );
+      return Response.json({
+        code: "ABCDEFGHI",
+        payload: "lecoding://device-binding?code=ABCDEFGHI",
+        expiresAt: "2026-09-01T10:00:00.000Z",
+        projectId: "project-1",
+        projectName: "Project One"
+      });
+    });
+    const client = createClient({
+      baseUrl: "https://agent.example",
+      accessToken: "browser-session",
+      fetch: fetch as unknown as typeof globalThis.fetch
+    });
+    const result = await client.createDeviceCode("project-1", { ttlMs: 600_000 });
+    expect(result.code).toBe("ABCDEFGHI");
+    expect(result.projectId).toBe("project-1");
+    expect(String(fetch.mock.calls[0]?.[0])).toContain("/api/v1/devices/code");
+  });
+
+  it("exchanges a device code WITHOUT sending the bearer token", async () => {
+    let observedAuthorization: string | null = null;
+    const fetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      observedAuthorization = new Headers(init?.headers).get("authorization");
+      return Response.json({
+        deviceId: "device-1",
+        accessToken: "x".repeat(64),
+        userId: "user-1",
+        email: "alice@example.com",
+        projectId: "project-1",
+        projectName: "Project One",
+        deviceLabel: "Alice's laptop",
+        platform: "darwin",
+        expiresAt: "2026-09-01T10:00:00.000Z",
+        createdAt: "2026-08-31T10:00:00.000Z"
+      });
+    });
+    const client = createClient({
+      baseUrl: "https://agent.example",
+      accessToken: "browser-session",
+      fetch: fetch as unknown as typeof globalThis.fetch
+    });
+    const exchanged = await client.exchangeDeviceCode({
+      code: "ABCDEFGHI",
+      deviceLabel: "Alice's laptop",
+      platform: "darwin"
+    });
+    expect(exchanged.deviceId).toBe("device-1");
+    expect(exchanged.accessToken).toBe("x".repeat(64));
+    // The exchange MUST NOT carry the browser bearer token, otherwise the
+    // device would inherit the user's full session authority.
+    expect(observedAuthorization).toBeNull();
+    const [url] = fetch.mock.calls[0] as [string];
+    expect(url).toContain("/api/v1/devices/exchange");
+  });
+
+  it("lists and revokes devices through the bearer session", async () => {
+    const fetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      if (init?.method === "DELETE") {
+        return new Response(null, { status: 204 });
+      }
+      return Response.json({
+        devices: [
+          {
+            deviceId: "device-1",
+            projectId: "project-1",
+            projectName: "Project One",
+            deviceLabel: "Alice's laptop",
+            platform: "darwin",
+            createdAt: "2026-08-31T10:00:00.000Z",
+            lastUsedAt: "2026-08-31T10:00:00.000Z",
+            expiresAt: "2026-09-01T10:00:00.000Z"
+          }
+        ]
+      });
+    });
+    const client = createClient({
+      baseUrl: "https://agent.example",
+      accessToken: "browser-session",
+      fetch: fetch as unknown as typeof globalThis.fetch
+    });
+    const listing = await client.listDevices();
+    expect(listing.devices).toHaveLength(1);
+    expect(listing.devices[0]?.deviceId).toBe("device-1");
+
+    await client.revokeDevice("device-1");
+    const deleteCall = (fetch.mock.calls[1] ?? []) as [string, RequestInit?];
+    expect(deleteCall[0]).toContain("/api/v1/devices/device-1");
+    expect(deleteCall[1]?.method).toBe("DELETE");
+  });
+
+  it("surfaces the pre-existing device credential when the Client was constructed with one", () => {
+    const client = createClient({
+      baseUrl: "https://agent.example",
+      deviceCredential: {
+        deviceId: "device-1",
+        accessToken: "x".repeat(64),
+        userId: "user-1",
+        email: "alice@example.com",
+        projectId: "project-1",
+        projectName: "Project One",
+        deviceLabel: "Alice's laptop",
+        platform: "darwin",
+        expiresAt: "2026-09-01T10:00:00.000Z",
+        createdAt: "2026-08-31T10:00:00.000Z"
+      }
+    });
+    expect(client.deviceCredential()?.deviceId).toBe("device-1");
+  });
+
+  it("returns undefined for deviceCredential when none was supplied", () => {
+    const client = createClient({ baseUrl: "https://agent.example" });
+    expect(client.deviceCredential()).toBeUndefined();
+  });
+
+  it("maps non-OK responses on device endpoints to LeCodingHttpError", async () => {
+    const fetch = vi.fn(async () =>
+      new Response(JSON.stringify({ error: "code_consumed" }), {
+        status: 404,
+        headers: { "content-type": "application/json" }
+      })
+    );
+    const client = createClient({
+      baseUrl: "https://agent.example",
+      fetch: fetch as unknown as typeof globalThis.fetch
+    });
+    await expect(client.listDevices()).rejects.toBeInstanceOf(LeCodingHttpError);
+    await expect(client.createDeviceCode("project-1")).rejects.toBeInstanceOf(
+      LeCodingHttpError
+    );
+    await expect(client.revokeDevice("device-1")).rejects.toBeInstanceOf(
+      LeCodingHttpError
+    );
+    await expect(
+      client.exchangeDeviceCode({ code: "ABCDEFGHI" })
+    ).rejects.toBeInstanceOf(LeCodingHttpError);
+  });
 });

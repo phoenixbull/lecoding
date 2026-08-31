@@ -66,6 +66,27 @@ export interface LeCodingClient {
     commandId?: string
   ): Promise<void>;
   steerRun(runId: RunId, message: string, commandId?: string): Promise<void>;
+  /** Browser-side device binding endpoints. */
+  createDeviceCode(
+    projectId: ProjectId,
+    options?: { ttlMs?: number }
+  ): Promise<DeviceCodeResult>;
+  /** Headless device-side exchange: returns the credential to persist locally. */
+  exchangeDeviceCode(input: {
+    code: string;
+    deviceLabel?: string;
+    platform?: string;
+  }): Promise<ExchangedDevice>;
+  /** Lists devices belonging to the caller; used by the Settings "Trusted devices" surface. */
+  listDevices(): Promise<DeviceListing>;
+  /** Revokes a device, invalidating its access token for future authenticate() calls. */
+  revokeDevice(deviceId: string): Promise<void>;
+  /**
+   * Returns the cached device credential if this Client was constructed with
+   * one; callers that build a long-lived PC client persist the result of
+   * `exchangeDeviceCode` and pass it back here.
+   */
+  deviceCredential(): ExchangedDevice | undefined;
   openRunEventStream(
     runId: RunId,
     options?: OpenRunEventStreamOptions
@@ -83,10 +104,51 @@ export interface OpenRunEventStreamOptions {
   signal?: AbortSignal;
 }
 
+/** Result of `POST /api/v1/devices/code`. The clear-text code is the
+ *  one-time binding code that the PC client redeems. */
+export interface DeviceCodeResult {
+  code: string;
+  payload: string;
+  expiresAt: string;
+  projectId: ProjectId;
+  projectName: string;
+}
+
+/** Result of `POST /api/v1/devices/exchange`; the access token is the
+ *  long-lived credential that the PC client persists locally. */
+export interface ExchangedDevice {
+  deviceId: string;
+  accessToken: string;
+  userId: string;
+  email: string;
+  projectId: ProjectId;
+  projectName: string;
+  deviceLabel: string;
+  platform: string;
+  expiresAt: string;
+  createdAt: string;
+}
+
+/** Bounded view returned by `GET /api/v1/devices`. */
+export interface DeviceListing {
+  devices: Array<{
+    deviceId: string;
+    projectId: ProjectId;
+    projectName: string;
+    deviceLabel: string;
+    platform: string;
+    createdAt: string;
+    lastUsedAt: string;
+    expiresAt: string;
+  }>;
+}
+
 export interface ClientOptions {
   baseUrl: string;
   /** Optional single-user bearer token; it is sent only in the Authorization header. */
   accessToken?: string;
+  /** Optional pre-existing device credential; enables headless device access. */
+  deviceCredential?: ExchangedDevice;
   fetch?: typeof globalThis.fetch;
 }
 
@@ -420,6 +482,81 @@ export function createClient(options: ClientOptions): LeCodingClient {
       for await (const event of decodeRunEventStream(stream, runId)) {
         yield event;
       }
+    },
+
+    async createDeviceCode(projectId, options = {}) {
+      const response = await authenticatedFetch(
+        `${baseUrl}/api/v1/devices/code`,
+        {
+          method: "POST",
+          headers: {
+            accept: "application/json",
+            "content-type": "application/json"
+          },
+          body: JSON.stringify({
+            projectId,
+            ...(options.ttlMs !== undefined ? { ttlMs: options.ttlMs } : {})
+          })
+        }
+      );
+      if (!response.ok) {
+        throw new LeCodingHttpError(
+          "Failed to create device code",
+          response.status
+        );
+      }
+      return (await response.json()) as DeviceCodeResult;
+    },
+
+    async exchangeDeviceCode(input) {
+      // The device exchange intentionally does NOT send the bearer token: the
+      // device is authenticating with a one-time code, not with the browser
+      // session that minted it.
+      const response = await fetchImplementation(
+        `${baseUrl}/api/v1/devices/exchange`,
+        {
+          method: "POST",
+          headers: {
+            accept: "application/json",
+            "content-type": "application/json"
+          },
+          body: JSON.stringify(input)
+        }
+      );
+      if (!response.ok) {
+        throw new LeCodingHttpError(
+          "Failed to exchange device code",
+          response.status
+        );
+      }
+      return (await response.json()) as ExchangedDevice;
+    },
+
+    async listDevices(): Promise<DeviceListing> {
+      const response = await authenticatedFetch(`${baseUrl}/api/v1/devices`, {
+        method: "GET",
+        headers: { accept: "application/json" }
+      });
+      if (!response.ok) {
+        throw new LeCodingHttpError("Failed to list devices", response.status);
+      }
+      return (await response.json()) as DeviceListing;
+    },
+
+    async revokeDevice(deviceId: string): Promise<void> {
+      const response = await authenticatedFetch(
+        `${baseUrl}/api/v1/devices/${encodeURIComponent(deviceId)}`,
+        {
+          method: "DELETE"
+        }
+      );
+      if (!response.ok) {
+        throw new LeCodingHttpError("Failed to revoke device", response.status);
+      }
+    },
+
+    deviceCredential() {
+      return options.deviceCredential;
     }
   };
 }

@@ -300,3 +300,220 @@ describe("PolicyEngine", () => {
     });
   });
 });
+
+describe("PolicyEngine + project protectedPaths", () => {
+  it("forces an ask on protected_file_write that matches a project glob, in every approval mode", async () => {
+    const matcher = {
+      matches: (realpath: string) =>
+        realpath === "/workspace/.ai-agent/project.yaml"
+    };
+    const policy = createPolicyEngine({ protectedPaths: matcher });
+    for (const approvalMode of [
+      "manual",
+      "auto_review",
+      "full_access"
+    ] as const) {
+      await expect(
+        policy.authorize({
+          approvalMode,
+          fileAccessScope: "workspace_only",
+          capability: {
+            type: "protected_file_write",
+            realpath: "/workspace/.ai-agent/project.yaml"
+          }
+        })
+      ).resolves.toEqual({
+        decision: "ask",
+        reason: "Project declares this path as protected; user approval required"
+      });
+    }
+  });
+
+  it("leaves non-matching protected_file_write alone when the glob does not match", async () => {
+    const matcher = {
+      matches: (realpath: string) =>
+        realpath.endsWith(".github/workflows/release.yml")
+    };
+    const policy = createPolicyEngine({ protectedPaths: matcher });
+    await expect(
+      policy.authorize({
+        approvalMode: "full_access",
+        fileAccessScope: "workspace_only",
+        capability: {
+          type: "protected_file_write",
+          realpath: "/workspace/src/index.ts"
+        }
+      })
+    ).resolves.toEqual({ decision: "allow" });
+  });
+
+  it("does not intercept capabilities other than protected_file_write", async () => {
+    const matcher = {
+      matches: (realpath: string) =>
+        realpath === "/workspace/.ai-agent/project.yaml"
+    };
+    const policy = createPolicyEngine({ protectedPaths: matcher });
+    await expect(
+      policy.authorize({
+        approvalMode: "manual",
+        fileAccessScope: "workspace_only",
+        capability: {
+          type: "sensitive_file_read",
+          realpath: "/workspace/.ai-agent/project.yaml"
+        }
+      })
+    ).resolves.toMatchObject({ decision: "ask" });
+  });
+
+  it("lets the fixed-deny deny credential paths even when a project glob would also match", async () => {
+    const matcher = { matches: () => true };
+    const policy = createPolicyEngine({ protectedPaths: matcher });
+    await expect(
+      policy.authorize({
+        approvalMode: "auto_review",
+        fileAccessScope: "workspace_only",
+        capability: {
+          type: "protected_file_write",
+          realpath: "/workspace/.env.local"
+        }
+      })
+    ).resolves.toMatchObject({ decision: "deny" });
+  });
+});
+
+describe("PolicyEngine + project askDomains", () => {
+  it("forces an ask on network_egress whose domain is not in the project allow list", async () => {
+    const policy = createPolicyEngine({
+      askDomains: ["registry.npmjs.org"]
+    });
+    for (const approvalMode of [
+      "manual",
+      "auto_review",
+      "full_access"
+    ] as const) {
+      await expect(
+        policy.authorize({
+          approvalMode,
+          fileAccessScope: "workspace_only",
+          capability: {
+            type: "network_egress",
+            scheme: "https",
+            domain: "example.com",
+            port: 443
+          }
+        })
+      ).resolves.toEqual({
+        decision: "ask",
+        reason: "Domain is not in the project's allow list; user approval required"
+      });
+    }
+  });
+
+  it("lets an allowed domain proceed through the existing policy pipeline", async () => {
+    const policy = createPolicyEngine({
+      askDomains: ["registry.npmjs.org"]
+    });
+    await expect(
+      policy.authorize({
+        approvalMode: "full_access",
+        fileAccessScope: "workspace_only",
+        capability: {
+          type: "network_egress",
+          scheme: "https",
+          domain: "registry.npmjs.org",
+          port: 443
+        }
+      })
+    ).resolves.toEqual({ decision: "allow" });
+  });
+
+  it("normalises domain casing and trailing dot before comparing", async () => {
+    const policy = createPolicyEngine({
+      askDomains: ["registry.npmjs.org"]
+    });
+    await expect(
+      policy.authorize({
+        approvalMode: "full_access",
+        fileAccessScope: "workspace_only",
+        capability: {
+          type: "network_egress",
+          scheme: "https",
+          domain: "REGISTRY.NPMJS.ORG.",
+          port: 443
+        }
+      })
+    ).resolves.toEqual({ decision: "allow" });
+  });
+
+  it("lets the fixed-deny deny forbidden targets even when they appear in the project allow list", async () => {
+    const policy = createPolicyEngine({
+      askDomains: ["metadata.google.internal"]
+    });
+    await expect(
+      policy.authorize({
+        approvalMode: "full_access",
+        fileAccessScope: "workspace_only",
+        capability: {
+          type: "network_egress",
+          scheme: "https",
+          domain: "metadata.google.internal",
+          port: 443
+        }
+      })
+    ).resolves.toMatchObject({
+      decision: "deny",
+      reason: "Private and metadata network targets are never allowed"
+    });
+  });
+
+  it("ignores the allow list when askDomains is empty (preserves current behaviour)", async () => {
+    const policy = createPolicyEngine({ askDomains: [] });
+    await expect(
+      policy.authorize({
+        approvalMode: "full_access",
+        fileAccessScope: "workspace_only",
+        capability: {
+          type: "network_egress",
+          scheme: "https",
+          domain: "anything.example.com",
+          port: 443
+        }
+      })
+    ).resolves.toEqual({ decision: "allow" });
+  });
+
+  it("does not match an IP literal even if the allow list contains it", async () => {
+    const policy = createPolicyEngine({ askDomains: ["192.0.2.10"] });
+    await expect(
+      policy.authorize({
+        approvalMode: "full_access",
+        fileAccessScope: "workspace_only",
+        capability: {
+          type: "network_egress",
+          scheme: "https",
+          domain: "192.0.2.10",
+          port: 443
+        }
+      })
+    ).resolves.toMatchObject({
+      decision: "deny",
+      reason: "Private and metadata network targets are never allowed"
+    });
+  });
+
+  it("does not apply the allow list to capabilities other than network_egress", async () => {
+    const policy = createPolicyEngine({
+      askDomains: ["registry.npmjs.org"]
+    });
+    await expect(
+      policy.authorize({
+        approvalMode: "full_access",
+        fileAccessScope: "workspace_only",
+        capability: {
+          type: "protected_file_write",
+          realpath: "/workspace/.github/workflows/release.yml"
+        }
+      })
+    ).resolves.toEqual({ decision: "allow" });
+  });
+});

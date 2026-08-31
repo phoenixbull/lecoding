@@ -107,6 +107,12 @@ importers:
 
   packages/contracts: {}
 
+  packages/device-binding:
+    dependencies:
+      '@lecoding/contracts':
+        specifier: workspace:*
+        version: link:../contracts
+
   packages/golden-evals:
     dependencies:
       '@lecoding/openai-model':
@@ -136,6 +142,12 @@ importers:
         version: link:../contracts
 
   packages/project-instructions:
+    dependencies:
+      '@lecoding/contracts':
+        specifier: workspace:*
+        version: link:../contracts
+
+  packages/project-policy-globs:
     dependencies:
       '@lecoding/contracts':
         specifier: workspace:*

@@ -37,6 +37,32 @@ export interface ProjectPolicyRuleResolver {
   }): Promise<"allow" | "deny" | undefined>;
 }
 
+/**
+ * Project-declared protected paths, surfaced from the reviewed
+ * `.ai-agent/project.yaml`. A match forces `protected_file_write` to be
+ * surfaced for explicit user approval without weakening the fixed deny that
+ * covers credential and host-control paths.
+ */
+export interface ProjectProtectedPathMatcher {
+  matches(realpath: string): boolean;
+}
+
+/**
+ * Project-declared network allow list (from the reviewed
+ * `.ai-agent/project.yaml`). When the matcher is bound, `network_egress`
+ * targets whose domain does not match are forced through explicit user
+ * approval even in `full_access` mode. The matcher sits after the fixed
+ * deny so private and metadata targets stay denied regardless of the
+ * operator-owned allow list.
+ */
+export interface ProjectNetworkAllowListMatcher {
+  /**
+   * Returns true if the given normalised domain is allowed by the project's
+   * declared `network.askDomains`.
+   */
+  matches(domain: string): boolean;
+}
+
 /** Bounded independent review result; it can never override a fixed deny. */
 export interface RiskReviewResult {
   decision: "allow" | "ask";
@@ -64,6 +90,14 @@ export interface PolicyEngineOptions {
   reviewer?: RiskReviewer;
   audit?: PolicyReviewAudit;
   projectRules?: ProjectPolicyRuleResolver;
+  /** Optional project-declared protected-path matcher (from `.ai-agent/project.yaml`). */
+  protectedPaths?: ProjectProtectedPathMatcher;
+  /**
+   * Optional project-declared network allow list (from the reviewed
+   * `network.askDomains` YAML field). When provided, every `network_egress`
+   * whose domain is not in the list returns `ask` regardless of approval mode.
+   */
+  askDomains?: ProjectNetworkAllowListMatcher | string[];
 }
 
 export type PolicyDecision =
@@ -85,7 +119,9 @@ export function createPolicyEngine(
   return new DefaultPolicyEngine(
     options.reviewer ?? new DeterministicRiskReviewer(),
     options.audit ?? { async record() {} },
-    options.projectRules
+    options.projectRules,
+    options.protectedPaths,
+    normaliseAskDomains(options.askDomains)
   );
 }
 
@@ -93,7 +129,9 @@ class DefaultPolicyEngine implements PolicyEngine {
   constructor(
     private readonly reviewer: RiskReviewer,
     private readonly audit: PolicyReviewAudit,
-    private readonly projectRules?: ProjectPolicyRuleResolver
+    private readonly projectRules?: ProjectPolicyRuleResolver,
+    private readonly protectedPaths?: ProjectProtectedPathMatcher,
+    private readonly askDomains?: ProjectNetworkAllowListMatcher
   ) {}
 
   async authorize(request: CapabilityRequest): Promise<PolicyDecision> {
@@ -121,6 +159,24 @@ class DefaultPolicyEngine implements PolicyEngine {
       };
     }
 
+    /*
+     * Project-declared network allow list (from `network.askDomains`).
+     * Sits after the fixed deny so the operator cannot re-authorise
+     * private or metadata targets; sits before the project rules and
+     * approval mode so even `full_access` Runs must surface undeclared
+     * domains for explicit user approval.
+     */
+    if (
+      request.capability.type === "network_egress" &&
+      this.askDomains !== undefined &&
+      !this.askDomains.matches(request.capability.domain)
+    ) {
+      return {
+        decision: "ask",
+        reason: "Domain is not in the project's allow list; user approval required"
+      };
+    }
+
     if (
       request.capability.type === "command_exec" &&
       isHostControlCommand(request.capability.argv[0])
@@ -128,6 +184,24 @@ class DefaultPolicyEngine implements PolicyEngine {
       return {
         decision: "deny",
         reason: "Host control commands are never allowed"
+      };
+    }
+
+    /*
+     * Project-declared protected paths: this sits AFTER the fixed-deny checks
+     * so an attacker cannot bypass the credential/host-control block by
+     * listing `/workspace/.env` in the project rules. It sits BEFORE the
+     * project rules / approval mode so every protected path write requires
+     * explicit user approval regardless of mode.
+     */
+    if (
+      request.capability.type === "protected_file_write" &&
+      this.protectedPaths !== undefined &&
+      this.protectedPaths.matches(request.capability.realpath)
+    ) {
+      return {
+        decision: "ask",
+        reason: "Project declares this path as protected; user approval required"
       };
     }
 
@@ -230,6 +304,38 @@ function isForbiddenNetworkTarget(domain: string): boolean {
     normalized === "instance-data.ec2.internal" ||
     normalized.endsWith(".instance-data.ec2.internal")
   );
+}
+
+function normaliseDomain(domain: string): string {
+  return domain.trim().toLowerCase().replace(/\.$/u, "");
+}
+
+/**
+ * Coerces the optional `askDomains` option into a matcher. An explicit
+ * matcher is passed through untouched; a `string[]` is normalised into an
+ * exact-domain matcher that lower-cases and strips the trailing dot, so the
+ * YAML loader does not need to know about either operation.
+ */
+function normaliseAskDomains(
+  option: ProjectNetworkAllowListMatcher | string[] | undefined
+): ProjectNetworkAllowListMatcher | undefined {
+  if (option === undefined) {
+    return undefined;
+  }
+  if (Array.isArray(option)) {
+    const allowed = new Set(option.map(normaliseDomain).filter((entry) => entry.length > 0));
+    // An empty allow list is equivalent to "no project-level restriction":
+    // every domain passes and the existing approval-mode pipeline decides.
+    if (allowed.size === 0) {
+      return undefined;
+    }
+    return {
+      matches(domain) {
+        return allowed.has(normaliseDomain(domain));
+      }
+    };
+  }
+  return option;
 }
 
 function isCredentialOrHostControlPath(realpath: string): boolean {
