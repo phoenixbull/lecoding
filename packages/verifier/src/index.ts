@@ -37,6 +37,19 @@ export interface VerificationPlan {
   required: RequiredVerificationCommand[];
 }
 
+/** Network-egress policy derived from the committed `.ai-agent/project.yaml`. */
+export interface NetworkPolicy {
+  /** Domain literals approved for egress when the runtime consults the project allow list. */
+  askDomains: string[];
+}
+
+/** Full administrator-owned project configuration exposed by the YAML loader. */
+export interface ProjectConfig {
+  plan: VerificationPlan;
+  network?: NetworkPolicy;
+  protectedPaths?: string[];
+}
+
 /**
  * Deployment seam for reviewed project verification configuration.
  * Implementations must select committed/admin-reviewed plans by project identity;
@@ -44,6 +57,12 @@ export interface VerificationPlan {
  */
 export interface VerificationPlanProvider {
   load(input: VerificationInput): Promise<VerificationPlan | undefined>;
+  /**
+   * Returns the full reviewed project configuration for callers that also need
+   * non-verification policy fields (network ask-domains, protected paths).
+   * Optional for backwards compatibility with plan-only providers.
+   */
+  loadProjectConfig?(input: VerificationInput): Promise<ProjectConfig | undefined>;
 }
 
 /** Trusted host authority for validating the patch without exposing Git metadata. */

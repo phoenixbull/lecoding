@@ -1032,11 +1032,13 @@ describe("RunEngine", () => {
 
   it("applies steering text to the question currently waiting for user input", async () => {
     const observedResults: ModelToolResult[][] = [];
+    const observedSteering: string[][] = [];
     let turn = 0;
     const harness = await createTestHarness({
       model: {
         async next(input) {
           observedResults.push(structuredClone(input.toolResults));
+          observedSteering.push([...(input.steeringMessages ?? [])]);
           turn += 1;
           return turn === 1
             ? {
@@ -1058,20 +1060,33 @@ describe("RunEngine", () => {
     });
 
     await harness.engine.resume(runId);
+    // A steer while waiting for user input narrows scope and must not consume
+    // the pending question. The user still owes a real answer.
     await harness.engine.command(runId, {
       type: "steer",
       commandId: "steer-waiting-question",
       message: "Keep response error codes unchanged"
     });
+    await expect(harness.engine.inspect(runId)).resolves.toMatchObject({
+      status: "waiting_user",
+      pendingUserRequest: { id: "question-steer" }
+    });
+    await harness.engine.command(runId, {
+      type: "answer",
+      commandId: "answer-question-steer",
+      requestId: "question-steer",
+      value: "Keep all error codes unchanged"
+    });
 
     await expect(harness.engine.inspect(runId)).resolves.toMatchObject({
       status: "succeeded"
     });
+    expect(observedSteering[1]).toEqual(["Keep response error codes unchanged"]);
     expect(observedResults[1]).toEqual([
       {
         callId: "question-steer",
         status: "answered",
-        value: "Keep response error codes unchanged"
+        value: "Keep all error codes unchanged"
       }
     ]);
   });

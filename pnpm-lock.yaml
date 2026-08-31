@@ -83,6 +83,22 @@ importers:
         specifier: ^8.23.1
         version: 8.23.1
 
+  packages/anthropic-model:
+    dependencies:
+      '@lecoding/run-engine':
+        specifier: workspace:*
+        version: link:../run-engine
+    devDependencies:
+      '@lecoding/golden-evals':
+        specifier: workspace:*
+        version: link:../golden-evals
+      '@lecoding/run-environment':
+        specifier: workspace:*
+        version: link:../run-environment
+      '@lecoding/test-harness':
+        specifier: workspace:*
+        version: link:../test-harness
+
   packages/client-sdk:
     dependencies:
       '@lecoding/contracts':
@@ -114,6 +130,12 @@ importers:
         version: link:../test-harness
 
   packages/policy:
+    dependencies:
+      '@lecoding/contracts':
+        specifier: workspace:*
+        version: link:../contracts
+
+  packages/project-instructions:
     dependencies:
       '@lecoding/contracts':
         specifier: workspace:*

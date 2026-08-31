@@ -954,6 +954,76 @@ describe("createOpenAiResponsesAgentModel", () => {
       "OpenAI execute_command arguments must contain only non-empty argv"
     );
   });
+
+  it("prepends project instructions to the Responses initial user message", async () => {
+    const requests: OpenAiResponsesRequest[] = [];
+    const model = createOpenAiResponsesAgentModel({
+      model: "gpt-test",
+      client: {
+        async create(request) {
+          requests.push(request);
+          return {
+            id: "resp-done",
+            status: "completed",
+            output: [],
+            output_text: "Acknowledged project rules"
+          };
+        }
+      }
+    });
+
+    await model.next({
+      ...baseInput([]),
+      projectInstructions: ["Project policy", "API rules"]
+    });
+
+    expect(requests[0]!.input).toBe(
+      [
+        "Project instructions:",
+        "Project policy",
+        "API rules",
+        "",
+        "Task: Fix the API",
+        "",
+        "Acceptance criteria:",
+        "- Tests pass"
+      ].join("\n")
+    );
+  });
+
+  it("prepends project instructions to the Chat Completions initial user message", async () => {
+    const requests: OpenAiChatCompletionsRequest[] = [];
+    const model = createOpenAiChatCompletionsAgentModel({
+      model: "gpt-test",
+      client: {
+        async create(request) {
+          requests.push(request);
+          return chatCommandResponse('{"argv":["pnpm","test"]}');
+        }
+      }
+    });
+
+    await model.next({
+      ...baseInput([]),
+      projectInstructions: ["Project policy"]
+    });
+
+    expect(requests[0]!.messages).toEqual([
+      expect.objectContaining({ role: "system" }),
+      {
+        role: "user",
+        content: [
+          "Project instructions:",
+          "Project policy",
+          "",
+        "Task: Fix the API",
+        "",
+        "Acceptance criteria:",
+        "- Tests pass"
+        ].join("\n")
+      }
+    ]);
+  });
 });
 
 function baseInput(toolResults: ModelToolResult[]): AgentModelInput {

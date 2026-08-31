@@ -114,6 +114,136 @@ verify:
       })
     ).rejects.toThrow("invalid object");
   });
+
+  it("exposes network.askDomains and protectedPaths via loadProjectConfig", async () => {
+    const fixture = await createProjectFixture(`
+version: 1
+verify:
+  required:
+    - name: tests
+      argv: [pnpm, test]
+      covers: ["*"]
+network:
+  askDomains:
+    - registry.npmjs.org
+    - api.github.com
+protectedPaths:
+  - .env
+  - .github/workflows/**
+`);
+    const provider = await createProjectYamlVerificationPlanProvider({
+      projectId: "project-1",
+      configPath: fixture.configPath,
+      mutableWorktreeRoot: fixture.mutableWorktreeRoot
+    });
+
+    await expect(
+      provider.loadProjectConfig!(verificationInput("project-1"))
+    ).resolves.toEqual({
+      plan: {
+        required: [
+          { name: "tests", argv: ["pnpm", "test"], covers: ["*"] }
+        ]
+      },
+      network: {
+        askDomains: ["registry.npmjs.org", "api.github.com"]
+      },
+      protectedPaths: [".env", ".github/workflows/**"]
+    });
+  });
+
+  it("treats network and protectedPaths as optional when omitted", async () => {
+    const fixture = await createProjectFixture(`
+version: 1
+verify:
+  required:
+    - name: tests
+      argv: [pnpm, test]
+      covers: ["*"]
+`);
+    const provider = await createProjectYamlVerificationPlanProvider({
+      projectId: "project-1",
+      configPath: fixture.configPath,
+      mutableWorktreeRoot: fixture.mutableWorktreeRoot
+    });
+
+    await expect(
+      provider.loadProjectConfig!(verificationInput("project-1"))
+    ).resolves.toEqual({
+      plan: {
+        required: [
+          { name: "tests", argv: ["pnpm", "test"], covers: ["*"] }
+        ]
+      },
+      network: undefined,
+      protectedPaths: undefined
+    });
+  });
+
+  it("rejects an unknown field inside the network section", async () => {
+    const fixture = await createProjectFixture(`
+version: 1
+verify:
+  required:
+    - name: tests
+      argv: [pnpm, test]
+      covers: ["*"]
+network:
+  denyDomains:
+    - example.com
+`);
+
+    await expect(
+      createProjectYamlVerificationPlanProvider({
+        projectId: "project-1",
+        configPath: fixture.configPath,
+        mutableWorktreeRoot: fixture.mutableWorktreeRoot
+      })
+    ).rejects.toThrow(/unknown field/);
+  });
+
+  it("rejects a non-string protected path", async () => {
+    const fixture = await createProjectFixture(`
+version: 1
+verify:
+  required:
+    - name: tests
+      argv: [pnpm, test]
+      covers: ["*"]
+protectedPaths:
+  - .env
+  - 42
+`);
+
+    await expect(
+      createProjectYamlVerificationPlanProvider({
+        projectId: "project-1",
+        configPath: fixture.configPath,
+        mutableWorktreeRoot: fixture.mutableWorktreeRoot
+      })
+    ).rejects.toThrow(/protectedPaths/);
+  });
+
+  it("rejects an empty askDomains list", async () => {
+    const fixture = await createProjectFixture(`
+version: 1
+verify:
+  required:
+    - name: tests
+      argv: [pnpm, test]
+      covers: ["*"]
+network:
+  askDomains: []
+`);
+
+    await expect(
+      createProjectYamlVerificationPlanProvider({
+        projectId: "project-1",
+        configPath: fixture.configPath,
+        mutableWorktreeRoot: fixture.mutableWorktreeRoot
+      })
+    ).rejects.toThrow(/askDomains/);
+  });
 });
 
 async function createProjectFixture(projectYaml: string): Promise<{

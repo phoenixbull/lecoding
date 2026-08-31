@@ -316,6 +316,16 @@ export interface RunEngineDependencies {
   /** Cross-Worker mailbox that accepts steer without contending for the driver lease. */
   steerMailbox?: RunSteerMailbox;
   /**
+   * Adapter-neutral loader for AGENTS.md / CLAUDE.md sections.
+   * Caller wires `@lecoding/project-instructions`; absent means "no project instructions".
+   */
+  projectInstructions?: ProjectInstructionResolver;
+  /**
+   * Resolves the workspace paths that scope project instruction loading.
+   * When omitted, project instructions are not loaded even if `projectInstructions` is set.
+   */
+  workspaceContext?: WorkspaceContextResolver;
+  /**
    * 长 await 心跳守护器:prepare 等真实 I/O 期间按 leaseMilliseconds/2 间隔
    * 持续 renewLease。缺省为 setInterval 实现(详见 createIntervalLeaseHeartbeat)。
    */
@@ -352,12 +362,40 @@ export interface ArtifactStore {
   }): Promise<ArtifactReference>;
 }
 
+/** Section produced by the project instruction loader; intentionally adapter-neutral. */
+export interface ProjectInstructionSection {
+  /** Path relative to the resolved project root, safe for telemetry. */
+  relativePath: string;
+  /** Trimmed UTF-8 instruction body to surface to the model. */
+  content: string;
+}
+
+/** Loader contract that RunEngine consumes without depending on any specific fs adapter. */
+export interface ProjectInstructionResolver {
+  load(input: {
+    runId: RunId;
+    projectRoot: string;
+    cwd: string;
+  }): Promise<{ sections: ProjectInstructionSection[] }>;
+}
+
+/** Resolves the absolute paths that bound one Run's project instruction loading. */
+export interface WorkspaceContextResolver {
+  projectRoot(runId: RunId): Promise<string>;
+  cwd(runId: RunId): Promise<string>;
+}
+
 export interface AgentModelInput {
   runId: RunId;
   run: StartRun;
   toolResults: ModelToolResult[];
   /** User instructions appended after Run creation and delivered at the next safe turn. */
   steeringMessages?: string[];
+  /**
+   * Optional project instructions loaded from AGENTS.md / CLAUDE.md ancestors
+   * (root-first). The seam stays adapter-neutral; providers decide how to surface them.
+   */
+  projectInstructions?: string[];
 }
 
 export type AgentModelTurn =
@@ -705,6 +743,21 @@ class DefaultRunEngine implements RunEngine, RunResumer, DisposableEngine {
         assertMatchingUserCommandReceipt(receipt, command);
         return;
       }
+      // Steer while waiting on a question must stage onto the next provider turn
+      // without consuming the pending request. Enqueue via the mailbox so the
+      // resume that follows the user's answer picks it up atomically.
+      if (
+        command.type === "steer" &&
+        current.status === "waiting_user" &&
+        current.pendingUserRequest
+      ) {
+        await this.steerMailbox.enqueue({
+          runId,
+          commandId: command.commandId,
+          message: command.message
+        });
+        return;
+      }
       if (command.type === "steer" && current.status !== "waiting_user") {
         if (!isLiveSteerableStatus(current.status)) {
           const existing = await this.steerMailbox.getByCommandId(
@@ -831,6 +884,9 @@ class DefaultRunEngine implements RunEngine, RunResumer, DisposableEngine {
         assertMatchingUserCommandReceipt(existingReceipt, command);
         return;
       }
+      // Steer while waiting on a question is staged through the mailbox in
+      // `command()` so it never consumes the pending request; the path below only
+      // handles the `answer` reply that follows.
       const request = stored.pendingUserRequest;
       if (
         stored.status !== "waiting_user" ||
@@ -1301,7 +1357,8 @@ class DefaultRunEngine implements RunEngine, RunResumer, DisposableEngine {
           toolResults: stored.toolResults,
           steeringMessages: (stored.pendingSteering ?? []).map(
             (entry) => entry.message
-          )
+          ),
+          ...(await this.resolveProjectInstructions(stored.id))
         });
 
         /* The model gateway settles provider usage before returning its turn; this
@@ -1652,6 +1709,28 @@ class DefaultRunEngine implements RunEngine, RunResumer, DisposableEngine {
       token
     );
     return stored;
+  }
+
+  /**
+   * Loads AGENTS.md / CLAUDE.md sections for the active Run. Failures bubble up
+   * so a misconfigured workspace cannot silently drop model instructions.
+   */
+  private async resolveProjectInstructions(
+    runId: RunId
+  ): Promise<{ projectInstructions?: string[] }> {
+    const resolver = this.dependencies.projectInstructions;
+    const context = this.dependencies.workspaceContext;
+    if (!resolver || !context) {
+      return {};
+    }
+    const [projectRoot, cwd] = await Promise.all([
+      context.projectRoot(runId),
+      context.cwd(runId)
+    ]);
+    const result = await resolver.load({ runId, projectRoot, cwd });
+    return {
+      projectInstructions: result.sections.map((section) => section.content)
+    };
   }
 
   private async performWith(

@@ -867,6 +867,7 @@ function buildInitialChatMessages(
     {
       role: "user",
       content: [
+        ...formatProjectInstructions(input.projectInstructions),
         `Task: ${input.run.task}`,
         "",
         "Acceptance criteria:",
@@ -1123,6 +1124,7 @@ function buildRequest(
           ...(steering ? [{ role: "user" as const, content: steering }] : [])
         ]
       : [
+          ...formatProjectInstructions(input.projectInstructions),
           `Task: ${input.run.task}`,
           "",
           "Acceptance criteria:",
@@ -1197,6 +1199,15 @@ function assertRequestInputWithinLimit(
 function formatSteeringSection(messages: string[] | undefined): string[] {
   const content = formatSteeringMessage(messages);
   return content ? ["", content] : [];
+}
+
+function formatProjectInstructions(
+  sections: string[] | undefined
+): string[] {
+  if (!sections || sections.length === 0) {
+    return [];
+  }
+  return ["Project instructions:", ...sections, ""];
 }
 
 function formatSteeringMessage(messages: string[] | undefined): string {

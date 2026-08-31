@@ -90,6 +90,10 @@ export async function createTestHarness(options: {
   policy?: PolicyEngine;
   /** 注入状态 + 事件原子 writer;提供时替代 legacy 两步发布路径。 */
   transitions?: RunTransitionWriter;
+  /** Adapter-neutral project instruction loader wired into RunEngine. */
+  projectInstructions?: import("@lecoding/run-engine").ProjectInstructionResolver;
+  /** Resolver providing the workspace paths that scope project instruction loading. */
+  workspaceContext?: import("@lecoding/run-engine").WorkspaceContextResolver;
 }): Promise<TestHarness> {
   const store = options.store ?? new InMemoryRunStore();
   const environment = options.environment ?? new FakeRunEnvironment();
@@ -133,6 +137,12 @@ export async function createTestHarness(options: {
       : {}),
     ...(options.transitions !== undefined
       ? { transitions: options.transitions }
+      : {}),
+    ...(options.projectInstructions !== undefined
+      ? { projectInstructions: options.projectInstructions }
+      : {}),
+    ...(options.workspaceContext !== undefined
+      ? { workspaceContext: options.workspaceContext }
       : {}),
     heartbeat: options.heartbeat ?? createIntervalLeaseHeartbeat(lease),
     ...(options.cancelBus !== undefined ? { cancelBus: options.cancelBus } : {}),

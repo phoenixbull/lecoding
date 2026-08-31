@@ -2,6 +2,8 @@ import { readFile, realpath, stat } from "node:fs/promises";
 import { basename, dirname, isAbsolute, relative, resolve, sep } from "node:path";
 import { parseDocument } from "yaml";
 import type {
+  NetworkPolicy,
+  ProjectConfig,
   VerificationPlan,
   VerificationPlanProvider
 } from "./index.js";
@@ -71,7 +73,7 @@ export async function createProjectYamlVerificationPlanProvider(
   if (document.errors.length > 0) {
     throw new Error("Project verification config contains invalid YAML");
   }
-  const plan = readPlan(document.toJS({ maxAliasCount: 0 }));
+  const config = readProjectConfig(document.toJS({ maxAliasCount: 0 }));
 
   return {
     async load(input) {
@@ -79,14 +81,20 @@ export async function createProjectYamlVerificationPlanProvider(
         return undefined;
       }
       // Callers cannot mutate the cached administrator-reviewed plan.
-      return structuredClone(plan);
+      return structuredClone(config.plan);
+    },
+    async loadProjectConfig(input) {
+      if (input.run.projectId !== options.projectId) {
+        return undefined;
+      }
+      return structuredClone(config);
     }
   };
 }
 
-function readPlan(value: unknown): VerificationPlan {
+function readProjectConfig(value: unknown): ProjectConfig {
   const root = requireRecord(value);
-  requireExactKeys(root, ["version", "verify"]);
+  requireExactKeys(root, ["version", "verify", "network", "protectedPaths"]);
   if (root.version !== 1) {
     throw new Error("Project verification config requires version 1");
   }
@@ -115,7 +123,43 @@ function readPlan(value: unknown): VerificationPlan {
       covers: command.covers
     };
   });
-  return { required };
+  const plan: VerificationPlan = { required };
+  const network =
+    root.network === undefined
+      ? undefined
+      : readNetworkPolicy(root.network);
+  const protectedPaths =
+    root.protectedPaths === undefined
+      ? undefined
+      : readProtectedPaths(root.protectedPaths);
+  return network === undefined && protectedPaths === undefined
+    ? { plan }
+    : { plan, ...(network !== undefined ? { network } : {}), ...(protectedPaths !== undefined ? { protectedPaths } : {}) };
+}
+
+function readNetworkPolicy(value: unknown): NetworkPolicy {
+  const record = requireRecord(value);
+  requireExactKeys(record, ["askDomains"]);
+  // askDomains is treated as the runtime-approved set; an empty entry would weaken the policy without intent.
+  if (!isNonEmptyStringArray(record.askDomains)) {
+    throw new Error(
+      "Project verification config requires network.askDomains to be a non-empty string array"
+    );
+  }
+  return { askDomains: record.askDomains };
+}
+
+function readProtectedPaths(value: unknown): string[] {
+  if (!isNonEmptyStringArray(value)) {
+    throw new Error(
+      "Project verification config requires protectedPaths to be a non-empty string array"
+    );
+  }
+  return value;
+}
+
+function readPlan(value: unknown): VerificationPlan {
+  return readProjectConfig(value).plan;
 }
 
 function requireRecord(value: unknown): Record<string, unknown> {
