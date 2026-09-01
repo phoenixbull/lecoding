@@ -1,0 +1,129 @@
+# Desktop release pipeline.
+#
+# Triggered by a git tag matching `v*` or `beta-v*`. Builds the Windows
+# and macOS installers on their native runners in parallel, signs each
+# with the platform-appropriate certificate, then uploads the signed
+# artifacts to a GitHub release. The auto-update feed (electron-updater)
+# reads the same release API, so the signed installers are picked up by
+# every installed instance on the next launch.
+#
+# Windows builds natively on `windows-latest` so the Squirrel installer
+# (electron-winstaller) can produce the real .exe + .msi without Mono /
+# Wine cross-compilation. macOS builds on `macos-latest` with the full
+# codesign + notarization flow (hardened runtime + notarytool).
+#
+# Secrets required (configure in repo Settings → Secrets → Actions):
+#   - CSC_LINK                : base64-encoded .p12 (Windows code-signing cert)
+#   - CSC_KEY_PASSWORD        : .p12 passphrase
+#   - APPLE_ID                : Apple ID for notarization
+#   - APPLE_APP_SPECIFIC_PASSWORD : app-specific password (app-specific, NOT login)
+#   - APPLE_TEAM_ID           : Apple Developer Team ID (10-char)
+#   - GH_TOKEN                : GitHub token with `contents: write`
+name: desktop-release
+
+on:
+  push:
+    tags:
+      - "v*"
+      - "beta-v*"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: macOS (darwin/arm64)
+            os: macos-latest
+            platform: darwin
+            arch: arm64
+          - name: macOS (darwin/x64)
+            os: macos-latest
+            platform: darwin
+            arch: x64
+          - name: Windows (win32/x64)
+            os: windows-latest
+            platform: win32
+            arch: x64
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "pnpm"
+
+      - name: Install pnpm
+        run: npm install -g pnpm@10
+
+      - name: Install dependencies (electron-forge needs hoisted node-linker)
+        run: |
+          # electron-forge's flora-colossus native-module walker and asar
+          # packager both fail on pnpm's default isolated (symlinked) layout.
+          # Hoisting is a build-time concern only — production security is
+          # enforced in the main process (CSP / sandbox / contextIsolation).
+          printf "node-linker=hoisted\n" > apps/desktop/.npmrc
+          cat apps/desktop/.npmrc
+          pnpm install --frozen-lockfile
+
+      - name: Typecheck
+        run: pnpm typecheck
+
+      - name: Test
+        run: pnpm test
+
+      - name: Build & make installer (${{ matrix.platform }}/${{ matrix.arch }})
+        env:
+          CSC_LINK: ${{ secrets.CSC_LINK }}
+          CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          node scripts/ci-desktop-make.mjs ${{ matrix.platform }}
+        shell: bash
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: desktop-${{ matrix.platform }}-${{ matrix.arch }}
+          path: |
+            apps/desktop/out/make/**/*
+          if-no-files-found: error
+
+  release:
+    name: Publish GitHub release
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: List artifacts (debug)
+        run: find artifacts -type f | sort
+
+      - name: Publish GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            artifacts/**/LeCoding-Setup-*.exe
+            artifacts/**/LeCoding-Setup-*.msi
+            artifacts/**/*.dmg
+            artifacts/**/*.pkg
+            artifacts/**/*.zip
+            artifacts/**/RELEASES
+          generate_release_notes: true
+          prerelease: ${{ startsWith(github.ref, 'refs/tags/beta-v') }}
+          fail_on_unmatched_files: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GH_TOKEN }}

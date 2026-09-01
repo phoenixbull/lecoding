@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <!-- Hardened-runtime entitlements for the Desktop main process.
+       PRD § 10.1 requires:
+       - Renderer is sandboxed by Electron (nodeIntegration=false,
+         contextIsolation=true) — the main process does NOT need broad
+         entitlements.
+       - Local Runner talks to the OS over Unix domain sockets only.
+       - The OS keychain (safeStorage) does not require additional
+         entitlements beyond the default.
+       Add the minimum set of capabilities the app needs and nothing more;
+       each entry must be reviewed before the next notarization. -->
+  <key>com.apple.security.cs.allow-jit</key>
+  <true/>
+  <key>com.apple.security.cs.allow-unsigned-executable-memory</key>
+  <true/>
+  <key>com.apple.security.cs.disable-library-validation</key>
+  <false/>
+  <key>com.apple.security.cs.allow-dyld-environment-variables</key>
+  <false/>
+  <key>com.apple.security.cs.allow-system-environment-variables</key>
+  <false/>
+  <!-- Network client entitlements: required so the Renderer can reach the
+       agent control plane over the loopback / agent.example.com. The
+       hardened runtime still blocks anything not on the entitlements
+       list, so this is the gate for outbound HTTPS. -->
+  <key>com.apple.security.network.client</key>
+  <true/>
+</dict>
+</plist>
