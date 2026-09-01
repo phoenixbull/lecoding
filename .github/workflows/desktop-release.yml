@@ -63,20 +63,8 @@ jobs:
       - name: Install pnpm
         run: npm install -g pnpm@10
 
-      - name: Install dependencies (electron-forge needs hoisted node-linker)
-        run: |
-          # electron-forge's flora-colossus native-module walker and asar
-          # packager both fail on pnpm's default isolated (symlinked) layout.
-          # Hoisting is a build-time concern only — production security is
-          # enforced in the main process (CSP / sandbox / contextIsolation).
-          cat > .npmrc <<'EOF'
-          node-linker=hoisted
-          onlyBuiltDependencies[]=macos-alias
-          onlyBuiltDependencies[]=fs-xattr
-          onlyBuiltDependencies[]=electron-winstaller
-          EOF
-          cat .npmrc
-          pnpm install --frozen-lockfile
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
 
       - name: Typecheck
         run: pnpm typecheck
