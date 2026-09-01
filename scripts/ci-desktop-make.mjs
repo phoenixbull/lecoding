@@ -24,9 +24,9 @@
  *   APPLE_ID / APPLE_APP_SPECIFIC_PASSWORD / APPLE_TEAM_ID : macOS notarize
  */
 
-import { writeFileSync, mkdirSync, existsSync, readdirSync, statSync } from "node:fs";
+import { writeFileSync, mkdirSync, existsSync, readdirSync, statSync, readlinkSync, lstatSync, copyFileSync, rmSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { join, resolve, relative, isAbsolute, dirname } from "node:path";
 import { spawnSync, execSync } from "node:child_process";
 
 const DESKTOP_DIR = resolve(import.meta.dirname, "..", "apps", "desktop");
@@ -70,6 +70,84 @@ function prepareSigningEnv() {
     env.CSC_LINK = certPath;
   }
   return env;
+}
+
+/**
+ * Materialize pnpm workspace symlinks under node_modules/@lecoding/*.
+ *
+ * pnpm creates symlinks for workspace packages that point OUTSIDE the
+ * package tree (e.g. node_modules/@lecoding/client-sdk ->
+ * ../../packages/client-sdk). Both electron-packager's flora-colossus
+ * walker and asar reject these cross-boundary links.
+ *
+ * This function walks node_modules/@lecoding/* and replaces each symlink
+ * with a real recursive copy. Nested symlinks inside the copied package
+ * (e.g. @lecoding/client-sdk/node_modules/@lecoding/contracts) are also
+ * materialized so the entire subtree is self-contained.
+ *
+ * Must run AFTER the root node_modules staging step so @lecoding links
+ * are present in desktop/node_modules.
+ */
+function materializeWorkspaceLinks(nodeModulesDir) {
+  const lecodingDir = join(nodeModulesDir, "@lecoding");
+  if (!existsSync(lecodingDir)) return;
+
+  // Collect entries first to avoid mutating the dir while iterating.
+  const entries = readdirSync(lecodingDir);
+  for (const entry of entries) {
+    const entryPath = join(lecodingDir, entry);
+    const stat = lstatSync(entryPath);
+    if (stat.isSymbolicLink()) {
+      // Resolve the link target to an absolute path, then copy the real dir.
+      let target = readlinkSync(entryPath);
+      if (!isAbsolute(target)) {
+        target = resolve(dirname(entryPath), target);
+      }
+      rmSync(entryPath, { recursive: true, force: true });
+      mkdirSync(entryPath, { recursive: true });
+      copyDirRecursive(target, entryPath);
+      // Recursively materialize any nested @lecoding/* symlinks inside
+      // the newly-copied package (e.g. client-sdk -> contracts).
+      materializeWorkspaceLinksInPackage(entryPath);
+    }
+  }
+}
+
+function materializeWorkspaceLinksInPackage(pkgDir) {
+  const pkgNm = join(pkgDir, "node_modules", "@lecoding");
+  if (!existsSync(pkgNm)) return;
+  for (const entry of readdirSync(pkgNm)) {
+    const entryPath = join(pkgNm, entry);
+    const stat = lstatSync(entryPath);
+    if (stat.isSymbolicLink()) {
+      let target = readlinkSync(entryPath);
+      if (!isAbsolute(target)) {
+        target = resolve(dirname(entryPath), target);
+      }
+      rmSync(entryPath, { recursive: true, force: true });
+      mkdirSync(entryPath, { recursive: true });
+      copyDirRecursive(target, entryPath);
+      // One level of nesting is enough — workspace packages only have
+      // direct deps on sibling @lecoding/* packages, and those don't
+      // themselves pull in more @lecoding/* deps.
+    }
+  }
+}
+
+function copyDirRecursive(src, dst) {
+  const entries = readdirSync(src, { withFileTypes: true });
+  for (const entry of entries) {
+    const srcPath = join(src, entry.name);
+    const dstPath = join(dst, entry.name);
+    if (entry.isDirectory()) {
+      mkdirSync(dstPath, { recursive: true });
+      copyDirRecursive(srcPath, dstPath);
+    } else if (entry.isFile()) {
+      copyFileSync(srcPath, dstPath);
+    }
+    // Skip symlinks, device files, etc. — workspace packages only have
+    // regular source files and directories.
+  }
 }
 
 function main() {
@@ -143,6 +221,18 @@ function main() {
     }
   }
   console.error(`[ci] node_modules staging complete`);
+
+  // 4. Materialize workspace symlinks under @lecoding/*.
+  //    pnpm hoist mode creates symlinks like
+  //    node_modules/@lecoding/client-sdk -> ../../packages/client-sdk
+  //    which point OUTSIDE the desktop package tree. electron-packager's
+  //    flora-colossus walker and asar both reject cross-package symlinks
+  //    ("links out of the package" / "Failed to locate module").
+  //    We replace each @lecoding/* symlink with a real directory copy so
+  //    the packager sees a self-contained node_modules tree.
+  console.error(`[ci] materializing @lecoding/* workspace symlinks`);
+  materializeWorkspaceLinks(desktopNm);
+  console.error(`[ci] workspace links materialized`);
 
   console.error(`[ci] running electron-forge make --platform=${platform}`);
   run("pnpm", ["make", "--platform", platform], {
