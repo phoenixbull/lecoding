@@ -156,10 +156,15 @@ function buildWindowsMaker(
   // The single Squirrel maker emits both the Squirrel-style `.exe`
   // installer AND a `.msi` for system administrators. Windows code
   // signing is per-maker — we only need one entry for the platform.
+  //
+  // `name` is the nuspec package id (must NOT contain hyphens — Squirrel
+  // replaces them with underscores). Version is appended automatically
+  // by electron-winstaller, so do NOT put it in the name.
+  // `title` is the user-facing display name shown in Add/Remove Programs.
   const config: Record<string, unknown> = {
-    // The artifact name (NOT the maker name) carries the version so the
-    // auto-update manifest matches the installer filename.
-    name: `LeCoding-Setup-${appVersion}`
+    name: "lecode",
+    title: "LeCoding",
+    setupExe: `LeCoding-Setup-${appVersion}.exe`
   };
   if (isReleaseSigningEnabled(signEnv) && signEnv.CSC_LINK) {
     config["certificateFile"] = signEnv.CSC_LINK;
