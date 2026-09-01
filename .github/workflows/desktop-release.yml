@@ -66,11 +66,11 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
-      - name: Typecheck
-        run: pnpm typecheck
+      - name: Typecheck (desktop + its workspace deps)
+        run: pnpm --filter @lecoding/desktop... typecheck
 
-      - name: Test
-        run: pnpm test
+      - name: Test (desktop only)
+        run: pnpm --filter @lecoding/desktop test
 
       - name: Build & make installer (${{ matrix.platform }}/${{ matrix.arch }})
         env:
