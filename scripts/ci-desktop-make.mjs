@@ -150,6 +150,37 @@ function copyDirRecursive(src, dst) {
   }
 }
 
+/**
+ * Link top-level entries from the root (hoisted) node_modules into
+ * apps/desktop/node_modules.
+ *
+ * Uses directory junctions on Windows and symlinks on POSIX. Skips
+ * entries that already exist in the target (e.g. @lecoding/* workspace
+ * symlinks created by pnpm — those are handled separately by
+ * materializeWorkspaceLinks).
+ */
+function stageRootNodeModules(rootNm, desktopNm) {
+  for (const entry of readdirSync(rootNm)) {
+    const src = join(rootNm, entry);
+    const dst = join(desktopNm, entry);
+    if (existsSync(dst)) continue;
+    // On Windows, use directory junctions (mklink /J equivalent via
+    // fs.symlink with type "junction"). On POSIX, use regular symlinks.
+    try {
+      const stat = statSync(src);
+      if (stat.isDirectory()) {
+        symlinkSync(src, dst, process.platform === "win32" ? "junction" : "dir");
+      } else {
+        symlinkSync(src, dst);
+      }
+    } catch {
+      // Best effort: individual failures don't abort the whole staging.
+      // flora-colossus / forge will fail loudly later if something
+      // critical is missing.
+    }
+  }
+}
+
 function main() {
   console.error(`[ci] building desktop for ${platform}`);
   console.error(`[ci] working dir: ${DESKTOP_DIR}`);
@@ -174,52 +205,26 @@ function main() {
     env: { ...forgeEnv }
   });
 
-  // 3. Run electron-forge make for the target platform.
-  //    --arch defaults to the runner's arch (x64 on windows-latest).
+  // 3. Stage root node_modules into apps/desktop/node_modules.
   //
   //    In a pnpm workspace with node-linker=hoisted, all third-party
   //    packages (including @electron-forge/*) live in the root
   //    node_modules, not under apps/desktop/node_modules. electron-forge's
   //    flora-colossus walker starts from the package dir and only walks
-  //    downward, so it cannot find its own deps from the root. We stage
-  //    a junction (Windows) / symlink-loop (POSIX) from the root
-  //    node_modules into apps/desktop/node_modules so flora-colossus sees
-  //    a flat layout. This is a build-time seam — production code does
-  //    not import from electron-forge.
+  //    downward, so it cannot find its own deps from the root.
+  //
+  //    We link each top-level entry of the root node_modules into
+  //    desktop/node_modules (junction on Windows, symlink on POSIX) so
+  //    flora-colossus sees a flat layout. @lecoding/* workspace symlinks
+  //    are skipped because we materialize them separately below.
+  //
+  //    This is a build-time seam — production code does not import from
+  //    electron-forge.
   const rootNm = join(DESKTOP_DIR, "..", "..", "node_modules");
   const desktopNm = join(DESKTOP_DIR, "node_modules");
   console.error(`[ci] staging root node_modules under apps/desktop/node_modules`);
   mkdirSync(desktopNm, { recursive: true });
-  if (process.platform === "win32") {
-    // Junction a temporary copy of the root node_modules at apps/desktop/.
-    // flora-colossus reads the copy's directory entries directly, which
-    // resolves to the real files under the junction. @lecoding/* workspace
-    // symlinks are preserved by moving them aside and back.
-    const lecodingLink = join(desktopNm, "@lecoding");
-    const lecodingHidden = join(DESKTOP_DIR, ".tmp-lecoding-link");
-    if (existsSync(lecodingLink)) {
-      execSync(`move "${lecodingLink}" "${lecodingHidden}"`, { stdio: "inherit" });
-    }
-    const junctionTarget = join(DESKTOP_DIR, ".tmp-desktop-nm");
-    execSync(`cmd /c mklink /J "${junctionTarget}" "${rootNm}"`, { stdio: "inherit" });
-    execSync(`xcopy "${junctionTarget}" "${desktopNm}" /E /I /Y /Q`, { stdio: "inherit" });
-    execSync(`rmdir "${junctionTarget}"`, { stdio: "inherit" });
-    if (existsSync(lecodingHidden)) {
-      execSync(`move "${lecodingHidden}" "${lecodingLink}"`, { stdio: "inherit" });
-    }
-  } else {
-    // POSIX: symlink each top-level entry from root node_modules.
-    for (const entry of readdirSync(rootNm)) {
-      const src = join(rootNm, entry);
-      const dst = join(desktopNm, entry);
-      if (existsSync(dst)) continue;
-      try {
-        execSync(`ln -s "${src}" "${dst}"`, { stdio: "pipe" });
-      } catch {
-        // Best effort: missing entries are fine.
-      }
-    }
-  }
+  stageRootNodeModules(rootNm, desktopNm);
   console.error(`[ci] node_modules staging complete`);
 
   // 4. Materialize workspace symlinks under @lecoding/*.
@@ -233,6 +238,45 @@ function main() {
   console.error(`[ci] materializing @lecoding/* workspace symlinks`);
   materializeWorkspaceLinks(desktopNm);
   console.error(`[ci] workspace links materialized`);
+
+  // 5. Rebuild native addons that need node-gyp.
+  //    pnpm v10 does NOT auto-run install scripts for security. Packages
+  //    like macos-alias and fs-xattr ship a binding.gyp but no install
+  //    script, so pnpm never triggers node-gyp even with
+  //    onlyBuiltDependencies set. We rebuild them manually via npx so
+  //    makers like @electron-forge/maker-dmg can load their native .node
+  //    binaries. Only rebuild for the target OS.
+  const nativeAddons =
+    platform === "darwin"
+      ? ["macos-alias", "fs-xattr"]
+      : platform === "win32"
+      ? ["electron-winstaller"]
+      : [];
+  if (nativeAddons.length > 0) {
+    console.error(`[ci] rebuilding native addons: ${nativeAddons.join(", ")}`);
+    for (const pkg of nativeAddons) {
+      const pkgDir = join(rootNm, pkg);
+      if (!existsSync(pkgDir)) continue;
+      // node-gyp rebuild compiles the addon for the host Node version.
+      // This is fine because forge makers run in the CI Node process,
+      // not in the packaged Electron app.
+      const gypResult = spawnSync(
+        "npx",
+        ["--yes", "node-gyp", "rebuild"],
+        {
+          stdio: "inherit",
+          cwd: pkgDir,
+          shell: process.platform === "win32",
+          env: { ...process.env, ...forgeEnv }
+        }
+      );
+      if (gypResult.status !== 0) {
+        console.error(
+          `[ci] WARNING: node-gyp rebuild failed for ${pkg} (exit ${gypResult.status})`
+        );
+      }
+    }
+  }
 
   console.error(`[ci] running electron-forge make --platform=${platform}`);
   run("pnpm", ["make", "--platform", platform], {
