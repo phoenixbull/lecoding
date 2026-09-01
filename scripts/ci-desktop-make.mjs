@@ -249,8 +249,6 @@ function main() {
   const nativeAddons =
     platform === "darwin"
       ? ["macos-alias", "fs-xattr"]
-      : platform === "win32"
-      ? ["electron-winstaller"]
       : [];
   if (nativeAddons.length > 0) {
     console.error(`[ci] rebuilding native addons: ${nativeAddons.join(", ")}`);
@@ -279,8 +277,17 @@ function main() {
   }
 
   console.error(`[ci] running electron-forge make --platform=${platform}`);
+  // Enable debug output so CI logs show what electron-winstaller is
+  // actually doing (it spawns external tools like Update.exe and the
+  // default error message is just "Failed with exit code: 1").
+  // The debug namespace is "electron-windows-installer" (note: NOT
+  // "electron-winstaller").
+  const makeEnv = {
+    ...forgeEnv,
+    DEBUG: (forgeEnv.DEBUG ? `${forgeEnv.DEBUG},` : "") + "electron-windows-installer:*"
+  };
   run("pnpm", ["make", "--platform", platform], {
-    env: { ...forgeEnv }
+    env: makeEnv
   });
 
   // 4. Print artifact paths so the workflow upload step can find them.
