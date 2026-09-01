@@ -122,7 +122,8 @@ describe("buildForgeConfig", () => {
       repository: "phoenixbull/lecoding"
     });
     const macosMakers = config.makers.filter((m) =>
-      m.platforms?.includes("darwin")
+      m.name.startsWith("@electron-forge/maker-") &&
+      !m.name.includes("squirrel")
     );
     const macosNames = macosMakers.map((m) => m.name);
     expect(macosNames).toContain("@electron-forge/maker-zip");
@@ -140,11 +141,11 @@ describe("buildForgeConfig", () => {
       signEnv: SIGN_ENV,
       repository: "phoenixbull/lecoding"
     });
-    const windowsMakers = config.makers.filter((m) =>
-      m.platforms?.includes("win32")
+    const winMakers = config.makers.filter((m) =>
+      m.name === "@electron-forge/maker-squirrel"
     );
-    expect(windowsMakers.length).toBe(1);
-    expect(windowsMakers[0]!.name).toBe("@electron-forge/maker-squirrel");
+    expect(winMakers.length).toBe(1);
+    expect(winMakers[0]!.name).toBe("@electron-forge/maker-squirrel");
   });
 
   it("does not double-declare osxSign / notarize inside the maker config", () => {

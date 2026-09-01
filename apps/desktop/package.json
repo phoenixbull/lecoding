@@ -14,14 +14,6 @@
     "@lecoding/contracts": "workspace:*",
     "@lecoding/secure-store": "workspace:*"
   },
-  "peerDependencies": {
-    "electron": "^33.0.0"
-  },
-  "peerDependenciesMeta": {
-    "electron": {
-      "optional": true
-    }
-  },
   "devDependencies": {
     "@electron-forge/cli": "^7.11.2",
     "@electron-forge/core": "^7.11.2",

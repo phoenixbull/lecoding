@@ -81,13 +81,69 @@ function main() {
 
   // 2. Build the TypeScript source (main + preload + shared).
   //    forge needs JS entry points; tsconfig.build.json emits to dist/.
+  //    First stage workspace symlinks under apps/desktop/node_modules so
+  //    TS + Node module resolution can find @lecoding/* — pnpm's isolated
+  //    workspace layout keeps those links out of sub-package trees.
+  console.error("[ci] staging workspace symlinks");
+  const compileNm = join(DESKTOP_DIR, "node_modules");
+  mkdirSync(compileNm, { recursive: true });
+  run("pnpm", ["install", "--filter", "@lecoding/desktop...", "--offline"], {
+    env: { ...forgeEnv }
+  });
+
   console.error("[ci] compiling TypeScript");
-  run("npx", ["tsc", "--project", "tsconfig.build.json"], {
+  run("pnpm", ["exec", "tsc", "--project", "tsconfig.build.json"], {
     env: { ...forgeEnv }
   });
 
   // 3. Run electron-forge make for the target platform.
   //    --arch defaults to the runner's arch (x64 on windows-latest).
+  //
+  //    In a pnpm workspace with node-linker=hoisted, all third-party
+  //    packages (including @electron-forge/*) live in the root
+  //    node_modules, not under apps/desktop/node_modules. electron-forge's
+  //    flora-colossus walker starts from the package dir and only walks
+  //    downward, so it cannot find its own deps from the root. We stage
+  //    a junction (Windows) / symlink-loop (POSIX) from the root
+  //    node_modules into apps/desktop/node_modules so flora-colossus sees
+  //    a flat layout. This is a build-time seam — production code does
+  //    not import from electron-forge.
+  const rootNm = join(DESKTOP_DIR, "..", "..", "node_modules");
+  const desktopNm = join(DESKTOP_DIR, "node_modules");
+  console.error(`[ci] staging root node_modules under apps/desktop/node_modules`);
+  mkdirSync(desktopNm, { recursive: true });
+  if (process.platform === "win32") {
+    // Junction a temporary copy of the root node_modules at apps/desktop/.
+    // flora-colossus reads the copy's directory entries directly, which
+    // resolves to the real files under the junction. @lecoding/* workspace
+    // symlinks are preserved by moving them aside and back.
+    const lecodingLink = join(desktopNm, "@lecoding");
+    const lecodingHidden = join(DESKTOP_DIR, ".tmp-lecoding-link");
+    if (existsSync(lecodingLink)) {
+      execSync(`move "${lecodingLink}" "${lecodingHidden}"`, { stdio: "inherit" });
+    }
+    const junctionTarget = join(DESKTOP_DIR, ".tmp-desktop-nm");
+    execSync(`cmd /c mklink /J "${junctionTarget}" "${rootNm}"`, { stdio: "inherit" });
+    execSync(`xcopy "${junctionTarget}" "${desktopNm}" /E /I /Y /Q`, { stdio: "inherit" });
+    execSync(`rmdir "${junctionTarget}"`, { stdio: "inherit" });
+    if (existsSync(lecodingHidden)) {
+      execSync(`move "${lecodingHidden}" "${lecodingLink}"`, { stdio: "inherit" });
+    }
+  } else {
+    // POSIX: symlink each top-level entry from root node_modules.
+    for (const entry of readdirSync(rootNm)) {
+      const src = join(rootNm, entry);
+      const dst = join(desktopNm, entry);
+      if (existsSync(dst)) continue;
+      try {
+        execSync(`ln -s "${src}" "${dst}"`, { stdio: "pipe" });
+      } catch {
+        // Best effort: missing entries are fine.
+      }
+    }
+  }
+  console.error(`[ci] node_modules staging complete`);
+
   console.error(`[ci] running electron-forge make --platform=${platform}`);
   run("pnpm", ["make", "--platform", platform], {
     env: { ...forgeEnv }

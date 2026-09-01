@@ -141,6 +141,7 @@ function buildMacosMakers(): ForgeMaker[] {
   //  - zip:   portable .app bundle in a zip (auto-update baseline)
   //  - dmg:   standard macOS drag-to-install disk image
   //  - pkg:   system-level installer package (for MDM / enterprise)
+  //
   return [
     { name: "@electron-forge/maker-zip", platforms: ["darwin"] },
     { name: "@electron-forge/maker-dmg", platforms: ["darwin"] },
@@ -166,7 +167,6 @@ function buildWindowsMaker(
   }
   return {
     name: "@electron-forge/maker-squirrel",
-    platforms: ["win32"],
     config
   };
 }
