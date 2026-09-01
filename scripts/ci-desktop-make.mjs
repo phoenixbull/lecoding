@@ -227,6 +227,29 @@ function main() {
   stageRootNodeModules(rootNm, desktopNm);
   console.error(`[ci] node_modules staging complete`);
 
+  // 4. Ensure vendor/7z.exe exists in electron-winstaller's vendor dir.
+  //    electron-winstaller's post-install only creates vendor/7z.exe on
+  //    the host that ran `npm install` (e.g. macOS arm64 → 7z-arm64.exe).
+  //    On a different OS runner (e.g. Windows), vendor/7z.exe is missing
+  //    and Squirrel --releasify fails with "The system cannot find the
+  //    file specified" when it tries to spawn `7z.exe` to zip the
+  //    release. Create a copy of the arch-specific 7z binary so
+  //    Squirrel can find it.
+  if (platform === "win32") {
+    const vendorDir = join(rootNm, "electron-winstaller", "vendor");
+    const archExe = join(vendorDir, "7z-x64.exe");
+    const archDll = join(vendorDir, "7z-x64.dll");
+    const genericExe = join(vendorDir, "7z.exe");
+    const genericDll = join(vendorDir, "7z.dll");
+    if (existsSync(archExe) && !existsSync(genericExe)) {
+      copyFileSync(archExe, genericExe);
+      console.error("[ci] created vendor/7z.exe from 7z-x64.exe");
+    }
+    if (existsSync(archDll) && !existsSync(genericDll)) {
+      copyFileSync(archDll, genericDll);
+    }
+  }
+
   // 4. Materialize workspace symlinks under @lecoding/*.
   //    pnpm hoist mode creates symlinks like
   //    node_modules/@lecoding/client-sdk -> ../../packages/client-sdk
