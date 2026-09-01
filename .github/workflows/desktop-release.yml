@@ -69,8 +69,13 @@ jobs:
           # packager both fail on pnpm's default isolated (symlinked) layout.
           # Hoisting is a build-time concern only — production security is
           # enforced in the main process (CSP / sandbox / contextIsolation).
-          printf "node-linker=hoisted\n" > apps/desktop/.npmrc
-          cat apps/desktop/.npmrc
+          cat > .npmrc <<'EOF'
+          node-linker=hoisted
+          onlyBuiltDependencies[]=macos-alias
+          onlyBuiltDependencies[]=fs-xattr
+          onlyBuiltDependencies[]=electron-winstaller
+          EOF
+          cat .npmrc
           pnpm install --frozen-lockfile
 
       - name: Typecheck
