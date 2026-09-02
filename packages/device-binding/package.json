@@ -7,6 +7,10 @@
   "scripts": {
     "typecheck": "tsc --noEmit"
   },
+  "devDependencies": {
+    "@types/pg": "^8.23.1",
+    "pg": "^8.23.0"
+  },
   "dependencies": {
     "@lecoding/contracts": "workspace:*"
   }

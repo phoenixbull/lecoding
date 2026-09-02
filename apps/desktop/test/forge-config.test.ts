@@ -27,6 +27,8 @@ import { afterEach, describe, expect, it } from "vitest";
 import {
   buildForgeConfig,
   isReleaseSigningEnabled,
+  resolveReleaseVersion,
+  validateDesktopReleaseArtifacts,
   type SigningEnvironment
 } from "../src/build/forge-config.js";
 
@@ -93,6 +95,21 @@ describe("isReleaseSigningEnabled", () => {
 });
 
 describe("buildForgeConfig", () => {
+  it("embeds the release version in the packaged application metadata", () => {
+    const config = buildForgeConfig({
+      appName: "LeCoding",
+      appVersion: "1.2.3",
+      rendererEntry: "../renderer/dist/index.html",
+      mainEntry: "./src/main/index.ts",
+      preloadEntry: "./src/preload/index.ts",
+      signEnv: SIGN_ENV,
+      repository: "phoenixbull/lecoding"
+    });
+
+    expect(config.packagerConfig.appVersion).toBe("1.2.3");
+    expect(config.packagerConfig.buildVersion).toBe("1.2.3");
+  });
+
   it("uses fully-qualified @electron-forge/maker-* names (not bare identifiers)", () => {
     const config = buildForgeConfig({
       appName: "LeCoding",
@@ -241,8 +258,11 @@ describe("buildForgeConfig", () => {
       const makerConfig = (squirrel.config ?? {}) as Record<string, unknown>;
       expect(makerConfig["certificateFile"]).toBe(SIGN_ENV.CSC_LINK);
       expect(makerConfig["certificatePassword"]).toBe(SIGN_ENV.CSC_KEY_PASSWORD);
-      // The artifact name (NOT the maker name) carries the version.
-      expect(makerConfig["name"]).toBe("LeCoding-Setup-0.1.0");
+      // M0.4: the nuspec id stays lowercase (Squirrel would replace
+      // hyphens with underscores anyway). The setupExe carries the
+      // version, not the package id.
+      expect(makerConfig["name"]).toBe("lecode");
+      expect(makerConfig["setupExe"]).toBe("LeCoding-Setup-0.1.0.exe");
     }
   });
 
@@ -331,5 +351,137 @@ describe("buildForgeConfig", () => {
     expect(config.appName).toBe("LeCoding");
     expect(config.appId).toBeTruthy();
     expect(config.publisher).toBeTruthy();
+  });
+
+  it("threads the supplied version through the Squirrel name, setupExe and product name", () => {
+    // M0.4: the nuspec id, the setupExe file name, and the displayed
+    // product name must all carry the same version so a tag-driven
+    // release cannot produce a `0.0.0` installer under a `v0.1.0` tag.
+    const config = buildForgeConfig({
+      appName: "LeCoding",
+      appVersion: "0.1.0",
+      rendererEntry: "../renderer/dist/index.html",
+      mainEntry: "./src/main/index.ts",
+      preloadEntry: "./src/preload/index.ts",
+      signEnv: SIGN_ENV,
+      repository: "phoenixbull/lecoding"
+    });
+    const squirrel = config.makers.find(
+      (m) => m.name === "@electron-forge/maker-squirrel"
+    );
+    expect(squirrel).toBeDefined();
+    const makerConfig = (squirrel?.config ?? {}) as Record<string, unknown>;
+    expect(makerConfig["setupExe"]).toBe("LeCoding-Setup-0.1.0.exe");
+    expect(makerConfig["title"]).toBe("LeCoding 0.1.0");
+    expect(makerConfig["productName"]).toBe("LeCoding 0.1.0");
+    // nuspec id stays lowercase with no hyphens so Squirrel does not
+    // rewrite the package id and silently change the update feed.
+    expect(makerConfig["name"]).toBe("lecode");
+  });
+
+  it("uses the same version for every pre-release tag (e.g. 0.2.0-rc.1)", () => {
+    // M0.4: pre-release tags (beta-v*, rc-*) must still produce an
+    // installer whose embedded version matches the tag so the auto-
+    // update feed does not skip or duplicate releases.
+    const config = buildForgeConfig({
+      appName: "LeCoding",
+      appVersion: "0.2.0-rc.1",
+      rendererEntry: "../renderer/dist/index.html",
+      mainEntry: "./src/main/index.ts",
+      preloadEntry: "./src/preload/index.ts",
+      signEnv: SIGN_ENV,
+      repository: "phoenixbull/lecoding"
+    });
+    const squirrel = config.makers.find(
+      (m) => m.name === "@electron-forge/maker-squirrel"
+    );
+    const makerConfig = (squirrel?.config ?? {}) as Record<string, unknown>;
+    expect(makerConfig["setupExe"]).toBe("LeCoding-Setup-0.2.0-rc.1.exe");
+    expect(makerConfig["title"]).toBe("LeCoding 0.2.0-rc.1");
+  });
+
+  it("refuses to build when the version is empty or a placeholder", () => {
+    // M0.4: a `0.0.0` fallback used to ship under a `v0.1.0` tag. The
+    // builder must reject the call so the CI step catches the regression
+    // instead of silently publishing a mismatched update feed.
+    expect(() =>
+      buildForgeConfig({
+        appName: "LeCoding",
+        appVersion: "0.0.0",
+        rendererEntry: "../renderer/dist/index.html",
+        mainEntry: "./src/main/index.ts",
+        preloadEntry: "./src/preload/index.ts",
+        signEnv: SIGN_ENV,
+        repository: "phoenixbull/lecoding"
+      })
+    ).toThrow(/LECODING_RELEASE_VERSION|major\.minor\.patch|placeholder|0\.0\.0/);
+  });
+});
+
+describe("resolveReleaseVersion", () => {
+  it("normalizes a stable release tag", () => {
+    expect(resolveReleaseVersion({ releaseTag: "v1.2.3" })).toBe("1.2.3");
+  });
+
+  it("preserves beta release semantics instead of publishing a stable version", () => {
+    expect(resolveReleaseVersion({ releaseTag: "beta-v1.2.3" })).toBe(
+      "1.2.3-beta.0"
+    );
+  });
+
+  it("rejects a no-tag development build that only has the placeholder package version", () => {
+    expect(() =>
+      resolveReleaseVersion({ packageVersion: "0.0.0" })
+    ).toThrow(/release tag|development version|0\.0\.0/i);
+  });
+
+  it("rejects malformed release tags before they reach artifact names", () => {
+    expect(() => resolveReleaseVersion({ releaseTag: "v1.2" })).toThrow(
+      /semantic version/i
+    );
+  });
+});
+
+describe("validateDesktopReleaseArtifacts", () => {
+  it("accepts the required macOS x64 artifacts for the requested version", () => {
+    expect(() =>
+      validateDesktopReleaseArtifacts({
+        platform: "darwin",
+        arch: "x64",
+        appVersion: "1.2.3",
+        relativePaths: [
+          "LeCoding-1.2.3-x64.dmg",
+          "zip/darwin/x64/LeCoding-darwin-x64-1.2.3.zip"
+        ]
+      })
+    ).not.toThrow();
+  });
+
+  it("rejects a macOS x64 job that produced arm64 artifacts", () => {
+    expect(() =>
+      validateDesktopReleaseArtifacts({
+        platform: "darwin",
+        arch: "x64",
+        appVersion: "1.2.3",
+        relativePaths: [
+          "LeCoding-1.2.3-arm64.dmg",
+          "zip/darwin/arm64/LeCoding-darwin-arm64-1.2.3.zip"
+        ]
+      })
+    ).toThrow(/x64|architecture/i);
+  });
+
+  it("rejects missing or version-mismatched Windows artifacts", () => {
+    expect(() =>
+      validateDesktopReleaseArtifacts({
+        platform: "win32",
+        arch: "x64",
+        appVersion: "1.2.3",
+        relativePaths: [
+          "squirrel.windows/x64/LeCoding-Setup-0.0.0.exe",
+          "squirrel.windows/x64/RELEASES"
+        ]
+      })
+    ).toThrow(/1\.2\.3|artifact/i);
   });
 });

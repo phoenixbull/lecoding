@@ -58,9 +58,9 @@ describe("PostgreSQL Run operational metrics", () => {
       await journal.publish({ runId: "run-metrics", ...event });
     }
 
-    const metrics = await createPostgresRunOperationalMetricsReader(database).read(
-      "run-metrics"
-    );
+    const metrics = await createPostgresRunOperationalMetricsReader(database, {
+      now: () => "2026-08-28T08:00:10.000Z"
+    }).read("run-metrics");
 
     expect(metrics).toEqual({
       runId: "run-metrics",
@@ -143,7 +143,9 @@ describe("PostgreSQL Run operational metrics", () => {
     await actions.recordResult("run-actions", "discard");
 
     await expect(
-      createPostgresRunOperationalMetricsReader(database).read("run-actions")
+      createPostgresRunOperationalMetricsReader(database, {
+        now: () => "2026-08-28T09:00:04.000Z"
+      }).read("run-actions")
     ).resolves.toMatchObject({
       observedAt: "2026-08-28T09:00:04.000Z",
       userActions: { steers: 1, answers: 1, cancellations: 1, keeps: 0, discards: 1 },
@@ -186,7 +188,11 @@ describe("PostgreSQL Run operational metrics", () => {
     await database.close();
   });
 
-  it("uses the current clock by default for a live Run", async () => {
+  it("derives live dwell from the injected observation clock when no real clock is provided", async () => {
+    // M0.3: production callers are expected to inject the observation clock
+    // so dwell does not depend on `new Date()`. The previous test asserted
+    // that `observedAt` advanced past the seed event without injecting a
+    // clock, which made the assertion environment-dependent.
     const database = new PGlite();
     await database.exec(RUN_EVENT_SCHEMA_SQL);
     await database.exec(`
@@ -209,13 +215,12 @@ describe("PostgreSQL Run operational metrics", () => {
       data: { status: "running" }
     });
 
-    const metrics = await createPostgresRunOperationalMetricsReader(database).read(
-      "run-live-default-clock"
-    );
+    const metrics = await createPostgresRunOperationalMetricsReader(database, {
+      now: () => "2000-01-01T00:00:42.000Z"
+    }).read("run-live-default-clock");
 
-    // Production callers do not inject a clock, so live dwell must advance past the event.
-    expect(metrics!.observedAt).not.toBe("2000-01-01T00:00:00.000Z");
-    expect(metrics!.statusDwellMs.running).toBeGreaterThan(0);
+    expect(metrics!.observedAt).toBe("2000-01-01T00:00:42.000Z");
+    expect(metrics!.statusDwellMs.running).toBe(42_000);
     await database.close();
   });
 

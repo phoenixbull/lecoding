@@ -11,6 +11,11 @@
  * in PostgreSQL while tests (and the harness) keep an in-memory adapter.
  * The store owns the durability of codes and devices; the service owns the
  * formatting, validation, and lifetime rules.
+ *
+ * M0.1 hardening: codes are generated from `node:crypto.randomBytes` (never
+ * `Math.random`), the live-code budget is enforced inside the store as a
+ * single atomic operation so concurrent issuers cannot exceed it, and all
+ * expiry decisions flow through the service-injected clock.
  */
 
 import { createHash, randomBytes, randomUUID } from "node:crypto";
@@ -66,9 +71,53 @@ export interface DeviceRecord {
  * Storage interface. The in-memory adapter used by tests is exported as
  * `createInMemoryDeviceBindingStore`; production wires the PostgreSQL
  * adapter that ships with the package.
+ *
+ * `reserveCodeSlot` is the single atomic seam used by the service for both
+ * "is the user under the live-code budget?" and "insert this code". A
+ * concurrent caller cannot exceed `maxLiveCodesPerUser` because the budget
+ * check and the write happen inside the same storage operation; the
+ * returned slot owns its expiry deadline so the storage layer never has to
+ * reach for an internal wall clock.
  */
+/** Candidate identity persisted when the store successfully reserves a code slot. */
+export interface CodeReservationCandidate {
+  codeHash: string;
+  userId: string;
+  email: string;
+  projectId: string;
+  projectName: string;
+}
+
+/** A successful candidate plus the exact caller-derived expiry deadline. */
+export interface CodeReservation extends CodeReservationCandidate {
+  expiresAt: string;
+}
+
+/** Limits and clock snapshot used by an atomic code-slot reservation. */
+export interface ReserveCodeSlotOptions {
+  /** Upper bound on currently-valid (not expired, not consumed) codes. */
+  maxLiveCodesPerUser: number;
+  /** Snapshot of "now" — the store must not fall back to `new Date()`. */
+  now: Date;
+  /** TTL for the freshly minted code in milliseconds. */
+  ttlMs: number;
+}
+
+/** Returned by `reserveCodeSlot`; the service decides what to do next. */
+export type ReserveCodeSlotResult =
+  | { ok: true; reservation: CodeReservation }
+  | { ok: false; reason: "too_many_codes" | "code_hash_conflict" };
+
 export interface DeviceBindingStore {
-  insertCode(record: DeviceCodeRecord): Promise<void>;
+  /**
+   * Atomically checks the live-code budget and inserts the row.
+   * Storage implementations must roll back on hash conflict and surface a
+   * deterministic reason so the service can retry with a fresh code.
+   */
+  reserveCodeSlot(
+    candidate: CodeReservationCandidate,
+    options: ReserveCodeSlotOptions
+  ): Promise<ReserveCodeSlotResult>;
   findCode(codeHash: string): Promise<DeviceCodeRecord | undefined>;
   markCodeConsumed(codeHash: string, consumedAt: string): Promise<void>;
   insertDevice(record: DeviceRecord): Promise<void>;
@@ -79,7 +128,6 @@ export interface DeviceBindingStore {
   listDevicesForUser(userId: string): Promise<DeviceRecord[]>;
   markDeviceLastUsed(deviceId: string, lastUsedAt: string): Promise<void>;
   revokeDevice(deviceId: string, revokedAt: string): Promise<void>;
-  countLiveCodesForUser(userId: string): Promise<number>;
 }
 
 export type DeviceBindingErrorCode =
@@ -89,7 +137,8 @@ export type DeviceBindingErrorCode =
   | "device_unknown"
   | "device_expired"
   | "device_revoked"
-  | "too_many_codes";
+  | "too_many_codes"
+  | "code_collision_exhausted";
 
 export class DeviceBindingError extends Error {
   readonly code: DeviceBindingErrorCode;
@@ -108,6 +157,11 @@ export interface DeviceBindingServiceOptions {
   maxLiveCodesPerUser?: number;
   /** TTL applied to issued device credentials. Default 24 hours. */
   deviceTtlMs?: number;
+  /**
+   * Maximum number of times the service will retry code generation if a
+   * freshly minted value collides with an existing row. Default 4.
+   */
+  maxCodeGenerationRetries?: number;
 }
 
 export interface IssueCodeInput {
@@ -171,10 +225,12 @@ export interface AuthenticateInput {
 const DEFAULT_MAX_LIVE_CODES = 16;
 const DEFAULT_DEVICE_TTL_MS = 24 * 60 * 60_000;
 const DEFAULT_CODE_TTL_MS = 10 * 60_000;
+const DEFAULT_CODE_GEN_RETRIES = 4;
 const CODE_ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
 const CODE_LENGTH = 9;
 const ACCESS_TOKEN_BYTES = 32;
 
+/** Creates the service while keeping time, limits, and persistence injectable. */
 export function createDeviceBindingService(
   options: DeviceBindingServiceOptions
 ): DeviceBindingService {
@@ -182,10 +238,18 @@ export function createDeviceBindingService(
   const maxLiveCodesPerUser =
     options.maxLiveCodesPerUser ?? DEFAULT_MAX_LIVE_CODES;
   const deviceTtlMs = options.deviceTtlMs ?? DEFAULT_DEVICE_TTL_MS;
+  const maxCodeGenerationRetries =
+    options.maxCodeGenerationRetries ?? DEFAULT_CODE_GEN_RETRIES;
 
   return {
     issueCode(input) {
-      return issueCode(options.store, resolveNow, maxLiveCodesPerUser, input);
+      return issueCode(
+        options.store,
+        resolveNow,
+        maxLiveCodesPerUser,
+        maxCodeGenerationRetries,
+        input
+      );
     },
     exchangeCode(input) {
       return exchangeCode(options.store, resolveNow, deviceTtlMs, input);
@@ -221,34 +285,56 @@ async function issueCode(
   store: DeviceBindingStore,
   now: () => Date,
   maxLiveCodesPerUser: number,
+  maxCodeGenerationRetries: number,
   input: IssueCodeInput
 ): Promise<IssuedCode> {
   validateIssueInput(input);
-  const live = await store.countLiveCodesForUser(input.userId);
-  if (live >= maxLiveCodesPerUser) {
-    throw new DeviceBindingError(
-      "too_many_codes",
-      "Too many live device codes for this user"
-    );
-  }
-  const code = generateCode();
   const ttlMs = input.ttlMs ?? DEFAULT_CODE_TTL_MS;
   if (!Number.isFinite(ttlMs) || ttlMs <= 0) {
     throw new DeviceBindingError("too_many_codes", "ttlMs must be positive");
   }
-  const expiresAt = new Date(now().getTime() + ttlMs).toISOString();
-  await store.insertCode({
-    codeHash: hashSecret(code),
-    userId: input.userId,
-    email: input.email,
-    projectId: input.projectId,
-    projectName: input.projectName,
-    expiresAt
-  });
-  const payload = `lecoding://device-binding?code=${code}&project=${encodeURIComponent(
-    input.projectId
-  )}`;
-  return { code, payload, expiresAt };
+  // The store decides whether the budget allows a new slot; we only need to
+  // retry when the candidate hash collides with a pre-existing row. The
+  // budget check and insert are atomic inside the store so concurrent
+  // issuers cannot collectively exceed `maxLiveCodesPerUser`.
+  for (let attempt = 0; attempt <= maxCodeGenerationRetries; attempt += 1) {
+    const code = generateCode();
+    const result = await store.reserveCodeSlot(
+      {
+        codeHash: hashSecret(code),
+        userId: input.userId,
+        email: input.email,
+        projectId: input.projectId,
+        projectName: input.projectName
+      },
+      {
+        maxLiveCodesPerUser,
+        now: now(),
+        ttlMs
+      }
+    );
+    if (result.ok) {
+      const payload = `lecoding://device-binding?code=${code}&project=${encodeURIComponent(
+        input.projectId
+      )}`;
+      return {
+        code,
+        payload,
+        expiresAt: result.reservation.expiresAt
+      };
+    }
+    if (result.reason === "too_many_codes") {
+      throw new DeviceBindingError(
+        "too_many_codes",
+        "Too many live device codes for this user"
+      );
+    }
+    // result.reason === "code_hash_conflict": retry with a fresh code.
+  }
+  throw new DeviceBindingError(
+    "code_collision_exhausted",
+    "Could not generate a unique device code after retries"
+  );
 }
 
 async function exchangeCode(
@@ -394,12 +480,17 @@ function validateIssueInput(input: IssueCodeInput): void {
 }
 
 function generateCode(): string {
-  // Base32 without confusing characters; deterministic length for typing.
-  let code = "";
+  // 5 bits per base32 char × 9 chars = 45 bits of entropy, drawn from a
+  // CSPRNG. `Math.random()` is not safe for security tokens.
+  const out: string[] = [];
+  const bytes = randomBytes(CODE_LENGTH);
   for (let index = 0; index < CODE_LENGTH; index += 1) {
-    code += CODE_ALPHABET[Math.floor(Math.random() * CODE_ALPHABET.length)];
+    // Mask off any high bits so each byte selects uniformly from the 32
+    // character alphabet even though 256 % 32 !== 0.
+    const alphabetIndex = (bytes[index] ?? 0) & 31;
+    out.push(CODE_ALPHABET.charAt(alphabetIndex));
   }
-  return code;
+  return out.join("");
 }
 
 function generateAccessToken(): string {
@@ -431,23 +522,65 @@ function sanitisePlatform(value: string | undefined): string {
   return trimmed.length === 0 ? "unknown" : trimmed;
 }
 
+/** Creates a process-local store whose reservation seam is synchronously atomic. */
 export function createInMemoryDeviceBindingStore(): DeviceBindingStore {
+  // `now` is provided by the service on every call so we never reach for
+  // `new Date()` from inside the store. Concurrent calls in tests are
+  // serialised by the JS event loop, but the implementation must still
+  // behave atomically with respect to `reserveCodeSlot`.
   const codes = new Map<string, DeviceCodeRecord>();
   const devices = new Map<string, DeviceRecord>();
   const tokenIndex = new Map<string, string>();
 
-  function purgeExpired(now: () => Date): void {
-    const cutoff = now().getTime();
-    for (const [hash, record] of codes) {
-      if (Date.parse(record.expiresAt) <= cutoff) {
-        codes.delete(hash);
+  function isLive(record: DeviceCodeRecord, now: Date): boolean {
+    if (record.consumedAt !== undefined) {
+      return false;
+    }
+    const expiresMs = Date.parse(record.expiresAt);
+    return Number.isFinite(expiresMs) && expiresMs > now.getTime();
+  }
+
+  function liveCountFor(userId: string, now: Date): number {
+    let count = 0;
+    for (const record of codes.values()) {
+      if (record.userId === userId && isLive(record, now)) {
+        count += 1;
       }
     }
+    return count;
   }
 
   return {
-    async insertCode(record) {
-      codes.set(record.codeHash, record);
+    async reserveCodeSlot(candidate, options) {
+      // Atomic with respect to JS callers because we never yield control
+      // between the budget check and the insert. The hash map's primary-key
+      // semantics guarantee the unique-constraint contract.
+      if (codes.has(candidate.codeHash)) {
+        return { ok: false, reason: "code_hash_conflict" };
+      }
+      if (liveCountFor(candidate.userId, options.now) >= options.maxLiveCodesPerUser) {
+        return { ok: false, reason: "too_many_codes" };
+      }
+      const expiresAt = new Date(options.now.getTime() + options.ttlMs).toISOString();
+      codes.set(candidate.codeHash, {
+        codeHash: candidate.codeHash,
+        userId: candidate.userId,
+        email: candidate.email,
+        projectId: candidate.projectId,
+        projectName: candidate.projectName,
+        expiresAt
+      });
+      return {
+        ok: true,
+        reservation: {
+          codeHash: candidate.codeHash,
+          userId: candidate.userId,
+          email: candidate.email,
+          projectId: candidate.projectId,
+          projectName: candidate.projectName,
+          expiresAt
+        }
+      };
     },
     async findCode(codeHash) {
       return codes.get(codeHash);
@@ -498,17 +631,6 @@ export function createInMemoryDeviceBindingStore(): DeviceBindingStore {
       }
       record.revokedAt = revokedAt;
       devices.set(deviceId, record);
-    },
-    async countLiveCodesForUser(userId) {
-      const now = new Date();
-      purgeExpired(() => now);
-      let count = 0;
-      for (const record of codes.values()) {
-        if (record.userId === userId && record.consumedAt === undefined) {
-          count += 1;
-        }
-      }
-      return count;
     }
   };
 }

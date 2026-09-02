@@ -16,7 +16,7 @@
  *     schema is exercised everywhere.
  *
  * Usage (from repo root):
- *   node scripts/ci-desktop-make.mjs <platform>
+ *   node scripts/ci-desktop-make.mjs <platform> <arch>
  *
  * Environment:
  *   CSC_LINK             : base64-encoded .p12 (Windows)
@@ -26,14 +26,22 @@
 
 import { writeFileSync, mkdirSync, existsSync, readdirSync, statSync, readlinkSync, lstatSync, copyFileSync, rmSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, resolve, relative, isAbsolute, dirname } from "node:path";
-import { spawnSync, execSync } from "node:child_process";
+import { join, resolve, relative, isAbsolute, dirname, sep } from "node:path";
+import { pathToFileURL } from "node:url";
+import { spawnSync } from "node:child_process";
 
 const DESKTOP_DIR = resolve(import.meta.dirname, "..", "apps", "desktop");
 const platform = process.argv[2];
+const arch = process.argv[3];
 
-if (!platform) {
-  console.error("Usage: ci-desktop-make.mjs <darwin|win32>");
+const supportedTarget =
+  (platform === "darwin" && (arch === "arm64" || arch === "x64")) ||
+  (platform === "win32" && arch === "x64");
+if (!supportedTarget) {
+  console.error(
+    "Usage: ci-desktop-make.mjs <darwin|win32> <arm64|x64> " +
+      "(Windows supports x64 only)"
+  );
   process.exit(1);
 }
 
@@ -150,6 +158,21 @@ function copyDirRecursive(src, dst) {
   }
 }
 
+/** Collect regular files under a directory as stable POSIX-style paths. */
+function collectArtifactPaths(rootDir, currentDir = rootDir) {
+  if (!existsSync(currentDir)) return [];
+  const paths = [];
+  for (const entry of readdirSync(currentDir, { withFileTypes: true })) {
+    const absolutePath = join(currentDir, entry.name);
+    if (entry.isDirectory()) {
+      paths.push(...collectArtifactPaths(rootDir, absolutePath));
+    } else if (entry.isFile()) {
+      paths.push(relative(rootDir, absolutePath).split(sep).join("/"));
+    }
+  }
+  return paths.sort();
+}
+
 /**
  * Link top-level entries from the root (hoisted) node_modules into
  * apps/desktop/node_modules.
@@ -181,9 +204,23 @@ function stageRootNodeModules(rootNm, desktopNm) {
   }
 }
 
-function main() {
-  console.error(`[ci] building desktop for ${platform}`);
+async function main() {
+  console.error(`[ci] building desktop for ${platform}/${arch}`);
   console.error(`[ci] working dir: ${DESKTOP_DIR}`);
+
+  // M0.4: refuse to run if the workflow forgot to export
+  // LECODING_RELEASE_VERSION. Falling back to npm_package_version or
+  // a hard-coded `0.0.0` is the exact regression the planning document
+  // calls out as release-blocking (tag `v0.1.0` → installer `0.0.0`).
+  const releaseVersion = process.env["LECODING_RELEASE_VERSION"];
+  if (!releaseVersion) {
+    console.error(
+      "[ci] FATAL: LECODING_RELEASE_VERSION is not set. CI workflows " +
+        "must export it from the trigger tag before invoking this script."
+    );
+    process.exit(2);
+  }
+  console.error(`[ci] release version: ${releaseVersion}`);
 
   // 1. Decode signing certs (if any) and set up env for forge.
   const forgeEnv = prepareSigningEnv();
@@ -299,7 +336,9 @@ function main() {
     }
   }
 
-  console.error(`[ci] running electron-forge make --platform=${platform}`);
+  console.error(
+    `[ci] running electron-forge make --platform=${platform} --arch=${arch}`
+  );
   // Enable debug output so CI logs show what electron-winstaller is
   // actually doing (it spawns external tools like Update.exe and the
   // default error message is just "Failed with exit code: 1").
@@ -309,30 +348,29 @@ function main() {
     ...forgeEnv,
     DEBUG: (forgeEnv.DEBUG ? `${forgeEnv.DEBUG},` : "") + "electron-windows-installer:*"
   };
-  run("pnpm", ["make", "--platform", platform], {
+  run("pnpm", ["make", "--platform", platform, "--arch", arch], {
     env: makeEnv
   });
 
-  // 4. Print artifact paths so the workflow upload step can find them.
+  // Validate before upload so the release cannot silently accept an empty,
+  // wrong-version, or wrong-architecture make directory.
   const outDir = join(DESKTOP_DIR, "out", "make");
-  if (existsSync(outDir)) {
-    console.error("[ci] artifacts produced:");
-    try {
-      const listing = execSync(
-        process.platform === "win32"
-          ? `dir /s /b "${outDir}"`
-          : `find "${outDir}" -type f`,
-        { encoding: "utf8" }
-      );
-      console.error(listing);
-    } catch {
-      console.error("  (could not list files)");
-    }
-  } else {
-    console.error("[ci] WARNING: no out/make directory found");
-  }
+  const relativePaths = collectArtifactPaths(outDir);
+  const buildModuleUrl = pathToFileURL(
+    join(DESKTOP_DIR, "dist", "build", "forge-config.js")
+  ).href;
+  const { resolveReleaseVersion, validateDesktopReleaseArtifacts } =
+    await import(buildModuleUrl);
+  const appVersion = resolveReleaseVersion({ releaseTag: releaseVersion });
+  validateDesktopReleaseArtifacts({ platform, arch, appVersion, relativePaths });
+  console.error("[ci] validated artifacts produced:");
+  console.error(relativePaths.join("\n"));
 
   console.error("[ci] done.");
 }
 
-main();
+main().catch((error) => {
+  const message = error instanceof Error ? error.message : String(error);
+  console.error(`[ci] FATAL: ${message}`);
+  process.exit(1);
+});

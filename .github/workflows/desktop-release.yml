@@ -8,7 +8,7 @@
 # every installed instance on the next launch.
 #
 # Windows builds natively on `windows-latest` so the Squirrel installer
-# (electron-winstaller) can produce the real .exe + .msi without Mono /
+# (electron-winstaller) can produce its setup and update-feed assets without Mono /
 # Wine cross-compilation. macOS builds on `macos-latest` with the full
 # codesign + notarization flow (hardened runtime + notarytool).
 #
@@ -66,11 +66,11 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
-      - name: Typecheck (desktop + its workspace deps)
-        run: pnpm --filter @lecoding/desktop... typecheck
+      - name: Typecheck (full repository)
+        run: pnpm typecheck
 
-      - name: Test (desktop only)
-        run: pnpm --filter @lecoding/desktop test
+      - name: Test (full repository, including loopback integration)
+        run: pnpm test
 
       - name: Build & make installer (${{ matrix.platform }}/${{ matrix.arch }})
         env:
@@ -79,8 +79,14 @@ jobs:
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          # The package version flows through every artifact (the Squirrel
+          # `setupExe` name, the macOS `CFBundleVersion`, the
+          # electron-updater feed, and the release assets uploaded by the
+          # `release` job). Reading it from the trigger tag keeps the
+          # package, the update feed, and the file name in lock-step.
+          LECODING_RELEASE_VERSION: ${{ github.ref_name }}
         run: |
-          node scripts/ci-desktop-make.mjs ${{ matrix.platform }}
+          node scripts/ci-desktop-make.mjs ${{ matrix.platform }} ${{ matrix.arch }}
         shell: bash
 
       - name: Upload artifacts
@@ -109,13 +115,12 @@ jobs:
         with:
           files: |
             artifacts/**/LeCoding-Setup-*.exe
-            artifacts/**/LeCoding-Setup-*.msi
+            artifacts/**/*-full.nupkg
             artifacts/**/*.dmg
-            artifacts/**/*.pkg
             artifacts/**/*.zip
             artifacts/**/RELEASES
           generate_release_notes: true
           prerelease: ${{ startsWith(github.ref, 'refs/tags/beta-v') }}
-          fail_on_unmatched_files: false
+          fail_on_unmatched_files: true
         env:
           GITHUB_TOKEN: ${{ secrets.GH_TOKEN }}

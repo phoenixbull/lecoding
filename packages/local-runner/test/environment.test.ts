@@ -19,11 +19,42 @@ function gitAvailable(): boolean {
   return result.status === 0;
 }
 
+/**
+ * Initialise a throw-away repo. `git init --initial-branch=main` requires
+ * Git 2.28+; on the minimum-supported 2.22 we let Git pick the default
+ * branch name and then rename it to `main` so downstream worktree /
+ * HEAD assertions remain portable.
+ */
 function makeRepo(path: string): void {
   mkdirSync(path, { recursive: true });
-  const run = (args: string[]) =>
-    spawnSync("git", args, { cwd: path, stdio: "ignore" });
-  run(["init", "-q", "--initial-branch=main"]);
+  // Assert on the exit code so a sandbox that strips `git` (or its
+  // symlink helper) does not silently leave the repo uninitialised and
+  // produce misleading "worktree not found" failures further down.
+  const run = (args: string[]) => {
+    const result = spawnSync("git", args, { cwd: path, stdio: "ignore" });
+    if (result.status !== 0) {
+      throw new Error(
+        `git ${args.join(" ")} exited with status ${result.status}`
+      );
+    }
+    return result;
+  };
+  // Probe whether the running Git understands --initial-branch before
+  // using it. This keeps the fixture usable on both ancient and modern
+  // Git versions.
+  const versionProbe = spawnSync("git", ["--version"], { encoding: "utf8" });
+  const versionMatch = versionProbe.stdout?.match(/git version (\d+)\.(\d+)/);
+  const major = versionMatch ? Number(versionMatch[1]) : 0;
+  const minor = versionMatch ? Number(versionMatch[2]) : 0;
+  const supportsInitialBranch = major > 2 || (major === 2 && minor >= 28);
+  if (supportsInitialBranch) {
+    run(["init", "-q", "--initial-branch=main"]);
+  } else {
+    run(["init", "-q"]);
+    // The default branch in Git < 2.28 is `master`. Rename it so the rest
+    // of the fixture can assume `main` and not care about the host Git.
+    run(["symbolic-ref", "HEAD", "refs/heads/main"]);
+  }
   run(["config", "user.email", "test@example.com"]);
   run(["config", "user.name", "Test"]);
   writeFileSync(join(path, "README.md"), "hello\n");
@@ -58,12 +89,15 @@ describe.skipIf(!gitAvailable())("createLocalRunEnvironment", () => {
   });
 
   afterEach(() => {
-    for (const root of [sourceRepo, worktreeRoot]) {
+    // `sourceRepo` points at <sandbox>/project while `worktreeRoot` is the
+    // sandbox itself. Delete only those two owned sandboxes; resolving the
+    // parent of worktreeRoot would erase the shared system temp directory.
+    const ownedRoots = [resolve(sourceRepo, ".."), worktreeRoot];
+    for (const root of ownedRoots) {
       if (!root) continue;
-      const parent = resolve(root, "..");
-      if (!existsSync(parent)) continue;
+      if (!existsSync(root)) continue;
       try {
-        rmSync(parent, { recursive: true, force: true, maxRetries: 3 });
+        rmSync(root, { recursive: true, force: true, maxRetries: 3 });
       } catch {
         // Best-effort cleanup; tmpdir files may be locked by other processes
         // (for example Microsoft Auto Update staging) on macOS. The next

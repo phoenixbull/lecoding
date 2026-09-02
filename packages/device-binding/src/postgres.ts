@@ -1,7 +1,10 @@
 import type {
+  CodeReservation,
   DeviceBindingStore,
   DeviceCodeRecord,
-  DeviceRecord
+  DeviceRecord,
+  ReserveCodeSlotOptions,
+  ReserveCodeSlotResult
 } from "./index.js";
 
 /**
@@ -29,6 +32,46 @@ CREATE TABLE IF NOT EXISTS device_binding_codes (
 
 CREATE INDEX IF NOT EXISTS device_binding_codes_user_idx
   ON device_binding_codes (user_id, expires_at);
+
+CREATE OR REPLACE FUNCTION lecoding_reserve_device_binding_code(
+  p_code_hash text,
+  p_user_id text,
+  p_email text,
+  p_project_id text,
+  p_project_name text,
+  p_now timestamptz,
+  p_expires_at timestamptz,
+  p_max_live_codes integer
+) RETURNS text LANGUAGE plpgsql AS $$
+BEGIN
+  -- Serialize reservations for one user. READ COMMITTED takes a fresh
+  -- snapshot after this lock is acquired, so a waiter observes the row
+  -- committed by the previous holder before applying the capacity gate.
+  PERFORM pg_advisory_xact_lock(
+    hashtextextended('lecoding:device-binding:code:' || p_user_id, 0)
+  );
+
+  IF (
+    SELECT count(*) FROM device_binding_codes
+     WHERE user_id = p_user_id
+       AND consumed_at IS NULL
+       AND expires_at > p_now
+  ) >= p_max_live_codes THEN
+    RETURN 'too_many_codes';
+  END IF;
+
+  BEGIN
+    INSERT INTO device_binding_codes
+      (code_hash, user_id, email, project_id, project_name, expires_at)
+    VALUES
+      (p_code_hash, p_user_id, p_email, p_project_id, p_project_name, p_expires_at);
+  EXCEPTION WHEN unique_violation THEN
+    RETURN 'code_hash_conflict';
+  END;
+
+  RETURN 'reserved';
+END;
+$$;
 
 CREATE TABLE IF NOT EXISTS device_binding_devices (
   device_id text PRIMARY KEY,
@@ -72,6 +115,10 @@ interface DeviceRow extends Record<string, unknown> {
   last_used_at: Date | string;
   expires_at: Date | string;
   revoked_at: Date | string | null;
+}
+
+interface ReservationStatusRow extends Record<string, unknown> {
+  status: "reserved" | "too_many_codes" | "code_hash_conflict";
 }
 
 function toIso(value: Date | string | null | undefined): string | undefined {
@@ -133,24 +180,51 @@ function rowToDevice(row: DeviceRow): DeviceRecord {
   return record;
 }
 
+/** Creates a PostgreSQL-backed store; callers must apply the exported schema first. */
 export function createPostgresDeviceBindingStore(
   executor: PostgresExecutor
 ): DeviceBindingStore {
   return {
-    async insertCode(record) {
-      await executor.query(
-        `INSERT INTO device_binding_codes
-           (code_hash, user_id, email, project_id, project_name, expires_at)
-         VALUES ($1, $2, $3, $4, $5, $6::timestamptz)`,
+    async reserveCodeSlot(candidate, options): Promise<ReserveCodeSlotResult> {
+      // The database function owns the per-user transaction lock and the
+      // insert. This is stronger than a count-and-insert statement under
+      // MVCC, where concurrent statements can all observe the same stale
+      // count. Expiry still comes from the caller-injected clock.
+      const suppliedNow = options.now.toISOString();
+      const expiresAt = new Date(
+        options.now.getTime() + options.ttlMs
+      ).toISOString();
+      const result = await executor.query<ReservationStatusRow>(
+        `SELECT lecoding_reserve_device_binding_code(
+           $1, $2, $3, $4, $5, $6::timestamptz, $7::timestamptz, $8
+         ) AS status`,
         [
-          record.codeHash,
-          record.userId,
-          record.email,
-          record.projectId,
-          record.projectName,
-          record.expiresAt
+          candidate.codeHash,
+          candidate.userId,
+          candidate.email,
+          candidate.projectId,
+          candidate.projectName,
+          suppliedNow,
+          expiresAt,
+          options.maxLiveCodesPerUser
         ]
       );
+      const status = result.rows[0]?.status;
+      if (status === "reserved") {
+        const reservation: CodeReservation = {
+          codeHash: candidate.codeHash,
+          userId: candidate.userId,
+          email: candidate.email,
+          projectId: candidate.projectId,
+          projectName: candidate.projectName,
+          expiresAt
+        };
+        return { ok: true, reservation };
+      }
+      if (status === "too_many_codes" || status === "code_hash_conflict") {
+        return { ok: false, reason: status };
+      }
+      throw new Error("device binding reservation returned an unknown status");
     },
     async findCode(codeHash) {
       const result = await executor.query<CodeRow>(
@@ -244,18 +318,6 @@ export function createPostgresDeviceBindingStore(
           WHERE device_id = $1`,
         [deviceId, revokedAt]
       );
-    },
-    async countLiveCodesForUser(userId) {
-      const result = await executor.query<{ count: string }>(
-        `SELECT count(*)::text AS count
-           FROM device_binding_codes
-          WHERE user_id = $1
-            AND consumed_at IS NULL
-            AND expires_at > now()`,
-        [userId]
-      );
-      const row = result.rows[0];
-      return row ? Number.parseInt(row.count, 10) : 0;
     }
   };
 }

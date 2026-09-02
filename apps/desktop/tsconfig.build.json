@@ -9,6 +9,6 @@
     "moduleResolution": "bundler",
     "target": "ES2022"
   },
-  "include": ["src/main/**/*.ts", "src/preload/**/*.ts", "src/shared/**/*.ts"],
+  "include": ["src/build/**/*.ts", "src/main/**/*.ts", "src/preload/**/*.ts", "src/shared/**/*.ts"],
   "exclude": ["test/**/*.ts", "forge.config.ts"]
 }

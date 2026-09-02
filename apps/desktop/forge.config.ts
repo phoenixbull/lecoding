@@ -9,6 +9,7 @@
 
 import {
   buildForgeConfig,
+  resolveReleaseVersion,
   type ForgeConfigInputs,
   type SigningEnvironment
 } from "./src/build/forge-config.js";
@@ -32,7 +33,10 @@ function readSigningEnvironment(): SigningEnvironment {
 
 const inputs: ForgeConfigInputs = {
   appName: "LeCoding",
-  appVersion: process.env["npm_package_version"] ?? "0.0.0",
+  appVersion: resolveReleaseVersion({
+    releaseTag: process.env["LECODING_RELEASE_VERSION"],
+    packageVersion: process.env["npm_package_version"]
+  }),
   rendererEntry: "../renderer/dist/index.html",
   mainEntry: "./src/main/index.ts",
   preloadEntry: "./src/preload/index.ts",

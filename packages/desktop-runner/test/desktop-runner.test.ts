@@ -43,9 +43,32 @@ function gitAvailable(): boolean {
 
 function makeRepo(path: string): void {
   mkdirSync(path, { recursive: true });
-  const run = (args: string[]) =>
-    spawnSync("git", args, { cwd: path, stdio: "ignore" });
-  run(["init", "-q", "--initial-branch=main"]);
+  // Assert on the exit code so a sandbox that strips `git` (or its
+  // symlink helper) does not silently leave the repo uninitialised and
+  // produce misleading "worktree not found" failures further down.
+  const run = (args: string[]) => {
+    const result = spawnSync("git", args, { cwd: path, stdio: "ignore" });
+    if (result.status !== 0) {
+      throw new Error(
+        `git ${args.join(" ")} exited with status ${result.status}`
+      );
+    }
+    return result;
+  };
+  // `git init --initial-branch=main` requires Git 2.28+. Probe the running
+  // Git version and fall back to a `symbolic-ref HEAD` rename for older
+  // versions so the fixture remains portable.
+  const versionProbe = spawnSync("git", ["--version"], { encoding: "utf8" });
+  const versionMatch = versionProbe.stdout?.match(/git version (\d+)\.(\d+)/);
+  const major = versionMatch ? Number(versionMatch[1]) : 0;
+  const minor = versionMatch ? Number(versionMatch[2]) : 0;
+  const supportsInitialBranch = major > 2 || (major === 2 && minor >= 28);
+  if (supportsInitialBranch) {
+    run(["init", "-q", "--initial-branch=main"]);
+  } else {
+    run(["init", "-q"]);
+    run(["symbolic-ref", "HEAD", "refs/heads/main"]);
+  }
   run(["config", "user.email", "test@example.com"]);
   run(["config", "user.name", "Test"]);
   writeFileSync(join(path, "README.md"), "hello\n");
@@ -67,9 +90,10 @@ function makeSandbox(): { sourceRepo: string; worktreeRoot: string; cleanup: () 
     sourceRepo,
     worktreeRoot,
     cleanup() {
-      const parent = resolve(base, "..");
       try {
-        rmSync(parent, { recursive: true, force: true, maxRetries: 3 });
+        // The fixture owns `base`, never its parent (`tmpdir()`), which is
+        // shared with Vitest and unrelated processes on the host.
+        rmSync(base, { recursive: true, force: true, maxRetries: 3 });
       } catch {
         // tmpdir may be locked by other processes; best-effort cleanup.
       }

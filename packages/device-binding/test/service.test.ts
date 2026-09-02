@@ -308,4 +308,157 @@ describe("DeviceBindingService", () => {
       message: "expired"
     });
   });
+
+  it("uses the service-injected clock for live-code expiry rather than wall-clock time", async () => {
+    // M0.1: the in-memory store used to read `new Date()` internally, which
+    // made the live-code count depend on the host's real time. The injected
+    // service clock must be the single source of truth for expiry.
+    // Seed the store with a known, already-expired code via the public API.
+    const store = createStore();
+    const expiredService = createDeviceBindingService({
+      store,
+      now: () => new Date("1970-01-01T00:00:00.000Z"),
+      maxLiveCodesPerUser: 16
+    });
+    await expiredService.issueCode({
+      userId: "user-1",
+      email: "alice@example.com",
+      projectId: "project-1",
+      projectName: "Project One",
+      ttlMs: 60_000
+    });
+    // Now build a service whose clock is fixed in the future; the expired
+    // seed record must NOT count toward the budget because the *injected*
+    // clock says it expired long ago.
+    const service = createDeviceBindingService({
+      store,
+      now: clock.now,
+      maxLiveCodesPerUser: 1
+    });
+    await expect(
+      service.issueCode({
+        userId: "user-1",
+        email: "alice@example.com",
+        projectId: "project-1",
+        projectName: "Project One",
+        ttlMs: 60_000
+      })
+    ).resolves.toMatchObject({ code: expect.any(String) });
+    // The second issuance must hit the cap because the first is live.
+    await expect(
+      service.issueCode({
+        userId: "user-1",
+        email: "alice@example.com",
+        projectId: "project-1",
+        projectName: "Project One",
+        ttlMs: 60_000
+      })
+    ).rejects.toMatchObject({ code: "too_many_codes" });
+  });
+
+  it("never lets concurrent issueCode calls exceed the live-code limit", async () => {
+    const service = createDeviceBindingService({
+      store: createStore(),
+      now: clock.now,
+      maxLiveCodesPerUser: 4
+    });
+    const issue = () =>
+      service.issueCode({
+        userId: "user-1",
+        email: "alice@example.com",
+        projectId: "project-1",
+        projectName: "Project One",
+        ttlMs: 60_000
+      });
+    // Issue 6 codes concurrently against a limit of 4: exactly 4 must
+    // succeed and the rest must surface `too_many_codes` — the previous
+    // read-then-insert design could leak up to 2*N-1 codes on contention.
+    const results = await Promise.allSettled([
+      issue(),
+      issue(),
+      issue(),
+      issue(),
+      issue(),
+      issue()
+    ]);
+    const fulfilled = results.filter((r) => r.status === "fulfilled");
+    const rejected = results.filter(
+      (r): r is PromiseRejectedResult => r.status === "rejected"
+    );
+    expect(fulfilled).toHaveLength(4);
+    expect(rejected).toHaveLength(2);
+    for (const rejection of rejected) {
+      expect(rejection.reason).toMatchObject({ code: "too_many_codes" });
+    }
+  });
+
+  it("retries when a randomly generated code collides with an existing one", async () => {
+    // Inject a custom store that reports a hash conflict on the first
+    // reservation attempt and then succeeds. The service must retry with
+    // a freshly generated code and ultimately issue a different value.
+    let attempts = 0;
+    const seenHashes = new Set<string>();
+    const collidingStore: DeviceBindingStore = {
+      ...createStore(),
+      async reserveCodeSlot(candidate, options) {
+        attempts += 1;
+        seenHashes.add(candidate.codeHash);
+        if (attempts === 1) {
+          return { ok: false, reason: "code_hash_conflict" };
+        }
+        return {
+          ok: true,
+          reservation: {
+            codeHash: candidate.codeHash,
+            userId: candidate.userId,
+            email: candidate.email,
+            projectId: candidate.projectId,
+            projectName: candidate.projectName,
+            expiresAt: new Date(options.now.getTime() + options.ttlMs).toISOString()
+          }
+        };
+      }
+    };
+    const service = createDeviceBindingService({
+      store: collidingStore,
+      now: clock.now,
+      maxCodeGenerationRetries: 4
+    });
+    const issued = await service.issueCode({
+      userId: "user-1",
+      email: "alice@example.com",
+      projectId: "project-1",
+      projectName: "Project One",
+      ttlMs: 60_000
+    });
+    expect(attempts).toBe(2);
+    expect(seenHashes.size).toBe(2);
+    expect(issued.code).toMatch(/^[A-Z2-9]{9}$/);
+  });
+
+  it("surfaces a deterministic exhausted-retry error after too many collisions", async () => {
+    // A store that *always* reports a hash conflict, no matter what hash
+    // the service tries. The service must exhaust its retry budget and
+    // surface a `code_collision_exhausted` error.
+    const alwaysConflictStore: DeviceBindingStore = {
+      ...createStore(),
+      async reserveCodeSlot() {
+        return { ok: false, reason: "code_hash_conflict" };
+      }
+    };
+    const service = createDeviceBindingService({
+      store: alwaysConflictStore,
+      now: clock.now,
+      maxCodeGenerationRetries: 3
+    });
+    await expect(
+      service.issueCode({
+        userId: "user-1",
+        email: "alice@example.com",
+        projectId: "project-1",
+        projectName: "Project One",
+        ttlMs: 60_000
+      })
+    ).rejects.toMatchObject({ code: "code_collision_exhausted" });
+  });
 });

@@ -125,6 +125,9 @@ importers:
 
   packages/anthropic-model:
     dependencies:
+      '@lecoding/contracts':
+        specifier: workspace:*
+        version: link:../contracts
       '@lecoding/run-engine':
         specifier: workspace:*
         version: link:../run-engine
@@ -167,6 +170,13 @@ importers:
       '@lecoding/contracts':
         specifier: workspace:*
         version: link:../contracts
+    devDependencies:
+      '@types/pg':
+        specifier: ^8.23.1
+        version: 8.23.1
+      pg:
+        specifier: ^8.23.0
+        version: 8.23.0
 
   packages/golden-evals:
     dependencies:

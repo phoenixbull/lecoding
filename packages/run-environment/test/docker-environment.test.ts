@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { spawn } from "node:child_process";
+import { spawnSync } from "node:child_process";
 import { chmod, mkdtemp, rm, symlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -13,16 +13,30 @@ import type { EnvironmentHandle } from "@lecoding/contracts";
 /**
  * 检查 docker daemon 是否可用:用 `docker info` 探活,失败则 skip。
  * 这是 PoC 测试环境的常用守护——避免 daemon 未运行时的失败噪音。
+ *
+ * The previous version used `child_process.spawn` with a Promise
+ * wrapper; on hosts without `docker` the spawn error resolved quickly,
+ * but hosts with a stale or hung `docker info` could block the whole
+ * suite. `spawnSync` with a 5 s wall-clock cap makes the probe
+ * deterministic for both healthy and missing-daemon environments.
  */
-function hasDockerDaemon(): Promise<boolean> {
-  return new Promise<boolean>((resolve) => {
-    const child = spawn("docker", ["info"], {
-      stdio: ["ignore", "ignore", "ignore"]
-    });
-    child.on("error", () => resolve(false));
-    child.on("close", (code) => resolve(code === 0));
+function hasDockerDaemon(): boolean {
+  const probe = spawnSync("docker", ["info"], {
+    stdio: "ignore",
+    timeout: 5_000
   });
+  return probe.status === 0;
 }
+
+/**
+ * Resolve once at module load whether `docker` is reachable; the rest of
+ * the suite uses this flag to gate end-to-end tests. The previous form
+ * called `context.skip()` from inside the test body, which Vitest does
+ * not honour and caused the suite to hang for 30 s waiting for `docker
+ * info` to time out instead of skipping.
+ */
+const dockerAvailable = hasDockerDaemon();
+const dockerIt = dockerAvailable ? it : it.skip;
 
 describe("createDockerRunEnvironment (PoC)", () => {
   it("bounds streaming command output by bytes without splitting UTF-8", () => {
@@ -203,12 +217,9 @@ describe("createDockerRunEnvironment (PoC)", () => {
     }
   });
 
-  it(
+  dockerIt(
     "runs prepare → perform → dispose against the docker daemon",
-    async (context) => {
-      if (!(await hasDockerDaemon())) {
-        context.skip();
-      }
+    async () => {
       /*
        * 端到端 PoC:容器创建 → 简单命令 → 销毁。运行时限制通过
        * docker run --memory/--cpus/--pids-limit/--network 落地,
@@ -277,12 +288,9 @@ describe("createDockerRunEnvironment (PoC)", () => {
     120_000
   );
 
-  it(
+  dockerIt(
     "aborts an in-flight perform via AbortSignal (docker kill)",
-    async (context) => {
-      if (!(await hasDockerDaemon())) {
-        context.skip();
-      }
+    async () => {
       /*
        * PoC 取消语义:perform 在 alpine 容器里跑 sleep 30,
        * 100ms 后调 abort,期望 perform reject 在合理时间内(由 docker kill 触发)。
