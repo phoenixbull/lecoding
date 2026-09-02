@@ -133,7 +133,7 @@ function buildPackagerConfig(signEnv: SigningEnvironment): ForgePackagerConfig {
   return packager;
 }
 
-function buildMacosMakers(): ForgeMaker[] {
+function buildMacosMakers(signEnv: SigningEnvironment): ForgeMaker[] {
   // Three independent makers on darwin so each output format has its own
   // artifact path and signing provenance. The `config` block is left
   // empty; osxSign / osxNotarize on packagerConfig already cover the
@@ -142,11 +142,23 @@ function buildMacosMakers(): ForgeMaker[] {
   //  - dmg:   standard macOS drag-to-install disk image
   //  - pkg:   system-level installer package (for MDM / enterprise)
   //
-  return [
+  // Fallback: when no Apple notarization credentials are available
+  // (APPLE_ID / APPLE_TEAM_ID / APPLE_APP_SPECIFIC_PASSWORD all empty),
+  // drop maker-pkg because it always tries to sign the .pkg via
+  // @electron/osx-sign and fails with "No identity found" even when
+  // `osxSign` is disabled at the packager level. zip + dmg remain
+  // usable for manual distribution, just not for MDM / enterprise.
+  const hasAppleTeam = Boolean(
+    signEnv.APPLE_TEAM_ID && signEnv.APPLE_ID && signEnv.APPLE_APP_SPECIFIC_PASSWORD
+  );
+  const makers: ForgeMaker[] = [
     { name: "@electron-forge/maker-zip", platforms: ["darwin"] },
-    { name: "@electron-forge/maker-dmg", platforms: ["darwin"] },
-    { name: "@electron-forge/maker-pkg", platforms: ["darwin"] }
+    { name: "@electron-forge/maker-dmg", platforms: ["darwin"] }
   ];
+  if (hasAppleTeam) {
+    makers.push({ name: "@electron-forge/maker-pkg", platforms: ["darwin"] });
+  }
+  return makers;
 }
 
 function buildWindowsMaker(
@@ -205,7 +217,7 @@ export function buildForgeConfig(inputs: ForgeConfigInputs): ForgeConfig {
     preloadEntry,
     packagerConfig: buildPackagerConfig(signEnv),
     makers: [
-      ...buildMacosMakers(),
+      ...buildMacosMakers(signEnv),
       buildWindowsMaker(signEnv, appVersion)
     ],
     autoUpdate: {

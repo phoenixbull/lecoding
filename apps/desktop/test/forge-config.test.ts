@@ -111,7 +111,7 @@ describe("buildForgeConfig", () => {
     }
   });
 
-  it("produces three independent macOS makers (zip / dmg / pkg) on darwin", () => {
+  it("includes maker-pkg when full Apple credentials are present", () => {
     const config = buildForgeConfig({
       appName: "LeCoding",
       appVersion: "0.1.0",
@@ -121,14 +121,35 @@ describe("buildForgeConfig", () => {
       signEnv: SIGN_ENV,
       repository: "phoenixbull/lecoding"
     });
-    const macosMakers = config.makers.filter((m) =>
-      m.name.startsWith("@electron-forge/maker-") &&
-      !m.name.includes("squirrel")
-    );
-    const macosNames = macosMakers.map((m) => m.name);
+    const macosNames = config.makers
+      .filter((m) => m.name.startsWith("@electron-forge/maker-") && !m.name.includes("squirrel"))
+      .map((m) => m.name);
     expect(macosNames).toContain("@electron-forge/maker-zip");
     expect(macosNames).toContain("@electron-forge/maker-dmg");
     expect(macosNames).toContain("@electron-forge/maker-pkg");
+  });
+
+  it("drops maker-pkg when Apple credentials are missing (CI fallback)", () => {
+    // Build with an empty signing env. zip + dmg still produce
+    // usable installers for manual distribution, but maker-pkg is
+    // removed because @electron/osx-sign fails with "No identity
+    // found" whenever any Apple credential is missing.
+    const config = buildForgeConfig({
+      appName: "LeCoding",
+      appVersion: "0.1.0",
+      rendererEntry: "../renderer/dist/index.html",
+      mainEntry: "./src/main/index.ts",
+      preloadEntry: "./src/preload/index.ts",
+      signEnv: {},
+      repository: "phoenixbull/lecoding"
+    });
+    const macosNames = config.makers
+      .filter((m) => m.name.startsWith("@electron-forge/maker-") && !m.name.includes("squirrel"))
+      .map((m) => m.name);
+    expect(macosNames).toEqual(
+      expect.arrayContaining(["@electron-forge/maker-zip", "@electron-forge/maker-dmg"])
+    );
+    expect(macosNames).not.toContain("@electron-forge/maker-pkg");
   });
 
   it("produces a single Squirrel maker on win32 (which itself ships .exe + .msi)", () => {
