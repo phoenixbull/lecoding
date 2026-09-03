@@ -17,6 +17,7 @@
   "dependencies": {
     "@lecoding/client-sdk": "workspace:*",
     "@lecoding/contracts": "workspace:*",
+    "@lecoding/host-sandbox": "workspace:*",
     "@lecoding/presentation": "workspace:*",
     "@lecoding/run-controller": "workspace:*",
     "@lecoding/runner-protocol": "workspace:*",

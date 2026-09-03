@@ -101,6 +101,23 @@ export type IpcHandler = (
   context: IpcSenderContext
 ) => Promise<IpcResponse>;
 
+/** Result of the OS-native directory picker. */
+export interface DirectorySelection {
+  /** Absolute paths the user chose; empty when they cancelled. */
+  paths: string[];
+  /** False when the dialog could not be shown, so callers can fail closed. */
+  shown: boolean;
+}
+
+/** Inputs for the `host_full` danger confirmation. */
+export interface DangerConfirmationInput {
+  title: string;
+  message: string;
+  detail: string;
+  /** Label for the acknowledgement checkbox the user must tick. */
+  acknowledgementLabel: string;
+}
+
 export interface ElectronHost {
   app: ElectronApp;
   ipcMain: ElectronIpcMain;
@@ -113,6 +130,25 @@ export interface ElectronHost {
   setCspHeader(value: string | null): void;
   /** Opens one Main-approved HTTPS URL in the user's default browser. */
   openExternal(url: string): Promise<void>;
+  /**
+   * OS-native directory picker, used to authorize `selected_directories`.
+   *
+   * Optional because a headless or test host has no dialog. When it is absent
+   * the caller must refuse the grant rather than fall back to a text field:
+   * a path typed into the Renderer is not an OS authorization.
+   */
+  selectDirectories?(options: {
+    title: string;
+    defaultPath?: string;
+  }): Promise<DirectorySelection>;
+  /**
+   * OS-native secondary confirmation for `host_full`.
+   *
+   * The dialog must require an explicit acknowledgement (a checkbox, not just
+   * an OK button) and must return false when it could not be shown, so a
+   * missing dialog can never be mistaken for consent.
+   */
+  confirmDanger?(input: DangerConfirmationInput): Promise<boolean>;
 }
 
 /**

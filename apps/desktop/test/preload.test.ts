@@ -28,7 +28,14 @@ import type {
 import { IPC_CHANNELS, PUSH_CHANNELS } from "../src/shared/ipc-contract.js";
 
 /** Names of the subscribe functions exposed for the whitelisted push channels. */
-const PUSH_METHODS = ["onRunEvent", "onStreamState", "onCredentialState"];
+// Must stay in lockstep with PUSH_CHANNELS: the bridge exposes exactly one
+// named subscription per push channel and nothing else.
+const PUSH_METHODS = [
+  "onRunEvent",
+  "onStreamState",
+  "onCredentialState",
+  "onRunnerState"
+];
 
 function createFakeHost(): PreloadHost & {
   exposed: Record<string, unknown> | null;

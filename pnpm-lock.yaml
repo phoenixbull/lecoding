@@ -32,6 +32,9 @@ importers:
       '@lecoding/contracts':
         specifier: workspace:*
         version: link:../../packages/contracts
+      '@lecoding/host-sandbox':
+        specifier: workspace:*
+        version: link:../../packages/host-sandbox
       '@lecoding/presentation':
         specifier: workspace:*
         version: link:../../packages/presentation
@@ -265,11 +268,20 @@ importers:
         specifier: workspace:*
         version: link:../run-environment
 
+  packages/host-sandbox:
+    dependencies:
+      '@lecoding/contracts':
+        specifier: workspace:*
+        version: link:../contracts
+
   packages/local-runner:
     dependencies:
       '@lecoding/contracts':
         specifier: workspace:*
         version: link:../contracts
+      '@lecoding/host-sandbox':
+        specifier: workspace:*
+        version: link:../host-sandbox
       '@lecoding/run-environment':
         specifier: workspace:*
         version: link:../run-environment

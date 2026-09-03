@@ -27,6 +27,12 @@ import type {
   EnvironmentSpec
 } from "@lecoding/contracts";
 import {
+  SandboxViolationError,
+  type FileAccessGrant,
+  type HostSandbox,
+  type PathViolation
+} from "@lecoding/host-sandbox";
+import {
   createGitRunChangesReader,
   createGitRunResultManager,
   createGitWorkspace,
@@ -54,6 +60,33 @@ export interface LocalRunEnvironmentOptions {
   limits?: LocalRunEnvironmentLimits;
   /** Optional clock seam so tests can drive timeout / expiry behaviour. */
   now?: () => Date;
+  /**
+   * Enforces the Run's file access tier at process creation.
+   *
+   * When present, every `perform` is planned through it, so a command naming a
+   * path outside the grant is never created. On macOS the plan also wraps the
+   * command in Seatbelt, which confines it inside the kernel.
+   *
+   * Omitting it means the environment cannot enforce any tier. That is only
+   * acceptable for tests and for server-side Git worktrees, which are already
+   * confined by the sandbox that owns them.
+   */
+  sandbox?: HostSandbox;
+  /**
+   * The Run's authorization, issued by Desktop Main through OS-native dialogs.
+   * Required whenever `sandbox` is supplied; the sandbox refuses to plan
+   * without it.
+   */
+  grant?: FileAccessGrant;
+  /**
+   * Receives every refused command, so out-of-scope attempts reach the audit
+   * log even though the process was never created.
+   */
+  onAccessViolation?: (violation: {
+    runId: string;
+    executable: string;
+    violations: PathViolation[];
+  }) => void;
   /**
    * Optional underlying spawn implementation. Defaults to `node:child_process.spawn`.
    * Tests substitute a stub that does not actually fork.
@@ -112,6 +145,11 @@ export function createLocalRunEnvironment(
       if (!RUN_ID_PATTERN.test(spec.runId)) {
         throw new Error("Run ID contains unsupported path characters");
       }
+      // Admit before creating anything, so a Run the host cannot enforce fails
+      // before a worktree exists rather than after the first command runs.
+      if (options.sandbox && options.grant) {
+        options.sandbox.admit(options.grant);
+      }
       const handle: WorkspaceHandle = await workspace.prepare({
         runId: spec.runId,
         sourceRepo,
@@ -144,9 +182,23 @@ export function createLocalRunEnvironment(
       }
       const executable = command[0]!;
       const args = command.slice(1);
-      const runInput = {
+      // The sandbox decides what actually gets spawned. On macOS this is where
+      // the command is wrapped in Seatbelt; everywhere else it is where an
+      // out-of-scope command is refused outright.
+      const planned = await planSpawn({
+        sandbox: options.sandbox,
+        grant: options.grant,
+        runId: decoded.runId,
         executable,
         args,
+        cwd: decoded.worktreePath,
+        ...(options.onAccessViolation
+          ? { onViolation: options.onAccessViolation }
+          : {})
+      });
+      const runInput = {
+        executable: planned.executable,
+        args: planned.args,
         cwd: decoded.worktreePath,
         execTimeoutMs,
         outputBytes,
@@ -169,6 +221,57 @@ export function createLocalRunEnvironment(
       await resultManager.resolve(decoded.runId, outcome);
     }
   };
+}
+
+/**
+ * Resolves what to spawn, applying the sandbox when one is configured.
+ *
+ * With no sandbox the command is returned untouched, which preserves the
+ * existing behaviour for tests and for server-owned Git worktrees. With a
+ * sandbox, this is the enforcement point: a violation throws and the process is
+ * never created.
+ */
+async function planSpawn(input: {
+  sandbox: HostSandbox | undefined;
+  grant: FileAccessGrant | undefined;
+  runId: string;
+  executable: string;
+  args: string[];
+  cwd: string;
+  onViolation?: (violation: {
+    runId: string;
+    executable: string;
+    violations: PathViolation[];
+  }) => void;
+}): Promise<{ executable: string; args: string[] }> {
+  if (!input.sandbox) {
+    return { executable: input.executable, args: input.args };
+  }
+  if (!input.grant) {
+    // A sandbox without a grant cannot decide anything, so refuse rather than
+    // guess: guessing wrong means the command runs unconfined.
+    throw new Error("Local Runner has a sandbox but no FileAccessGrant for this Run");
+  }
+  try {
+    const plan = await input.sandbox.plan({
+      grant: input.grant,
+      executable: input.executable,
+      args: input.args,
+      cwd: input.cwd
+    });
+    return { executable: plan.executable, args: plan.args };
+  } catch (error) {
+    if (error instanceof SandboxViolationError) {
+      // Refusals are evidence: record them so the audit log shows the attempt
+      // even though no process was ever created.
+      input.onViolation?.({
+        runId: input.runId,
+        executable: input.executable,
+        violations: error.violations
+      });
+    }
+    throw error;
+  }
 }
 
 /**

@@ -62,7 +62,10 @@ export const IPC_CHANNELS = [
   "runs.subscribe",
   "runs.unsubscribe",
   "policy.list",
-  "policy.revoke"
+  "policy.revoke",
+  "host.selectDirectories",
+  "host.confirmHostFull",
+  "runner.status"
 ] as const;
 
 export type IpcChannel = (typeof IPC_CHANNELS)[number];
@@ -77,7 +80,8 @@ export type IpcChannel = (typeof IPC_CHANNELS)[number];
 export const PUSH_CHANNELS = [
   "runs.event",
   "runs.streamState",
-  "session.credentialState"
+  "session.credentialState",
+  "runner.state"
 ] as const;
 
 export type PushChannel = (typeof PUSH_CHANNELS)[number];
@@ -105,6 +109,28 @@ export interface CredentialStatePush {
   reason?: string;
   deviceId?: string;
   expiresAt?: string;
+}
+
+/**
+ * Local Runner state and the sandbox's real enforcement levels.
+ *
+ * This is the only channel through which the Renderer learns anything about
+ * local execution. It carries status and capability *levels* only — never a
+ * worktree path, never a granted directory list, and never a credential. The
+ * Renderer cannot enforce anything, so giving it paths would only widen what a
+ * compromised Renderer can name.
+ */
+export interface RunnerStatePush {
+  state: "idle" | "connecting" | "live" | "reconnecting" | "stopped" | "unavailable";
+  /**
+   * Real enforcement per file-access tier on this host, so the UI can show the
+   * difference from the server sandbox rather than implying parity.
+   */
+  sandbox: {
+    platform: string;
+    tiers: Record<string, string>;
+    detail: string;
+  };
 }
 
 /**
@@ -311,6 +337,31 @@ export interface PolicyRevokePayload {
   ruleId: string;
 }
 
+/**
+ * Opens the OS-native directory picker.
+ *
+ * The selection comes from the operating system, not from the Renderer: a path
+ * typed into a sandboxed web view is not an authorization.
+ */
+export interface HostSelectDirectoriesPayload {
+  reason?: string;
+}
+
+/**
+ * Shows the OS-native `host_full` danger confirmation.
+ *
+ * Returns whether the user ticked the acknowledgement. A host without the
+ * dialog answers false, so consent can never be inferred from its absence.
+ */
+export interface HostConfirmHostFullPayload {
+  reason?: string;
+}
+
+/** Reads the Local Runner state and sandbox capabilities. Carries no input. */
+export interface RunnerStatusPayload {
+  reason?: string;
+}
+
 export interface IpcRequestByChannel {
   "session.bootstrap": SessionBootstrapPayload;
   "session.openGitHubLogin": SessionOpenGitHubLoginPayload;
@@ -337,6 +388,9 @@ export interface IpcRequestByChannel {
   "runs.unsubscribe": RunsUnsubscribePayload;
   "policy.list": PolicyListPayload;
   "policy.revoke": PolicyRevokePayload;
+  "host.selectDirectories": HostSelectDirectoriesPayload;
+  "host.confirmHostFull": HostConfirmHostFullPayload;
+  "runner.status": RunnerStatusPayload;
 }
 
 export type IpcRequestPayload = IpcRequestByChannel[IpcChannel];
@@ -448,6 +502,12 @@ export function ipcRequestSchema(channel: IpcChannel): ChannelValidator | null {
       return validatePolicyList;
     case "policy.revoke":
       return validatePolicyRevoke;
+    case "host.selectDirectories":
+      return validateHostSelectDirectories;
+    case "host.confirmHostFull":
+      return validateHostConfirmHostFull;
+    case "runner.status":
+      return validateRunnerStatus;
     default:
       return null;
   }
@@ -816,6 +876,22 @@ function validatePolicyRevoke(payload: unknown): PolicyRevokePayload {
     projectId: requireProjectId(payload, "policy.revoke"),
     ruleId: requireString(payload, "ruleId")
   };
+}
+
+/** The native affordances take no meaningful input; a non-object is still rejected. */
+function validateHostSelectDirectories(payload: unknown): HostSelectDirectoriesPayload {
+  validateEmptyPayload(payload, "host.selectDirectories");
+  return {};
+}
+
+function validateHostConfirmHostFull(payload: unknown): HostConfirmHostFullPayload {
+  validateEmptyPayload(payload, "host.confirmHostFull");
+  return {};
+}
+
+function validateRunnerStatus(payload: unknown): RunnerStatusPayload {
+  validateEmptyPayload(payload, "runner.status");
+  return {};
 }
 
 /** Requires a non-empty string no longer than `max` characters. */

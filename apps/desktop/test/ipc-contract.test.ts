@@ -54,7 +54,10 @@ describe("IPC contract", () => {
       "runs.subscribe",
       "runs.unsubscribe",
       "policy.list",
-      "policy.revoke"
+      "policy.revoke",
+      "host.selectDirectories",
+      "host.confirmHostFull",
+      "runner.status"
     ]);
   });
 

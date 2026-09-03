@@ -31,6 +31,7 @@ import {
   type IpcResponse,
   type PushChannel,
   type RunEventPush,
+  type RunnerStatePush,
   type StreamStatePush
 } from "../shared/ipc-contract.js";
 
@@ -81,16 +82,20 @@ export interface PushSubscriptions {
   onRunEvent(listener: (push: RunEventPush) => void): () => void;
   onStreamState(listener: (push: StreamStatePush) => void): () => void;
   onCredentialState(listener: (push: CredentialStatePush) => void): () => void;
+  onRunnerState(listener: (push: RunnerStatePush) => void): () => void;
 }
 
-/** Maps each push channel to the subscribe method name exposed on the bridge. */
-const PUSH_SUBSCRIPTIONS: Record<
-  PushChannel,
-  keyof PushSubscriptions
-> = {
+/**
+ * Maps each push channel to the subscribe method name exposed on the bridge.
+ *
+ * Typed as an exhaustive `Record`, so adding a push channel without exposing a
+ * named subscription is a compile error rather than a silently dead channel.
+ */
+const PUSH_SUBSCRIPTIONS: Record<PushChannel, keyof PushSubscriptions> = {
   "runs.event": "onRunEvent",
   "runs.streamState": "onStreamState",
-  "session.credentialState": "onCredentialState"
+  "session.credentialState": "onCredentialState",
+  "runner.state": "onRunnerState"
 };
 
 export function createPreloadBridge(options: { host: PreloadHost }): PreloadBridge {

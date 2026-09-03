@@ -25,19 +25,34 @@ import {
   type IpcErrorCode,
   type IpcRequest,
   type IpcResponse,
-  type PushChannel
+  type PushChannel,
+  type RunnerStatePush
 } from "../shared/ipc-contract.js";
+import type { SandboxCapabilityReport } from "@lecoding/host-sandbox";
 import type {
   ClientSdk,
   ClientSdkFactory,
   CredentialStoreHandle,
+  DangerConfirmationInput,
   DeviceExchangeInput,
   ElectronBrowserWindowInstance,
   ElectronHost,
   IpcHandler,
   IpcSenderContext
 } from "./host.js";
+import type { RunnerBrokerState } from "./runner-broker.js";
 import { createRunStreamBroker, type RunStreamBroker } from "./stream-broker.js";
+
+/** Wording for the `host_full` OS confirmation; shared by IPC and the grant service. */
+const HOST_FULL_CONFIRMATION: DangerConfirmationInput = {
+  title: "Allow this Run to access your whole computer?",
+  message: "This Run is requesting full host file access.",
+  detail:
+    "Commands in this Run may read, modify or delete any file your account can " +
+    "reach, including files outside this project. The local sandbox will not " +
+    "restrict them.",
+  acknowledgementLabel: "I understand this Run can modify files outside this project"
+};
 
 export interface DesktopMainOptions {
   host: ElectronHost;
@@ -62,6 +77,15 @@ export interface DesktopMainOptions {
   credentialStore?: CredentialStoreHandle;
   /** Injectable reconnect delay keeps stream behaviour deterministic in tests. */
   waitBeforeReconnect?: (signal: AbortSignal) => Promise<void>;
+  /**
+   * Local Runner sandbox capability source; enables `runner.status`.
+   *
+   * Injected rather than constructed so Main never chooses a platform adapter
+   * and the Renderer never receives anything but the reported levels.
+   */
+  sandbox?(): SandboxCapabilityReport;
+  /** Current Local Runner state; enables `runner.status`. */
+  runnerState?(): RunnerBrokerState | undefined;
 }
 
 export interface DesktopMain {
@@ -131,6 +155,31 @@ export function createDesktopMain(options: DesktopMainOptions): DesktopMain {
 
   function ok<D>(data: D): IpcResponse<D> {
     return { ok: true, data };
+  }
+
+  /**
+   * Projects runner status and sandbox capability *levels* for the Renderer.
+   *
+   * Deliberately omits the worktree path, the granted directory list and any
+   * credential: the Renderer cannot enforce them, and a compromised Renderer
+   * naming real host paths is exactly what the sandbox exists to contain.
+   */
+  function runnerStatus(): RunnerStatePush {
+    const report = options.sandbox?.();
+    return {
+      state: options.runnerState?.() ?? "unavailable",
+      sandbox: report
+        ? {
+            platform: report.platform,
+            tiers: { ...report.tiers },
+            detail: report.detail
+          }
+        : {
+            platform: "",
+            tiers: {},
+            detail: "No Local Runner sandbox is configured"
+          }
+    };
   }
 
   function trustedContext(context: IpcSenderContext): IpcResponse | null {
@@ -334,6 +383,26 @@ export function createDesktopMain(options: DesktopMainOptions): DesktopMain {
           const payload = r.payload as { projectId: ProjectId; ruleId: string };
           await sdkInstance.revokeProjectPolicyRule(payload.projectId, payload.ruleId);
           return ok({ revoked: true });
+        }
+        case "host.selectDirectories": {
+          // The paths come from the OS dialog, never from the Renderer, so the
+          // payload is intentionally empty. Canonicalization happens in the
+          // grant service before anything is stored.
+          const selection = await host.selectDirectories?.({
+            title: "Choose the folders this Run may access"
+          });
+          if (!selection || !selection.shown) {
+            return err("upstream_error", "The folder picker is unavailable");
+          }
+          return ok({ paths: selection.paths });
+        }
+        case "host.confirmHostFull": {
+          // Absence of the dialog must read as "no consent", never as approval.
+          const confirmed = (await host.confirmDanger?.(HOST_FULL_CONFIRMATION)) ?? false;
+          return ok({ confirmed });
+        }
+        case "runner.status": {
+          return ok(runnerStatus());
         }
         default:
           return err("unknown_channel", `Channel ${r.channel} is not registered`);
