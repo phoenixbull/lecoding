@@ -12,9 +12,17 @@ import {
 
 const now = () => "2026-09-03T00:00:00.000Z";
 
-/** Builds a host over an in-memory journal, recording Git-side resolutions. */
-function harness(options: { entries?: RunJournalEntry[] } = {}) {
-  const fs = createMemoryJournalFileSystem();
+/**
+ * Builds a host over an in-memory journal, recording Git-side resolutions.
+ *
+ * `shareFs` lets a second harness attach to the same durable store, which is
+ * how a restart is simulated: a brand-new host reading the journal another one
+ * wrote.
+ */
+function harness(
+  options: { entries?: RunJournalEntry[]; shareFs?: ReturnType<typeof createMemoryJournalFileSystem> } = {}
+) {
+  const fs = options.shareFs ?? createMemoryJournalFileSystem();
   if (options.entries) {
     // Seed the journal as if a previous process had written it.
     fs.write(
@@ -32,16 +40,27 @@ function harness(options: { entries?: RunJournalEntry[] } = {}) {
   const hostOptions: LocalRunnerHostOptions = {
     journal,
     resolveRunOutcome: async (runId, outcome) => {
+      // `failures` lets a test make the Git effect throw, to prove the host
+      // does not record a decision for work that did not happen.
+      if (failures > 0) {
+        failures -= 1;
+        throw new Error("git resolve failed");
+      }
       resolutions.push({ runId, outcome });
     },
     cancelRun: (runId) => cancels.push(runId),
     now
   };
+  /** Number of times the Git effect should fail before succeeding. */
+  let failures = 0;
   return {
     fs,
     journal,
     resolutions,
     cancels,
+    failResolveNext(times = 1) {
+      failures = times;
+    },
     host: createLocalRunnerHost(hostOptions)
   };
 }
@@ -143,6 +162,24 @@ describe("createLocalRunnerHost", () => {
     expect(resolutions[0]?.outcome).toBe("keep");
   });
 
+  it("does not record a decision for work that failed", async () => {
+    // The ordering defect: the in-memory decision used to be written before the
+    // Git effect, so a failure left the host claiming the Run was finished and a
+    // retry answered `alreadyResolved` — the effect was never performed at all.
+    const { host, resolutions, failResolveNext } = harness();
+    await host.recover();
+    failResolveNext(1);
+
+    await expect(host.resolve({ runId: "run-1", outcome: "keep" })).rejects.toThrow(
+      /git resolve failed/
+    );
+
+    // The retry must genuinely run, not be short-circuited as already done.
+    const retried = await host.resolve({ runId: "run-1", outcome: "keep" });
+    expect(retried.alreadyResolved).toBe(false);
+    expect(resolutions).toHaveLength(1);
+  });
+
   it("does not re-resolve Git state for a recovered, already-resolved Run", async () => {
     const { host, resolutions } = harness({
       entries: [prepared("run-1", "/work/run-1")]
@@ -152,6 +189,23 @@ describe("createLocalRunnerHost", () => {
 
     // Still exactly one Git-side resolution, despite the Run being recovered.
     expect(resolutions).toHaveLength(1);
+  });
+
+  it("rebuilds the first decision from the journal on restart", async () => {
+    // Without this a relaunch forgets every keep/discard already made, so a
+    // replayed resolve would be treated as fresh work.
+    const first = harness();
+    await first.host.recover();
+    await first.host.resolve({ runId: "run-1", outcome: "keep" });
+
+    // A fresh host over the same durable journal is a restart.
+    const restarted = harness({ shareFs: first.fs });
+    await restarted.host.recover();
+    const replay = await restarted.host.resolve({ runId: "run-1", outcome: "discard" });
+
+    expect(replay.alreadyResolved).toBe(true);
+    // No second Git-side resolution: the original decision is what stands.
+    expect(restarted.resolutions).toHaveLength(0);
   });
 
   it("cancels a Run it knows about", async () => {

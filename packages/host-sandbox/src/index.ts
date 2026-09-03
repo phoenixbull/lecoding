@@ -58,9 +58,11 @@ export {
 } from "./seatbelt-sandbox.js";
 
 export {
-  createJobObjectSandbox,
-  type JobObjectSandboxOptions
-} from "./job-object-sandbox.js";
+  createWindowsSandbox,
+  type WindowsSandboxOptions
+} from "./windows-sandbox.js";
+
+export { terminateProcessTree, type TerminateResult } from "./process-tree.js";
 
 export {
   createUnsupportedSandbox,

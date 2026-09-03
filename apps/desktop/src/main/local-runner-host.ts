@@ -126,6 +126,17 @@ export function createLocalRunnerHost(
             "cannot be known, so it was not run again."
         });
       }
+      // Rebuild the decision map from durable state. Without this a restart
+      // would forget every keep/discard already made, so a replayed resolve
+      // would be treated as new work instead of answered with the user's
+      // original choice.
+      for (const decision of state.resolved) {
+        firstDecision.set(decision.runId, decision.outcome);
+        const record = runsById.get(decision.runId);
+        if (record) {
+          record.resolved = true;
+        }
+      }
       return state;
     },
 
@@ -140,12 +151,21 @@ export function createLocalRunnerHost(
         // a reconnected socket must not be able to reverse the user's choice.
         return { resolved: true, alreadyResolved: true, cleaned: false };
       }
-      firstDecision.set(runId, outcome);
       const record = runsById.get(runId);
-      if (record) {
-        record.resolved = true;
-      }
 
+      /*
+       * Order is the whole point of this method.
+       *
+       * The Git effect runs first, the durable record second and the in-memory
+       * decision last. Recording the decision before the work meant a failure
+       * in either later step left the host believing the Run was finished: a
+       * retry then answered `alreadyResolved` and the effect was never
+       * performed at all — a silently lost keep or discard.
+       *
+       * With this order, a throw before the durable record leaves nothing
+       * recorded, so the next attempt genuinely runs. A throw between the two
+       * re-runs the Git resolution, which is idempotent by construction.
+       */
       await options.resolveRunOutcome(runId, outcome);
       await journal.append({
         kind: "handle.resolved",
@@ -153,6 +173,10 @@ export function createLocalRunnerHost(
         outcome,
         recordedAt: options.now()
       });
+      firstDecision.set(runId, outcome);
+      if (record) {
+        record.resolved = true;
+      }
 
       if (!record) {
         return { resolved: true, alreadyResolved: false, cleaned: true };

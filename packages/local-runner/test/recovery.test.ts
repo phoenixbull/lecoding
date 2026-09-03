@@ -153,10 +153,30 @@ describe("recoverRunState", () => {
     expect(state).toEqual({
       handles: [],
       resolvedRunIds: [],
+      resolved: [],
       settledCommands: [],
       interruptedCommandIds: [],
       highestCommandId: 0
     });
+  });
+
+  it("recovers the outcome each resolved Run reached", () => {
+    // Recovery needs the decision, not just the fact of resolution: a
+    // relaunched desktop must answer a replayed resolve with the user's
+    // original choice rather than treating it as new work.
+    const state = recoverRunState([
+      entry({ kind: "handle.prepared", runId: "run-1", handleId: "h1", worktreePath: "/w/1", recordedAt: now() }),
+      entry({ kind: "handle.resolved", runId: "run-1", outcome: "keep", recordedAt: now() })
+    ]);
+    expect(state.resolved).toEqual([{ runId: "run-1", outcome: "keep" }]);
+  });
+
+  it("keeps the latest resolution when a Run was resolved more than once", () => {
+    const state = recoverRunState([
+      entry({ kind: "handle.resolved", runId: "run-1", outcome: "discard", recordedAt: now() }),
+      entry({ kind: "handle.resolved", runId: "run-1", outcome: "keep", recordedAt: now() })
+    ]);
+    expect(state.resolved).toEqual([{ runId: "run-1", outcome: "keep" }]);
   });
 
   it("treats a re-prepared run as live again", () => {

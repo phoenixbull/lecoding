@@ -5,14 +5,15 @@ import {
   createAccessAuditLog,
   createFileAccessGrant,
   createHostSandbox,
-  createJobObjectSandbox,
   createMemoryAuditFileSystem,
+  createWindowsSandbox,
   createPathFence,
   createSeatbeltSandbox,
   createUnsupportedSandbox,
   FileAccessGrantError,
   SandboxViolationError,
   selectHostSandbox,
+  terminateProcessTree,
   type EnforcementLevel,
   type PathFence,
   type RealpathFn
@@ -256,13 +257,37 @@ describe("platform adapters", () => {
   });
 
   it("reports the argv fence honestly on Windows", () => {
-    const report = createJobObjectSandbox({ fence: fenceWith() }).capabilities();
+    const report = createWindowsSandbox({ fence: fenceWith() }).capabilities();
     expect(report.platform).toBe("win32");
     expect(report.tiers.workspace_only).toBe("argv_fence");
     expect(report.tiers.selected_directories).toBe("argv_fence");
     // The report must say what is missing, not just what is present, or the UI
     // cannot show the user the difference from macOS.
     expect(report.detail).toMatch(/AppContainer|native/);
+  });
+
+  it("does not claim kernel-level isolation on Windows", () => {
+    // The adapter is named for what it does. Reporting `kernel` here would let
+    // the UI advertise a guarantee the OS is not providing.
+    const report = createWindowsSandbox({ fence: fenceWith() }).capabilities();
+    expect(report.tiers.workspace_only).not.toBe("kernel");
+    expect(report.detail).toMatch(/not stopped by the OS|best-effort/);
+  });
+
+  it("terminates a process tree rather than only the direct child", async () => {
+    // Killing just the spawned child leaves grandchildren holding the
+    // worktree, which then survives cleanup as a residual.
+    const result = await terminateProcessTree(999_999, { platform: "win32" });
+    expect(result.terminated).toBe(false);
+    // A failed termination is reported, never swallowed.
+    expect(result.reason).toBeTruthy();
+  });
+
+  it("rejects an invalid pid instead of signalling process zero", async () => {
+    // A negative or zero pid would target the wrong process group.
+    const result = await terminateProcessTree(0, { platform: "win32" });
+    expect(result.terminated).toBe(false);
+    expect(result.reason).toBe("invalid pid");
   });
 
   it("reports unsupported on platforms Phase 4B does not target", () => {

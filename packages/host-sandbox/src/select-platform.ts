@@ -12,14 +12,14 @@ import type { FileAccessScope } from "@lecoding/contracts";
 import { createHostSandbox, type EnforcementLevel, type HostSandbox } from "./host-sandbox.js";
 import { createPathFence, type PathFence } from "./path-fence.js";
 import { createSeatbeltSandbox, type SeatbeltSandboxOptions } from "./seatbelt-sandbox.js";
-import { createJobObjectSandbox, type JobObjectSandboxOptions } from "./job-object-sandbox.js";
+import { createWindowsSandbox, type WindowsSandboxOptions } from "./windows-sandbox.js";
 
 export interface SelectHostSandboxOptions {
   /** Defaults to `process.platform`; injectable for tests. */
   platform?: NodeJS.Platform;
   fence?: PathFence;
   seatbelt?: SeatbeltSandboxOptions;
-  jobObject?: JobObjectSandboxOptions;
+  windows?: WindowsSandboxOptions;
 }
 
 export function selectHostSandbox(options: SelectHostSandboxOptions = {}): HostSandbox {
@@ -29,7 +29,7 @@ export function selectHostSandbox(options: SelectHostSandboxOptions = {}): HostS
     case "darwin":
       return createSeatbeltSandbox(options.seatbelt ?? {});
     case "win32":
-      return createJobObjectSandbox(options.jobObject ?? {});
+      return createWindowsSandbox(options.windows ?? {});
     default:
       return createUnsupportedSandbox(platform, options.fence);
   }

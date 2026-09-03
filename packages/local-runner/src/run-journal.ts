@@ -78,6 +78,14 @@ export interface RecoveredRunState {
   handles: Array<{ runId: string; handleId: string; worktreePath: string }>;
   /** Run ids that already reached a keep/discard decision. */
   resolvedRunIds: string[];
+  /**
+   * The decision each resolved Run reached.
+   *
+   * Recovery needs the outcome, not just the fact of resolution: a relaunched
+   * desktop that only knew "resolved" could not answer a replayed resolve with
+   * the user's original choice, and would either refuse it or pick again.
+   */
+  resolved: Array<{ runId: string; outcome: "keep" | "discard" }>;
   /** Command ids with a known outcome, safe to replay from cache. */
   settledCommands: Array<{ commandId: number; outcome: RunnerCommandOutcome }>;
   /** Command ids that started but never settled — must not be re-executed. */
@@ -149,7 +157,7 @@ export function createRunJournal(options: RunJournalOptions): RunJournal {
 /** Rebuilds recoverable state from the journal's append-only history. */
 export function recoverRunState(entries: readonly RunJournalEntry[]): RecoveredRunState {
   const prepared = new Map<string, { runId: string; handleId: string; worktreePath: string }>();
-  const resolved = new Set<string>();
+  const resolved = new Map<string, "keep" | "discard">();
   const started = new Map<number, string>();
   const settled = new Map<number, RunnerCommandOutcome>();
   let highestCommandId = 0;
@@ -168,7 +176,9 @@ export function recoverRunState(entries: readonly RunJournalEntry[]): RecoveredR
         break;
       }
       case "handle.resolved": {
-        resolved.add(entry.runId);
+        // Last resolution wins: a Run re-prepared after a resolve is live again,
+        // and its newest decision is the one that must be replayed.
+        resolved.set(entry.runId, entry.outcome);
         prepared.delete(entry.runId);
         break;
       }
@@ -197,7 +207,8 @@ export function recoverRunState(entries: readonly RunJournalEntry[]): RecoveredR
 
   return {
     handles: [...prepared.values()],
-    resolvedRunIds: [...resolved],
+    resolvedRunIds: [...resolved.keys()],
+    resolved: [...resolved.entries()].map(([runId, outcome]) => ({ runId, outcome })),
     settledCommands: [...settled.entries()].map(([commandId, outcome]) => ({
       commandId,
       outcome

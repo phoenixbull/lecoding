@@ -43,6 +43,19 @@ import type {
 import type { RunnerBrokerState } from "./runner-broker.js";
 import { createRunStreamBroker, type RunStreamBroker } from "./stream-broker.js";
 
+/**
+ * Last path segment, for display across the IPC boundary.
+ *
+ * Deliberately lossy: the Renderer gets a folder name it can show the user,
+ * never the absolute location. Handles both separators because the same
+ * Renderer bundle runs on Windows and macOS.
+ */
+function basenameOf(path: string): string {
+  const normalized = path.replace(/[\\/]+$/u, "");
+  const index = Math.max(normalized.lastIndexOf("/"), normalized.lastIndexOf("\\"));
+  return index >= 0 ? normalized.slice(index + 1) : normalized;
+}
+
 /** Wording for the `host_full` OS confirmation; shared by IPC and the grant service. */
 const HOST_FULL_CONFIRMATION: DangerConfirmationInput = {
   title: "Allow this Run to access your whole computer?",
@@ -423,7 +436,14 @@ export function createDesktopMain(options: DesktopMainOptions): DesktopMain {
           if (!selection || !selection.shown) {
             return err("upstream_error", "The folder picker is unavailable");
           }
-          return ok({ paths: selection.paths });
+          // Absolute paths do not cross the bridge. The Renderer only needs to
+          // confirm how many folders were authorized and show their names, and
+          // a compromised Renderer must not be handed real host locations to
+          // name in later commands.
+          return ok({
+            count: selection.paths.length,
+            labels: selection.paths.map((path) => basenameOf(path))
+          });
         }
         case "host.confirmHostFull": {
           // Absence of the dialog must read as "no consent", never as approval.
