@@ -1,5 +1,5 @@
 {
-  "name": "@lecoding/run-environment",
+  "name": "@lecoding/runner-protocol",
   "version": "0.0.0",
   "private": true,
   "type": "module",
@@ -8,8 +8,6 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@lecoding/contracts": "workspace:*",
-    "@lecoding/runner-protocol": "workspace:*",
-    "@lecoding/workspace": "workspace:*"
+    "@lecoding/contracts": "workspace:*"
   }
 }

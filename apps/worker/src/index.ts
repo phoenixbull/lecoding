@@ -42,6 +42,7 @@ import {
 import {
   createDockerRunEnvironment,
   createGitWorktreeRunEnvironmentFactory,
+  createRemoteRunnerEnvironment,
   createRoutedRunEnvironment
 } from "@lecoding/run-environment";
 import {
@@ -88,6 +89,28 @@ import {
   loadGitHubOAuthConfig,
   type GitHubOAuthLogin
 } from "./github-oauth.js";
+import {
+  createRunnerGateway,
+  type RunnerGateway
+} from "./runner-gateway.js";
+import { attachRunnerWsServer, type RunnerWsServer } from "./runner-ws-server.js";
+
+/**
+ * Environment ids of the form `local:<deviceId>` route a Run to that device's
+ * Local Runner instead of this Worker's Docker sandbox.
+ *
+ * Routing on `environmentId` rather than adding a field to `StartRun` keeps
+ * `packages/run-engine` untouched: the engine already passes `environmentId`
+ * through to `EnvironmentSpec`, so Phase 4B adds no new engine concept.
+ */
+const LOCAL_ENVIRONMENT_PREFIX = "local:";
+
+/** Returns the device id for a local environment id, or undefined for server runs. */
+export function localRunnerDeviceId(environmentId: string): string | undefined {
+  return environmentId.startsWith(LOCAL_ENVIRONMENT_PREFIX)
+    ? environmentId.slice(LOCAL_ENVIRONMENT_PREFIX.length)
+    : undefined;
+}
 
 /** Durable PostgreSQL resources supplied by the deployment-specific adapter. */
 export interface WorkerDatabase {
@@ -226,6 +249,14 @@ export interface WorkerControlPlane {
    * Worker must mount them or the desktop client can never bind a device.
    */
   devices?: import("@lecoding/device-binding").DeviceBindingHttpHandler;
+  /**
+   * Live Runner gateway for desktop Local Runner sessions (Phase 4B).
+   *
+   * Optional so deployments that do not accept desktop Runners compose without
+   * one; a Run routed to a local environment when this is absent fails closed
+   * rather than falling back to the server sandbox.
+   */
+  runner?: RunnerGateway;
 }
 
 /** Resources owned by one Worker process after dependency composition succeeds. */
@@ -247,6 +278,29 @@ export interface WorkerRuntime {
   start(): Promise<void>;
   /** Stops producers before consumers, then releases durable connections. */
   stop(): Promise<void>;
+}
+
+/**
+ * Wraps the device service so revocation also terminates live Runner sessions.
+ *
+ * `access` keeps the unwrapped service for request authentication, so only the
+ * HTTP revocation route gains the side effect and the authentication path stays
+ * free of transport concerns.
+ */
+function revocationAwareDeviceService(
+  service: import("@lecoding/device-binding").DeviceBindingService,
+  gateway: RunnerGateway
+): import("@lecoding/device-binding").DeviceBindingService {
+  return {
+    ...service,
+    async revokeDevice(input: { userId: string; deviceId: string }): Promise<void> {
+      await service.revokeDevice(input);
+      // Terminate after the durable write commits: failing to terminate leaves
+      // a session that dies at its next heartbeat, which is recoverable;
+      // terminating before the write would leave a revoked row unusable.
+      gateway.terminateDevice(input.deviceId);
+    }
+  };
 }
 
 /** Reads and validates security-sensitive Worker process settings. */
@@ -635,6 +689,13 @@ export async function composeProductionWorker(
       store: createPostgresDeviceBindingStore(options.database.executor),
       now: () => new Date(now())
     });
+    const runnerGateway = createRunnerGateway({
+      devices: deviceService,
+      projectIds: projects.map((project) => project.projectId),
+      ...(options.onBackgroundError
+        ? { onBackgroundError: options.onBackgroundError }
+        : {})
+    });
     let access: RunApiAccessControl;
     let memberships: RunApiMembershipAdministration | undefined;
     let login: WorkerControlPlane["login"];
@@ -817,6 +878,19 @@ export async function composeProductionWorker(
     );
     const runtimeEnvironment = createRoutedRunEnvironment({
       create(spec) {
+        // A `local:<deviceId>` environment executes on the user's machine via
+        // WSS; every other Run keeps the existing Docker path untouched.
+        const deviceId = localRunnerDeviceId(spec.environmentId);
+        if (deviceId !== undefined) {
+          if (!runnerGateway) {
+            // Fail closed: silently running a "local" Run in the server sandbox
+            // would execute code the user believes is on their own machine.
+            throw new Error(
+              "Run requested a local environment but this Worker has no Runner gateway"
+            );
+          }
+          return createRemoteRunnerEnvironment({ gateway: runnerGateway, deviceId });
+        }
         const factory = runtimeFactories.get(spec.projectId);
         if (!factory) {
           throw new Error("Run requested an unregistered project");
@@ -1003,11 +1077,16 @@ export async function composeProductionWorker(
           journal: events,
           broadcaster: eventBroadcaster
         }),
+        runner: runnerGateway,
         // Device binding lets the desktop client exchange a one-time code for
         // a scoped device credential. The service injects the same clock the
         // rest of the Worker uses so code and device expiry stay verifiable.
         devices: createDeviceBindingHttpHandler({
-          service: deviceService,
+          // Revocation must also kill any live Runner session. Wrapping the
+          // service (rather than polling) is what makes this immediate for
+          // sessions held by this process; other Worker processes reach the
+          // same state at their next heartbeat revalidation.
+          service: revocationAwareDeviceService(deviceService, runnerGateway),
           principal: {
             async authenticate(request) {
               const principal = await access.authenticate(request);

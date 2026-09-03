@@ -1,4 +1,9 @@
-import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
+import {
+  createServer,
+  type IncomingMessage,
+  type Server,
+  type ServerResponse
+} from "node:http";
 import { once } from "node:events";
 import { createHash, timingSafeEqual } from "node:crypto";
 import { readFile } from "node:fs/promises";
@@ -38,6 +43,15 @@ export interface StartWorkerHttpServerOptions extends WorkerHttpConfig {
   control: WorkerControlPlane;
   webRoot: string;
   onBackgroundError?: (error: unknown) => void;
+  /**
+   * Receives the raw HTTP server before it starts listening, so additional
+   * transports can attach to it.
+   *
+   * The Runner WSS endpoint needs this: it must observe the `upgrade` event,
+   * which is only available on the `node:http` server and not on the
+   * Web-standard `Request`/`Response` handler used for everything else.
+   */
+  configureServer?: (server: Server) => void;
 }
 
 /** Bound HTTP listener owned by WorkerProcessHost. */
@@ -133,6 +147,9 @@ export async function startWorkerHttpServer(
   server.on("clientError", (_error, socket) => {
     socket.end("HTTP/1.1 400 Bad Request\r\nConnection: close\r\n\r\n");
   });
+  // Attach upgrade-based transports (Runner WSS) before the listener opens, so
+  // no connection can arrive at a half-configured server.
+  options.configureServer?.(server);
 
   await new Promise<void>((resolveListening, rejectListening) => {
     const reject = (error: Error): void => rejectListening(error);

@@ -47,3 +47,10 @@ export {
   type GitWorktreeRunEnvironmentFactoryOptions,
   type RunEnvironmentFactory
 } from "./run-environment-factory.js";
+
+export {
+  createRemoteRunnerEnvironment,
+  RunnerOfflineError,
+  type RemoteRunnerEnvironmentOptions,
+  type RunnerSessionSource
+} from "./remote-runner-environment.js";

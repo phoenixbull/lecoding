@@ -20,15 +20,18 @@
     "@lecoding/run-engine": "workspace:*",
     "@lecoding/run-environment": "workspace:*",
     "@lecoding/run-events": "workspace:*",
+    "@lecoding/runner-protocol": "workspace:*",
     "@lecoding/verifier": "workspace:*",
     "@lecoding/workspace": "workspace:*",
     "pg": "^8.23.0",
     "pg-boss": "10.4.2",
-    "tsx": "^4.23.12"
+    "tsx": "^4.23.12",
+    "ws": "^8.18.0"
   },
   "devDependencies": {
     "@electric-sql/pglite": "^0.5.5",
     "@lecoding/client-sdk": "workspace:*",
-    "@types/pg": "^8.23.1"
+    "@types/pg": "^8.23.1",
+    "@types/ws": "^8.5.13"
   }
 }

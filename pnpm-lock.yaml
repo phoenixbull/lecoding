@@ -38,6 +38,9 @@ importers:
       '@lecoding/run-controller':
         specifier: workspace:*
         version: link:../../packages/run-controller
+      '@lecoding/runner-protocol':
+        specifier: workspace:*
+        version: link:../../packages/runner-protocol
       '@lecoding/secure-store':
         specifier: workspace:*
         version: link:../../packages/secure-store
@@ -47,6 +50,9 @@ importers:
       react-dom:
         specifier: ^19.2.8
         version: 19.2.8(react@19.2.8)
+      ws:
+        specifier: ^8.18.0
+        version: 8.21.3
     devDependencies:
       '@electron-forge/cli':
         specifier: ^7.11.2
@@ -96,6 +102,9 @@ importers:
       '@types/react-dom':
         specifier: ^19.2.5
         version: 19.2.5(@types/react@19.2.18)
+      '@types/ws':
+        specifier: ^8.5.13
+        version: 8.18.1
       '@vitejs/plugin-react':
         specifier: ^5.2.0
         version: 5.2.0(vite@7.3.6(@types/node@22.20.1)(jiti@2.7.0)(terser@5.51.2)(tsx@4.23.12)(yaml@2.9.0))
@@ -154,6 +163,9 @@ importers:
       '@lecoding/run-events':
         specifier: workspace:*
         version: link:../../packages/run-events
+      '@lecoding/runner-protocol':
+        specifier: workspace:*
+        version: link:../../packages/runner-protocol
       '@lecoding/verifier':
         specifier: workspace:*
         version: link:../../packages/verifier
@@ -169,6 +181,9 @@ importers:
       tsx:
         specifier: ^4.23.12
         version: 4.23.12
+      ws:
+        specifier: ^8.18.0
+        version: 8.21.3
     devDependencies:
       '@electric-sql/pglite':
         specifier: ^0.5.5
@@ -179,6 +194,9 @@ importers:
       '@types/pg':
         specifier: ^8.23.1
         version: 8.23.1
+      '@types/ws':
+        specifier: ^8.5.13
+        version: 8.18.1
 
   packages/anthropic-model:
     dependencies:
@@ -329,6 +347,9 @@ importers:
       '@lecoding/contracts':
         specifier: workspace:*
         version: link:../contracts
+      '@lecoding/runner-protocol':
+        specifier: workspace:*
+        version: link:../runner-protocol
       '@lecoding/workspace':
         specifier: workspace:*
         version: link:../workspace
@@ -342,6 +363,12 @@ importers:
       '@electric-sql/pglite':
         specifier: ^0.5.5
         version: 0.5.5
+
+  packages/runner-protocol:
+    dependencies:
+      '@lecoding/contracts':
+        specifier: workspace:*
+        version: link:../contracts
 
   packages/secure-store: {}
 
@@ -1175,6 +1202,9 @@ packages:
 
   '@types/wrap-ansi@3.0.0':
     resolution: {integrity: sha512-ltIpx+kM7g/MLRZfkbL7EsCEjfzCcScLpkg37eXEtx5kmrAKBkTJwd1GIAjDSL8wTpM6Hzn5YO4pSb91BEwu1g==}
+
+  '@types/ws@8.18.1':
+    resolution: {integrity: sha512-ThVF6DCVhA8kUGy+aazFQ4kXQ7E1Ty7A3ypFOe0IcJV8O/M511G99AW24irKrW56Wt44yG9+ij8FaqoBGkuBXg==}
 
   '@types/yauzl@2.10.3':
     resolution: {integrity: sha512-oJoftv0LSuaDZE3Le4DbKX+KS9G36NzOeSap90UIK0yMA/NhKJhqlSGtNDORNRaIbQfzjXDrQa0ytJ6mNRGz/Q==}
@@ -4273,6 +4303,10 @@ snapshots:
       '@types/node': 22.20.1
 
   '@types/wrap-ansi@3.0.0': {}
+
+  '@types/ws@8.18.1':
+    dependencies:
+      '@types/node': 22.20.1
 
   '@types/yauzl@2.10.3':
     dependencies:
