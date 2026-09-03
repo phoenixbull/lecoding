@@ -222,7 +222,7 @@ pnpm typecheck
 - [x] 三档文件权限由独立 Local Runner 的 OS Sandbox Adapter 在创建子进程时最终强制；Desktop Main 签发 Run 级 `FileAccessGrant`；PolicyEngine 只承担固定 deny 和权限升级审批。
 - [x] WSS 身份证明采用设备 Bearer（`hello` 首帧携带 accessToken，凭据不进 URL 与日志）；设备私钥 challenge-response 留待 PRD 后续收紧。
 - [x] Local Runner 本轮以内嵌 Desktop Main 的形态验证协议与权限，独立签名进程拆分留待独立工作包。
-- [x] macOS 采用 Seatbelt（SBPL，经 `sandbox-exec`，启动探针失败即失败关闭）；Windows 采用 Job Object 进程树 containment + argv 围栏，能力报告如实标注 `argv_fence`，内核级 FS 限制（AppContainer）列为目标平台待办。
+- [x] macOS 采用 Seatbelt（SBPL，经 `sandbox-exec`，启动探针失败即失败关闭）；Windows 采用 argv 围栏 + 真实进程树终止（`taskkill /T /F`），**不创建 Job Object、不做内核级 FS 限制**，能力报告如实标注 `argv_fence` 并说明为 best-effort；内核级 FS 限制（AppContainer）列为目标平台待办。
 - [x] `selected_directories` 由 OS 原生目录选择器授权，签发时 canonicalize 并收敛为最小必要集合；重启后经持久化 grant 恢复，撤销即失效。
 - [x] 恢复状态由 Runner 持有最终权威（durable handle journal + 命令 started/settled 记录）；未知执行结果一律按 `command_interrupted` 保守结算，绝不重放。
 - [x] 本轮不归档 Windows/macOS 真实平台证据，M2 只标记「代码完成、平台验收待办」；证据清单见 [desktop-m2-smoke-checklist.md](evidence/desktop-m2-smoke-checklist.md)。

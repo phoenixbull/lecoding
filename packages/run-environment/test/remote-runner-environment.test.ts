@@ -7,13 +7,23 @@ import {
 
 const handle: EnvironmentHandle = { id: "handle-1", environmentId: "local:device-1" };
 
-/** Stands in for a live host session; records what the adapter sent. */
-function fakeSession(responses: Array<unknown>) {
+/** Project the Run under test belongs to; sessions must match it. */
+const PROJECT_ID = "project-a";
+
+/**
+ * Stands in for a live host session; records what the adapter sent.
+ *
+ * Carries an `identity` because the adapter verifies it on every call: a
+ * session with no proven project is exactly the case that must be refused, so
+ * the stub has to model one rather than omit it.
+ */
+function fakeSession(responses: Array<unknown>, projectId: string = PROJECT_ID) {
   const calls: Array<{ op: string; payload: unknown }> = [];
   let index = 0;
   return {
     calls,
     session: {
+      identity: () => ({ deviceId: "device-1", userId: "user-1", projectId }),
       call(op: string, payload: unknown) {
         calls.push({ op, payload });
         const value = responses[index];
@@ -27,10 +37,11 @@ function fakeSession(responses: Array<unknown>) {
   };
 }
 
-function environmentFor(session: unknown) {
+function environmentFor(session: unknown, projectId: string = PROJECT_ID) {
   return createRemoteRunnerEnvironment({
     gateway: { sessionFor: () => session as never },
-    deviceId: "device-1"
+    deviceId: "device-1",
+    projectId
   });
 }
 
@@ -156,7 +167,8 @@ describe("createRemoteRunnerEnvironment", () => {
           return found as never;
         }
       },
-      deviceId: "device-1"
+      deviceId: "device-1",
+      projectId: PROJECT_ID
     });
 
     await expect(

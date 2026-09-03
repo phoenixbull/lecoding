@@ -207,7 +207,10 @@ describe("command ids across reconnections", () => {
     });
     transport.deliver(helloFrame(resumeLastReceivedCommandId));
     await flush();
-    void session.call("env.prepare", { runId: "run-1" });
+    // The rejection when the transport dies is expected; swallowing it here
+    // keeps the suite free of unhandled rejections, which would otherwise
+    // mask real failures elsewhere in the run.
+    session.call("env.prepare", { runId: "run-1" }).catch(() => undefined);
     transport.close(1006, "network dropped");
   }
 

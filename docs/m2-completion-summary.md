@@ -40,11 +40,18 @@
 
 | 档位 | macOS | Windows |
 |---|---|---|
-| `workspace_only` | `kernel`（Seatbelt SBPL） | `argv_fence` |
-| `selected_directories` | `kernel` | `argv_fence` |
+| `workspace_only` | `kernel`（Seatbelt SBPL） | `argv_fence`（best-effort） |
+| `selected_directories` | `kernel` | `argv_fence`（best-effort） |
 | `host_full` | `acknowledged_unrestricted` | `acknowledged_unrestricted` |
 
-Windows 的内核级文件系统限制需要原生 AppContainer / 受限令牌 adapter，本仓库不携带原生 addon，因此 **Windows 未达成内核级 FS 强制**。处理方式是失败关闭 + 如实报告：
+**Windows 不创建 Job Object，也不做内核级文件系统限制。** 初版曾按「Job Object 进程树 containment」描述，但实现并未创建 Job Object —— 这属于与文档夸大同类的问题，已更正：模块重命名为 `windows-sandbox`，能力报告与文档均写明该平台无内核级 FS 隔离。
+
+Windows 上真实提供的两项能力：
+
+- argv 围栏：路径 canonicalize 后越权的命令不会被创建（与 macOS 一致）。
+- 进程树终止：通过 `taskkill /T /F` 真实杀死整棵进程树（POSIX 上用进程组信号），因此取消 Run 不会留下孙进程占用 worktree。
+
+内核级文件系统限制需要原生 AppContainer / 受限令牌 adapter，本仓库不携带原生 addon，因此 **Windows 未达成内核级 FS 强制**。处理方式是失败关闭 + 如实报告：
 
 - `SandboxCapabilityReport` 声明每档实际等级；请求档位为 `unsupported` 时拒绝执行，绝不静默降级。
 - 差异直接驱动 UI（`RunnerStatePush.sandbox.isolationGaps` → `LocalIsolationNotice`），满足 M2.4「在 UI 中展示差异」。
@@ -113,6 +120,32 @@ macOS 的 Seatbelt 可用性在启动时探针；探针失败拒绝产出执行�
 - `renderer-local-boundary.test.ts`：钉死 preload 暴露面 —— 无 `exec/spawn/shell/fs/net` 通道、无返回凭据的通道、grant 与 audit 无 Renderer 通道、push 通道永不作为可调用方法暴露。
 - 隔离差异：`RunnerStatePush.sandbox.isolationGaps` 由 Main 从能力报告推导（非 kernel 即列为缺口），`LocalIsolationNotice` 用可执行的语言向用户陈述。
 
+## 4.5 评审修复（第二轮）
+
+首轮完成后经 code-review 发现 16 项问题，其中 6 项 P0。以下为已修复项，均按「先写失败测试再改实现」处理。
+
+**P0**
+
+1. **生产入口没有装配 Runner WSS 服务。** `main.ts` 未传 `configureServer`，`local:<deviceId>` 端点从未挂载，任何桌面设备都无法连接。已挂载，并用真实客户端对真实监听器的测试覆盖（这是请求级测试唯一无法触及的部分，因此最容易在全部测试通过的情况下保持未装配）。
+2. **持久化 cursor 注释与实现相反。** 实为进程内 Map，`stop()` 会清空。已改为如实描述：进程内有效，Worker 重启后 Runner 从窗口起点重放；该方向的上行帧是进度与审计记录，追加型接收端幂等，因此重放安全；副作用在命令方向，由 commandId 保证恰好一次，不依赖该值。
+3. **真实 WebSocket 客户端丢失首个 hello。** `ws` 客户端在 CONNECTING 期间发送即被丢弃，导致永远无法鉴权。内存 socket 一创建即 open，因此既有测试无法发现。两端现在共用协议包内的排队适配器，未 open 前缓冲、溢出则关闭（暴露为重连而非静默停滞）；同时消除了两侧适配层的重复实现。
+4. **Local Runner 存在设备越权路由。** `local:<deviceId>` 直接按设备 ID 路由，未校验归属。已两处校验：准入时校验设备属于调用者本人且属于该项目（返回 404 而非 403，不确认设备 ID 是否存在）；执行时每次调用都用会话已证明的 projectId 比对，因为重连可能换掉会话身份。
+5. **三档文件权限无法通过公共 API 落地。** `api.ts` 无条件拒绝所有非 `workspace_only`，`selected_directories` 与 `host_full` 无法从任何正常流程创建。该限制本属于服务端沙箱（无法把 Run 限定到选定宿主目录），已改为仅对服务端 Run 生效，本地 Run 由桌面沙箱强制并失败关闭。
+6. **重连后 command ID 去重语义错误。** 每次会话从 1 开始，而 Runner 去重表跨重连存活，新命令会命中旧缓存并被直接返回而不执行——静默丢失副作用。ID 改为按设备分配：网关持单调高位标记，与 Runner 自己的 `lastReceivedCommandId` 取较大者。`welcome.replayFromCommandId` 更名为 `nextCommandId`（原名称描述了一次并不存在的重发）。
+
+**P1**
+
+7. **HELLO 超时与凭据持续撤销未闭环。** 未认证连接不在 `sessionsByDevice` 中，`tick()` 永不清理；心跳阶段也不重新验证凭据。现已单独登记并 tick 未认证连接（超期关闭 4001），且每个心跳周期重新验证设备凭据——这才是文档所述「撤销在一个心跳周期内生效」成立的依据。
+8. **恢复与结果处置不是可靠的跨重启幂等。** 恢复时未重建 `firstDecision`；`resolve()` 又在 Git 生效与 journal 落盘**之前**写入内存幂等状态，首次失败后重试会被误判为已完成。顺序改为「生效 → 落盘 → 内存」；`recoverRunState` 现在返回每次处置的 outcome，恢复时据此重建。
+9. **Windows 并未实现 Job Object。** 见 §2.4：模块更名、文档与能力报告更正为 `argv_fence` best-effort，并落地真实可做的进程树终止。
+10. **选定目录的绝对路径返回了 Renderer。** 与「完整路径/grant 不进入 Renderer」边界冲突。现只返回数量与文件夹名。
+
+**P2**
+
+11. `git diff --check` 报告的 `local-runner/index.ts` 末尾多余空行已修。
+
+**仍未处理**：导出 API 文档补齐（P1）、IPC 注册表 shotgun-surgery 收敛（P2）。二者均为可维护性而非正确性问题，已记入 §5.2。
+
 ## 5. 遗留风险与交接事项
 
 ### 5.1 目标平台证据（M2 不关闭的原因）
@@ -120,8 +153,8 @@ macOS 的 Seatbelt 可用性在启动时探针；探针失败拒绝产出执行�
 | 项 | 缺什么 | 由谁补 |
 |---|---|---|
 | macOS Seatbelt 越权矩阵 | 真实 macOS 上三类越权（argv 逃逸、symlink、拒绝执行）各有内核级拒绝证据 | 按 [desktop-m2-smoke-checklist.md](evidence/desktop-m2-smoke-checklist.md) |
-| Windows 沙箱行为 | 确认 `argv_fence` 等级的允许/拒绝矩阵，并记录与 macOS 的差异 | 同上 |
-| Windows 内核级 FS 限制 | **未达成**，需原生 AppContainer adapter | 独立原生工作包；在此之前 Windows `argv_fence` 是已声明边界 |
+| Windows 沙箱行为 | 确认 `argv_fence` 等级的允许/拒绝矩阵、进程树终止有效，并记录与 macOS 的差异 | 同上 |
+| Windows 内核级 FS 限制 | **未达成**，需原生 AppContainer adapter；Windows 不创建 Job Object | 独立原生工作包；在此之前 Windows `argv_fence` 是已声明的 best-effort 边界 |
 | 断网 / 重启 / 撤销设备 | 真实网络抖动与真实进程退出下的 Run 状态与副作用一致性 | 同上 |
 | `host_full` 二次确认 | 真实 OS 对话框的确认与一键降权/中止 | 同上 |
 | 独立签名 Runner 进程 | 决策门选择先内嵌 Main，拆分后需重验签名与升级链路 | 后续工作包 |
