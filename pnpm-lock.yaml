@@ -35,6 +35,9 @@ importers:
       '@lecoding/host-sandbox':
         specifier: workspace:*
         version: link:../../packages/host-sandbox
+      '@lecoding/local-runner':
+        specifier: workspace:*
+        version: link:../../packages/local-runner
       '@lecoding/presentation':
         specifier: workspace:*
         version: link:../../packages/presentation
@@ -285,6 +288,9 @@ importers:
       '@lecoding/run-environment':
         specifier: workspace:*
         version: link:../run-environment
+      '@lecoding/runner-protocol':
+        specifier: workspace:*
+        version: link:../runner-protocol
       '@lecoding/workspace':
         specifier: workspace:*
         version: link:../workspace

@@ -11,6 +11,7 @@
     "@lecoding/contracts": "workspace:*",
     "@lecoding/host-sandbox": "workspace:*",
     "@lecoding/run-environment": "workspace:*",
+    "@lecoding/runner-protocol": "workspace:*",
     "@lecoding/workspace": "workspace:*"
   }
 }

@@ -397,3 +397,23 @@ function toBuffer(chunk: Buffer | string): Buffer {
   }
   return chunk;
 }
+
+export {
+  cleanupWorktree,
+  residualProgressEvent,
+  type CleanupFailureReason,
+  type CleanupOptions,
+  type CleanupResult,
+  type ResidualPath
+} from "./cleanup.js";
+export {
+  createMemoryJournalFileSystem,
+  createRunJournal,
+  recoverRunState,
+  type JournalFileSystem,
+  type RecoveredRunState,
+  type RunJournal,
+  type RunJournalEntry,
+  type RunJournalOptions
+} from "./run-journal.js";
+

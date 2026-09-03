@@ -18,6 +18,7 @@
     "@lecoding/client-sdk": "workspace:*",
     "@lecoding/contracts": "workspace:*",
     "@lecoding/host-sandbox": "workspace:*",
+    "@lecoding/local-runner": "workspace:*",
     "@lecoding/presentation": "workspace:*",
     "@lecoding/run-controller": "workspace:*",
     "@lecoding/runner-protocol": "workspace:*",
