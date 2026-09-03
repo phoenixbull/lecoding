@@ -54,6 +54,33 @@ const HOST_FULL_CONFIRMATION: DangerConfirmationInput = {
   acknowledgementLabel: "I understand this Run can modify files outside this project"
 };
 
+/** Isolation a server Docker sandbox provides that a local host cannot. */
+const DOCKER_ISOLATION_GAPS = [
+  "No CPU limit: a Run can use all cores on this machine.",
+  "No memory limit: a Run can exhaust system memory.",
+  "No process count limit: a Run can spawn unbounded processes."
+];
+
+/**
+ * Derives the isolation gaps from what the sandbox actually enforces.
+ *
+ * Only a kernel-level tier approaches container isolation, so anything weaker
+ * is reported as a gap rather than hidden behind a generic warning.
+ */
+function isolationGaps(report: SandboxCapabilityReport): string[] {
+  const kernelEnforced = Object.values(report.tiers).every(
+    (level) => level === "kernel" || level === "acknowledged_unrestricted"
+  );
+  const gaps = [...DOCKER_ISOLATION_GAPS];
+  if (!kernelEnforced) {
+    gaps.push(
+      "File access is enforced when a command is created, not by the kernel: " +
+        "the declared file access tier may be weaker than on the server."
+    );
+  }
+  return gaps;
+}
+
 export interface DesktopMainOptions {
   host: ElectronHost;
   createClientSdk: ClientSdkFactory;
@@ -172,12 +199,14 @@ export function createDesktopMain(options: DesktopMainOptions): DesktopMain {
         ? {
             platform: report.platform,
             tiers: { ...report.tiers },
-            detail: report.detail
+            detail: report.detail,
+            isolationGaps: isolationGaps(report)
           }
         : {
             platform: "",
             tiers: {},
-            detail: "No Local Runner sandbox is configured"
+            detail: "No Local Runner sandbox is configured",
+            isolationGaps: DOCKER_ISOLATION_GAPS
           }
     };
   }

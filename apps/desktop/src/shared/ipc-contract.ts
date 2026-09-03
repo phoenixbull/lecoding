@@ -130,6 +130,14 @@ export interface RunnerStatePush {
     platform: string;
     tiers: Record<string, string>;
     detail: string;
+    /**
+     * What this host cannot provide compared with the server's Docker sandbox.
+     *
+     * Surfaced deliberately, because a local Run that *looks* as confined as a
+     * server Run would be a false claim: without a container there is no
+     * kernel-enforced CPU, memory or PID ceiling.
+     */
+    isolationGaps: string[];
   };
 }
 

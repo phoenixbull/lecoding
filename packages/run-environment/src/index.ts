@@ -49,6 +49,12 @@ export {
 } from "./run-environment-factory.js";
 
 export {
+  runRunEnvironmentContractSuite,
+  type RunEnvironmentContractExpectations,
+  type RunEnvironmentContractOptions
+} from "./contract-suite.js";
+
+export {
   createRemoteRunnerEnvironment,
   RunnerOfflineError,
   type RemoteRunnerEnvironmentOptions,

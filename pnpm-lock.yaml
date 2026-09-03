@@ -81,6 +81,9 @@ importers:
       '@lecoding/device-binding':
         specifier: workspace:*
         version: link:../../packages/device-binding
+      '@lecoding/policy':
+        specifier: workspace:*
+        version: link:../../packages/policy
       '@lecoding/run-engine':
         specifier: workspace:*
         version: link:../../packages/run-engine
