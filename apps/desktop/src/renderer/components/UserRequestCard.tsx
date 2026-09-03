@@ -1,6 +1,7 @@
 import { canSteerRun } from "@lecoding/presentation";
 import type { RunConsoleController, RunConsoleState } from "@lecoding/run-controller";
 
+/** Pending user request state and answer/steer commands for the selected Run. */
 export interface UserRequestCardProps {
   controller: RunConsoleController;
   state: RunConsoleState;

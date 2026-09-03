@@ -1,5 +1,6 @@
 import type { RunConsoleController } from "@lecoding/run-controller";
 
+/** Server-authorized project choices and the shared controller selection command. */
 export interface ProjectSidebarProps {
   controller: RunConsoleController;
   projectIds: string[];

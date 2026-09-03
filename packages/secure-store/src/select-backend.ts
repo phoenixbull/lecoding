@@ -8,6 +8,7 @@ import {
 /** Backends the console will actually report to the user. */
 export type SecureStoreBackend = "safeStorage" | "encryptedFile";
 
+/** User-visible strength and degradation state of the selected credential backend. */
 export interface SecureStoreHealth {
   backend: SecureStoreBackend;
   /**
@@ -18,11 +19,13 @@ export interface SecureStoreHealth {
   reason?: string;
 }
 
+/** Selected store paired with health that callers must keep visible to users. */
 export interface SecureStoreSelection {
   store: SecureStore;
   health: SecureStoreHealth;
 }
 
+/** Paths, fallback secret, and optional OS cipher used during backend selection. */
 export interface SelectSecureStoreOptions {
   /** Ciphertext file for the keychain-backed backend. */
   safeStorageFilePath: string;

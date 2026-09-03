@@ -1,5 +1,6 @@
 import type { RunConsoleState } from "@lecoding/run-controller";
 
+/** Global console status, packaged version, and error-dismiss command. */
 export interface StatusBarProps {
   state: RunConsoleState;
   appVersion: string;

@@ -65,11 +65,11 @@ export interface DeviceCodeResult {
   expiresAt: string;
 }
 
+/** Non-secret operator input required to redeem a Web-issued one-time code. */
 export interface DeviceExchangeInput {
   code: string;
   deviceLabel: string;
   platform: string;
-  projectId: ProjectId;
 }
 
 /** Non-secret projection of one bound device. */
@@ -84,6 +84,7 @@ export interface DeviceSummary {
   expiresAt: string;
 }
 
+/** Server-scoped device inventory; adapters must not include access tokens. */
 export interface DeviceListing {
   devices: DeviceSummary[];
 }

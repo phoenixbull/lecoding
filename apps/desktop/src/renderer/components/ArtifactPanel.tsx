@@ -1,5 +1,6 @@
 import type { RunConsoleController, RunConsoleState } from "@lecoding/run-controller";
 
+/** Selected Run state and on-demand artifact loader used by the panel. */
 export interface ArtifactPanelProps {
   controller: RunConsoleController;
   state: RunConsoleState;

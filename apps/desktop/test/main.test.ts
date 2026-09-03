@@ -119,7 +119,8 @@ function createFakeHost(): ElectronHost & {
     } as unknown as ElectronHost["BrowserWindow"],
     setCspHeader: (value: string | null) => {
       csp = value;
-    }
+    },
+    openExternal: vi.fn(async () => undefined)
   } satisfies ElectronHost;
   const result = Object.assign(host, {
     windows,
@@ -279,6 +280,13 @@ describe("createDesktopMain", () => {
     const handler = (win.webContents.setWindowOpenHandler as ReturnType<typeof vi.fn>)
       .mock.results[0]?.value;
     expect(handler).toEqual({ action: "deny" });
+
+    const navigation = win.webContents.on.mock.calls.find(
+      (call) => call[0] === "will-navigate"
+    )?.[1] as ((event: { preventDefault(): void }, url: string) => void) | undefined;
+    const preventDefault = vi.fn();
+    navigation?.({ preventDefault }, "file:///tmp/untrusted.html");
+    expect(preventDefault).toHaveBeenCalledTimes(1);
   });
 
   it("registers an IPC handler for every documented channel", async () => {
@@ -286,6 +294,24 @@ describe("createDesktopMain", () => {
     for (const channel of IPC_CHANNELS) {
       expect(host.handlers.has(channel)).toBe(true);
     }
+  });
+
+  it("opens only the Main-derived GitHub login URL in the system browser", async () => {
+    await boot();
+    await host.handlers.get("session.bootstrap")!(
+      { channel: "session.bootstrap", payload: { baseUrl: "https://agent.example" } },
+      SENDER
+    );
+
+    const response = await host.handlers.get("session.openGitHubLogin")!(
+      { channel: "session.openGitHubLogin", payload: {} },
+      SENDER
+    );
+
+    expect(response).toEqual({ ok: true, data: { opened: true } });
+    expect(host.openExternal).toHaveBeenCalledWith(
+      "https://agent.example/api/v1/auth/github/start"
+    );
   });
 
   it("delegates a runs.create IPC request to the held Client SDK instance", async () => {
@@ -363,7 +389,15 @@ describe("createDesktopMain", () => {
         throw unauthorized;
       }) as ClientSdk["getControlPlaneConfig"]
     };
-    await boot({ createClientSdk: () => failingSdk });
+    const clear = vi.fn(async () => undefined);
+    await boot({
+      createClientSdk: () => failingSdk,
+      credentialStore: {
+        status: async () => ({ backend: "safeStorage", degraded: false }),
+        purgeExpired: async () => undefined,
+        clear
+      }
+    });
     await host.handlers.get("session.bootstrap")!(
       { channel: "session.bootstrap", payload: { baseUrl: "https://agent.example" } },
       SENDER
@@ -377,6 +411,7 @@ describe("createDesktopMain", () => {
       // The console branches on this code to send the user back to sign-in.
       expect(response.code).toBe("unauthorized");
     }
+    expect(clear).toHaveBeenCalledTimes(1);
   });
 
   it("forwards session.logout to the SDK and clears local credentials", async () => {
@@ -421,6 +456,37 @@ describe("createDesktopMain", () => {
       SENDER
     );
     expect(clear).toHaveBeenCalledTimes(1);
+  });
+
+  it("never returns an exchanged device token to the Renderer", async () => {
+    const credentialSdk: ClientSdk = {
+      ...sdk,
+      exchangeDeviceCode: async () => ({
+        deviceId: "device-1",
+        accessToken: "secret-device-token",
+        projectId: "project-1"
+      })
+    };
+    await boot({ createClientSdk: () => credentialSdk });
+    await host.handlers.get("session.bootstrap")!(
+      { channel: "session.bootstrap", payload: { baseUrl: "https://agent.example" } },
+      SENDER
+    );
+
+    const response = await host.handlers.get("devices.exchange")!(
+      {
+        channel: "devices.exchange",
+        payload: {
+          code: "ABCDEFGHI",
+          deviceLabel: "office-mac",
+          platform: "darwin"
+        }
+      },
+      SENDER
+    );
+
+    expect(response).toEqual({ ok: true, data: { bound: true } });
+    expect(JSON.stringify(response)).not.toContain("secret-device-token");
   });
 
   it("reports credential health through session.status without exposing the token", async () => {

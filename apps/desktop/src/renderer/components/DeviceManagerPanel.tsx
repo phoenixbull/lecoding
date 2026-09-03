@@ -1,6 +1,7 @@
 import { formatProjectPolicyRule } from "@lecoding/presentation";
 import type { RunConsoleController, RunConsoleState } from "@lecoding/run-controller";
 
+/** Device/session commands and confirmation boundary for destructive actions. */
 export interface DeviceManagerPanelProps {
   controller: RunConsoleController;
   state: RunConsoleState;

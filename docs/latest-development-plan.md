@@ -1,6 +1,6 @@
 # LeCoding Agent 最新开发计划
 
-更新日期：2026-09-02  
+更新日期：2026-09-03
 计划基线：`master` / `v0.0.1`（`4aff3ba`）  
 执行口径：单人全职，按依赖顺序推进；每个切片通过公开 seam 进行红—绿—重构。
 
@@ -12,9 +12,9 @@
 |---|---:|---|
 | 服务器 / Web MVP 功能 | 约 92% | 全量门禁、真实模型与目标 Linux 证据 |
 | 服务器 / Web 发布就绪 | 约 82%–87% | 稳定测试、兼容性、发布演练 |
-| Phase 4A Connected Desktop | 约 60%–65% | Renderer、原生安全存储、签名、公证、安装包 E2E |
+| Phase 4A Connected Desktop | 约 90%–92% | 真实安装、双平台 keychain、签名、公证、真实升级证据 |
 | Phase 4B Local Runner | 约 35%–45% | WSS、重连去重、三档文件权限、完整恢复与撤销 |
-| Phase 0–4 总体 | 约 75% | Phase 4 用户闭环与正式发布证据 |
+| Phase 0–4 总体 | 约 81%–84% | Local Runner 闭环与正式发布证据 |
 
 Phase 5 不进入本计划的固定工期。它必须等待至少数百个带 `verified + user accepted` 标签的真实 Run，并建立稳定的黄金任务回归后再启动。
 
@@ -32,7 +32,7 @@ Phase 5 不进入本计划的固定工期。它必须等待至少数百个带 `v
 
 M0 修复后的证据见 [m0-completion-summary.md](m0-completion-summary.md)：`pnpm typecheck` 20/20；确定性测试与允许 loopback 的 HTTP 测试已通过。真实 PostgreSQL 多会话测试已经落地，但健康数据库环境的通过证据仍待补齐。
 
-M1 完成后的最新基线见 [m1-completion-summary.md](m1-completion-summary.md)：`pnpm typecheck` **23/23**（新增 `@lecoding/presentation` 与 `@lecoding/run-controller` 两个 package；`@lecoding/test-harness` 无 typecheck 任务不计入），`pnpm test` **805 通过 / 9 跳过 / 0 失败**。所有跳过项均为显式环境 gate。
+M1 当前开发基线见 [m1-completion-summary.md](m1-completion-summary.md)。确定性测试已通过，但真实安装、双平台 keychain、签名、公证及真实升级证据尚未归档，因此 M1 仍处于验收中。
 
 ## 3. 执行原则
 
@@ -49,7 +49,7 @@ M1 完成后的最新基线见 [m1-completion-summary.md](m1-completion-summary.
 | 里程碑 | 目标 | 单人工期 | 依赖 | 状态 |
 |---|---|---:|---|---|
 | M0 | 恢复全仓库可信质量门禁 | 3–5 个工作日 | 无 | 已完成 |
-| M1 | 完成 Phase 4A Connected Desktop 用户闭环 | 7–12 个工作日 | M0 | 已完成（签名/公证与人工黄金 smoke 待外部依赖） |
+| M1 | 完成 Phase 4A Connected Desktop 用户闭环 | 7–12 个工作日 | M0 | 验收中（代码链路完成，外部证据待补） |
 | M2 | 完成 Phase 4B Local Runner 闭环 | 10–15 个工作日 | M0、M1 的 UI / 凭据 seam | 未开始 |
 | M3 | 完成正式发布证据和文档收口 | 3–5 个工作日 | M0–M2 | 未开始 |
 
@@ -133,7 +133,7 @@ pnpm typecheck
 
 优先级：P1  
 估时：3–5 天  
-状态：**已完成**（2026-09-02），详见 [m1-completion-summary.md](m1-completion-summary.md)
+状态：**代码修复完成，里程碑验收未关闭**（2026-09-03），详见 [m1-completion-summary.md](m1-completion-summary.md)
 
 - [x] 提取共享 `@lecoding/run-controller` 深模块：承载 Run 状态转换与 SSE cursor 续传、去重和重连；不得依赖 React 或 DOM。投影层与 SSE 编排落在同批新建的 `@lecoding/presentation`。
 - [x] 将 `run-stream` 对 `LeCodingClient` 的直接依赖收窄为 `RunEventSource` interface，并提供 Web HTTP/SSE 与 Desktop IPC 两个 adapter。
@@ -159,7 +159,7 @@ pnpm typecheck
 
 优先级：P1  
 估时：1–2 天  
-状态：**已完成**（确定性测试）；真实 OS 存储 smoke 待目标平台执行
+状态：**代码路径完成，验收待办**；macOS / Windows 真实 OS 存储 smoke 尚未归档
 
 - [x] 实现 Electron `safeStorage` 的 `SecureStore` adapter（`safeStorage` 是 cipher 不是 store，密文落 0o600 JSON 文件）。
 - [x] 明确安全存储不可用、系统锁定、密钥损坏和迁移失败的行为：一律抛 `SecureStoreUnavailableError`，不静默丢弃凭据。
@@ -173,7 +173,7 @@ pnpm typecheck
 
 优先级：P1  
 估时：1–2 天  
-状态：**已完成**（无 GUI harness + 安装包 smoke 自动化）；人工黄金 smoke 待目标平台执行
+状态：**自动化完成，退出条件未满足**；真实安装包黄金 smoke 待目标平台执行
 
 - [x] 建立无 GUI desktop application harness：`RunConsoleController → Desktop IPC adapter → 真实 Main handlers → Client SDK → 真实 Worker HTTP 服务`（`apps/desktop/test/run-loop.integration.test.ts`）。
 - [x] 在 application harness 覆盖设备绑定、Run 创建、SSE 推送、审批、Diff、结果处置、设备撤销，以及不受信任 IPC sender、外部导航、弹窗阻断。
@@ -183,13 +183,13 @@ pnpm typecheck
 - [ ] release candidate 在 Windows 与 macOS 的真实安装包上各执行两条黄金 smoke（[desktop-m1-smoke-checklist.md](evidence/desktop-m1-smoke-checklist.md)）：安装/绑定/完成 Run/查看证据/处置，以及关闭重开/恢复/设备撤销。
 
 退出条件：application harness 对完整桌面业务闭环全绿；Windows 与 macOS 各有一次真实安装包黄金 smoke。GUI 不要求穷举业务分支，但安装、原生安全存储、打包资源和 Electron 运行时安全不得只由 mock 证明。
-实测：深业务 E2E 3/3（受限沙箱显式跳过），安装包 smoke 已用合成产物验证通过/失败两条路径。
+实测：深业务 E2E 4/4（其中一条覆盖真实 `Controller → IPC adapter → Main → SDK → Worker`；受限沙箱显式跳过），安装产物结构 smoke 在未提供真实产物时保持跳过，不能替代平台黄金 smoke。
 
 ### M1.4 正式安装包链路
 
 优先级：P1  
 估时：2–3 天，外部证书申请时间不计入编码工期  
-状态：**已完成**（代码路径与自动校验）；签名 / 公证待外部证书
+状态：**发布链路完成，退出条件未满足**；签名、公证和真实升级验证待外部证书及目标平台
 
 - [x] 固化消费者产物矩阵：Windows x64 交付 Squirrel `Setup.exe` + `full.nupkg` + `RELEASES`；macOS arm64/x64 各交付 DMG + ZIP。M1.4 不交付 MSI / PKG。
 - [x] 删除凭据驱动的条件式 `maker-pkg`；凭据决定构建能否执行，不能静默改变同一 tag 的产物集合。
@@ -206,7 +206,7 @@ pnpm typecheck
 - [ ] 验证签名更新拒绝逻辑的真实升级路径。（需真实签名产物，排入 M3 运维演练）
 
 退出条件：同一 tag 产生已签名的 Windows Squirrel 三件套与 macOS 双架构 DMG/ZIP；macOS 已公证；runner、Node、容器内二进制和原生模块架构均与 matrix 一致；自动更新只接受可信签名。
-实测：architecture 25、release-assets 10、forge-config 31、release-workflow 6 全通过；`release-gate` job 已就位。签名与公证仍需目标平台证据。
+实测：architecture 25、release-assets 10、forge-config 31、release-workflow 6 全通过；`release-gate` job 已就位。自动更新安装门会验证 Ed25519 清单签名、目标平台/架构/版本及 Artifact SHA-256；在发布密钥、签名清单和真实平台证据到位前不得关闭 M1。
 
 ## 7. M2：完成 Phase 4B Local Runner
 
@@ -332,7 +332,7 @@ M0（已完成）：
 4. `fix(metrics): inject the observation clock consistently`
 5. `fix(desktop): align package version architecture and artifacts`
 
-M1（已完成）：
+M1（验收中）：
 
 6. `refactor(web): extract the shared presentation and Run console controller`
 7. `fix(desktop): mount the preload and add the production Electron bootstrap`

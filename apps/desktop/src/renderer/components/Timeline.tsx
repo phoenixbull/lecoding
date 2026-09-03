@@ -4,6 +4,7 @@ import {
 } from "@lecoding/presentation";
 import type { RunConsoleState } from "@lecoding/run-controller";
 
+/** Console snapshot whose durable Run events are rendered as plain text. */
 export interface TimelineProps {
   state: RunConsoleState;
 }

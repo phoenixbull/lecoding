@@ -5,6 +5,7 @@ import { App } from "./App.js";
 import { readBridge } from "./gateway/bridge.js";
 import { createIpcRunEventSource } from "./gateway/ipc-event-source.js";
 import { createIpcRunGateway } from "./gateway/ipc-gateway.js";
+import { createDesktopRendererSession } from "./session.js";
 import "./styles/renderer.css";
 
 const bridge = readBridge();
@@ -30,8 +31,7 @@ const controller = createRunConsoleController({
   gateway: createIpcRunGateway(bridge),
   events: createIpcRunEventSource(bridge)
 });
-
-void controller.initialize();
+const session = createDesktopRendererSession({ bridge, controller });
 
 const container = document.getElementById("root");
 if (!container) {
@@ -46,8 +46,12 @@ createRoot(container).render(
       serverUrl=""
       appVersion={import.meta.env["VITE_APP_VERSION"] ?? "0.0.0"}
       platform={detectPlatform()}
-      onConnect={() => undefined}
-      onGitHubLogin={() => undefined}
+      onConnect={(serverUrl) => {
+        void session.connect(serverUrl);
+      }}
+      onGitHubLogin={(serverUrl) => {
+        void session.openGitHubLogin(serverUrl);
+      }}
     />
   </StrictMode>
 );

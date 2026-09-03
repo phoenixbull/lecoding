@@ -1,5 +1,6 @@
 import type { RunConsoleState } from "@lecoding/run-controller";
 
+/** Console snapshot carrying the Main-owned credential health projection. */
 export interface DegradedStorageBannerProps {
   state: RunConsoleState;
 }

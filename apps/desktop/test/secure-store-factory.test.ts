@@ -135,6 +135,16 @@ describe("createDesktopCredentialStore", () => {
     await expect(credentials.list()).resolves.toEqual(["device-1"]);
   });
 
+  it("fails closed when the OS key can no longer decrypt a stored credential", async () => {
+    const safeStorage = createFakeSafeStorage();
+    const store = await createDesktopCredentialStore({ userDataPath, safeStorage });
+    await createDeviceCredentialStore({ backend: store.store }).save(makeCredential());
+    safeStorage.keyId = "rotated-key";
+
+    await expect(store.status()).rejects.toThrow(/decrypt|解密|credential/i);
+    await expect(store.purgeExpired()).rejects.toThrow(/decrypt|解密|credential/i);
+  });
+
   it("clears every credential on logout", async () => {
     const store = await createDesktopCredentialStore({
       userDataPath,

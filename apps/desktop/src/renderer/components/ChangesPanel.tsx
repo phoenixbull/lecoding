@@ -1,6 +1,7 @@
 import { canResolveRunResult } from "@lecoding/presentation";
 import type { RunConsoleController, RunConsoleState } from "@lecoding/run-controller";
 
+/** Diff state, result commands, and destructive-action confirmation boundary. */
 export interface ChangesPanelProps {
   controller: RunConsoleController;
   state: RunConsoleState;

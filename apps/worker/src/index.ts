@@ -82,6 +82,7 @@ import type {
   RunApiProjectPolicyAdministration
 } from "./api.js";
 import { createPostgresRunApiAccessControl } from "./postgres-access-control.js";
+import { createDeviceAwareAccessControl } from "./device-access.js";
 import {
   createGitHubOAuthLogin,
   loadGitHubOAuthConfig,
@@ -627,6 +628,13 @@ export async function composeProductionWorker(
     const projectById = new Map(
       projects.map((project) => [project.projectId, project] as const)
     );
+    const now = options.now ?? (() => new Date().toISOString());
+    // One service instance owns both exchange and subsequent API
+    // authentication so revocation/expiry semantics cannot diverge.
+    const deviceService = createDeviceBindingService({
+      store: createPostgresDeviceBindingStore(options.database.executor),
+      now: () => new Date(now())
+    });
     let access: RunApiAccessControl;
     let memberships: RunApiMembershipAdministration | undefined;
     let login: WorkerControlPlane["login"];
@@ -687,8 +695,8 @@ export async function composeProductionWorker(
         }
       };
     }
+    access = createDeviceAwareAccessControl({ sessions: access, devices: deviceService });
     const modelConfig = loadOpenAiCompatibleModelConfig(options.environment);
-    const now = options.now ?? (() => new Date().toISOString());
     const runtimeFactories = new Map(
       projects.map((project) => {
         const workspace = createGitWorkspace({ worktreeRoot: project.worktreeRoot });
@@ -999,10 +1007,7 @@ export async function composeProductionWorker(
         // a scoped device credential. The service injects the same clock the
         // rest of the Worker uses so code and device expiry stay verifiable.
         devices: createDeviceBindingHttpHandler({
-          service: createDeviceBindingService({
-            store: createPostgresDeviceBindingStore(options.database.executor),
-            now: () => new Date(now())
-          }),
+          service: deviceService,
           principal: {
             async authenticate(request) {
               const principal = await access.authenticate(request);

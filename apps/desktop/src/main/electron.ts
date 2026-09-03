@@ -16,7 +16,7 @@
  */
 
 import { join } from "node:path";
-import { app, BrowserWindow, ipcMain, safeStorage, session } from "electron";
+import { app, BrowserWindow, ipcMain, safeStorage, session, shell } from "electron";
 import { createClient } from "@lecoding/client-sdk";
 import { createDesktopMain } from "./index.js";
 import { createDesktopCredentialStore } from "./secure-store-factory.js";
@@ -85,6 +85,9 @@ function createElectronHost(): ElectronHost {
         }
         callback({ responseHeaders: headers });
       });
+    },
+    openExternal(url) {
+      return shell.openExternal(url);
     }
   };
 }

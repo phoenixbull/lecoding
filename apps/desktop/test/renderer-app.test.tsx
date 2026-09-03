@@ -124,6 +124,9 @@ describe("Renderer App", () => {
       expect(screen.getByLabelText("服务器地址")).toBeTruthy();
     });
     expect(screen.queryByText("执行概览")).toBeNull();
+    expect(
+      (screen.getByLabelText("网页端生成的设备码") as HTMLInputElement).disabled
+    ).toBe(false);
   });
 
   it("renders the Run console once the control plane answers", async () => {

@@ -28,6 +28,7 @@ export function createIpcRunEventSource(
       let notify: (() => void) | undefined;
       let ended = false;
       let endedError: Error | undefined;
+      let finished = false;
 
       const stopEvent = bridge.onRunEvent((push) => {
         if (push.runId !== runId) {
@@ -56,9 +57,24 @@ export function createIpcRunEventSource(
         }
       });
 
+      // Attaching listeners first closes the race where Main emits its first
+      // replayed event immediately after accepting the subscription request.
+      void bridge["runs.subscribe"]({ runId }).catch((error: unknown) => {
+        ended = true;
+        endedError = error instanceof Error ? error : new Error(String(error));
+        notify?.();
+      });
+
       function finish(): void {
+        if (finished) {
+          return;
+        }
+        finished = true;
         stopEvent();
         stopState();
+        // Main owns the authenticated network resource, so iterator disposal
+        // must explicitly release that subscription as well as local listeners.
+        void bridge["runs.unsubscribe"]({ runId }).catch(() => undefined);
       }
 
       options.signal.addEventListener("abort", () => {

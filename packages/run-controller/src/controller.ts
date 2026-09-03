@@ -81,29 +81,53 @@ export interface RunConsoleController {
   getState(): RunConsoleState;
   /** Returns an unsubscribe function. Listeners are notified at most once per microtask. */
   subscribe(listener: (state: RunConsoleState) => void): () => void;
+  /** Replaces bootstrap/history state from the current authenticated gateway session. */
   initialize(): Promise<void>;
+  /** Aborts the active stream, clears session state, then probes authentication again. */
   logout(): Promise<void>;
+  /** Merges view-owned draft fields without issuing network work. */
   setComposerDraft(patch: Partial<ComposerDraft>): void;
+  /** Switches project scope after severing the previous Run stream and read model. */
   selectProject(projectId: ProjectId): Promise<void>;
+  /** Creates at most one Run while `pending.creating` is true. */
   createRun(): Promise<void>;
+  /** Replaces the selected Run and owns exactly one corresponding event follower. */
   selectRun(runId: RunId): Promise<void>;
+  /** Requests cooperative cancellation only for the currently cancellable Run. */
   cancelCurrentRun(): Promise<void>;
+  /** Keeps or discards a terminal result; callers must confirm destructive discard. */
   resolveCurrentResult(outcome: "keep" | "discard"): Promise<void>;
+  /** Changes the persistence scope for the current approval decision. */
   setApprovalScope(scope: ApprovalScope): void;
+  /** Preserves an operator-edited capability draft across same-approval refreshes. */
   setApprovalDraft(value: string): void;
+  /** Resolves the currently pending approval once and refreshes authoritative state. */
   resolveCurrentApproval(decision: "approve" | "reject"): Promise<void>;
+  /** Submits only a parsed, narrowed replacement for the current approval. */
   editAndApproveCurrent(): Promise<void>;
+  /** Stores untrusted answer/steer text locally until submission. */
   setUserResponseDraft(value: string): void;
+  /** Answers a pending question or steers the live Run, never both. */
   resolveUserRequest(decision: "answer" | "steer"): Promise<void>;
+  /** Loads one retained artifact belonging to the selected Run. */
   loadArtifact(artifactId: string): Promise<void>;
+  /** Refreshes rules for the selected project and hides the surface on deliberate 404. */
   refreshPolicyRules(): Promise<void>;
+  /** Revokes one visible project rule through the server authorization boundary. */
   revokePolicyRule(ruleId: string): Promise<void>;
+  /** Reloads the authenticated user's non-secret device inventory. */
   refreshDevices(): Promise<void>;
+  /** Mints a code only when an authenticated project is selected. */
   createDeviceCode(): Promise<void>;
+  /** Exchanges a Web-issued code even before the desktop has authenticated. */
   bindDevice(input: { code: string; deviceLabel: string; platform: string }): Promise<void>;
+  /** Revokes one device and removes it from the local projection. */
   revokeDevice(deviceId: string): Promise<void>;
+  /** Mirrors Main's non-secret credential health into the view snapshot. */
   setCredential(credential: CredentialState | undefined): void;
+  /** Clears only the current user-facing error banner. */
   dismissError(): void;
+  /** Permanently aborts streams and detaches listeners owned by this controller. */
   dispose(): void;
 }
 
@@ -960,10 +984,9 @@ export function createRunConsoleController(
       deviceLabel: string;
       platform: string;
     }): Promise<void> {
-      const projectId = state.selectedProjectId;
       const trimmedCode = input.code.trim();
       const trimmedLabel = input.deviceLabel.trim();
-      if (projectId === undefined || state.binding || trimmedCode === "") {
+      if (state.binding || trimmedCode === "") {
         return;
       }
       mutate((draft) => {
@@ -976,8 +999,7 @@ export function createRunConsoleController(
         await gateway.exchangeDeviceCode({
           code: trimmedCode,
           deviceLabel: trimmedLabel === "" ? "LeCoding Desktop" : trimmedLabel,
-          platform: input.platform,
-          projectId
+          platform: input.platform
         });
         mutate((draft) => {
           // The code is single-use; keeping it on screen invites a failed retry.

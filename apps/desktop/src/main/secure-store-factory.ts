@@ -61,7 +61,9 @@ export async function createDesktopCredentialStore(
   return {
     store: selection.store,
     async status(): Promise<CredentialStatePush | undefined> {
-      const credential = await storedCredential().catch(() => undefined);
+      // A decrypt/read failure is security-significant and must stop the
+      // session instead of masquerading as an installation with no credential.
+      const credential = await storedCredential();
       const expired =
         credential !== undefined && Date.parse(credential.expiresAt) <= Date.now();
       return {
@@ -79,7 +81,7 @@ export async function createDesktopCredentialStore(
       await clearSecureStoreNamespace(selection.store, CREDENTIAL_NAMESPACE);
     },
     async purgeExpired(now: Date = new Date()): Promise<void> {
-      const credential = await storedCredential().catch(() => undefined);
+      const credential = await storedCredential();
       if (credential && Date.parse(credential.expiresAt) <= now.getTime()) {
         // An expired token is unusable and must not survive a restart.
         await clearSecureStoreNamespace(selection.store, CREDENTIAL_NAMESPACE);

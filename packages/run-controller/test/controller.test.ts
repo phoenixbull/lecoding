@@ -672,6 +672,28 @@ describe("device binding", () => {
     expect((exchange?.args[0] as { code: string }).code).toBe("ABCDEFGHI");
   });
 
+  it("exchanges a Web-issued code while the desktop is not yet authenticated", async () => {
+    const gateway = createFakeGateway({
+      history: [],
+      configError: new HttpError("Failed to load control plane", 401)
+    });
+    const { controller: instance } = setup({ gateway });
+    await instance.initialize();
+    expect(instance.getState().phase).toBe("needs_auth");
+    gateway.setConfigError(undefined);
+
+    await instance.bindDevice({
+      code: "ABCDEFGHI",
+      deviceLabel: "office-mac",
+      platform: "darwin"
+    });
+
+    expect(
+      gateway.calls.some((call) => call.method === "exchangeDeviceCode")
+    ).toBe(true);
+    expect(instance.getState().phase).toBe("ready");
+  });
+
   it("falls back to a default device label", async () => {
     const { controller: instance, gateway } = setup({
       gateway: createFakeGateway({ history: [] })

@@ -178,6 +178,13 @@ export function createDesktopMain(options: DesktopMainOptions): DesktopMain {
     try {
       const r = request as { channel: IpcChannel; payload: unknown };
       switch (r.channel) {
+        case "session.openGitHubLogin": {
+          const loginUrl = sdkInstance.getGitHubLoginUrl();
+          // The URL is created from Main-owned SDK configuration; Renderer
+          // input never reaches `shell.openExternal`.
+          await host.openExternal(loginUrl);
+          return ok({ opened: true });
+        }
         case "session.status": {
           const credential = await options.credentialStore?.status();
           return ok({
@@ -204,10 +211,11 @@ export function createDesktopMain(options: DesktopMainOptions): DesktopMain {
         }
         case "devices.exchange": {
           // The bridge already validated the payload shape, so the only work
-          // left here is narrowing it to the typed exchange input.
-          return ok(
-            await sdkInstance.exchangeDeviceCode(r.payload as DeviceExchangeInput)
-          );
+          // left here is narrowing it to the typed exchange input. The SDK
+          // persists the returned credential, but Main intentionally discards
+          // the result so its access token never enters an IPC response.
+          await sdkInstance.exchangeDeviceCode(r.payload as DeviceExchangeInput);
+          return ok({ bound: true });
         }
         case "devices.list": {
           // The server scopes the listing to the authenticated user, so a
@@ -334,7 +342,19 @@ export function createDesktopMain(options: DesktopMainOptions): DesktopMain {
       // Strip stacks so the Renderer only sees the message — a leaked stack
       // would reveal internal types and file paths.
       const message = error instanceof Error ? error.message : "unknown error";
-      return err(errorCodeFor(error), message);
+      const code = errorCodeFor(error);
+      if (code === "unauthorized" || code === "device_revoked") {
+        // A rejected bearer must not survive for the next request or restart.
+        // Clearing failure is itself fail-closed: do not pretend rebind is safe
+        // while an invalid credential remains durable.
+        try {
+          await options.credentialStore?.clear();
+          broker?.dispose();
+        } catch {
+          return err("upstream_error", "Failed to clear the invalid credential");
+        }
+      }
+      return err(code, message);
     }
   }
 
@@ -377,11 +397,11 @@ export function createDesktopMain(options: DesktopMainOptions): DesktopMain {
       // 4. Deny all window.open attempts (new windows, navigations).
       created.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
 
-      // 5. Forbid webContents-triggered navigations outside the Renderer.
-      created.webContents.on("will-navigate", (event: unknown, url: unknown) => {
-        if (typeof url === "string" && !url.startsWith("file://")) {
-          (event as { preventDefault: () => void }).preventDefault?.();
-        }
+      // 5. Forbid every document-triggered navigation. Treating all file://
+      //    URLs as trusted would let an arbitrary local HTML file inherit this
+      //    window's preload bridge and trusted sender identity.
+      created.webContents.on("will-navigate", (event: unknown, _url: unknown) => {
+        (event as { preventDefault: () => void }).preventDefault?.();
       });
 
       // 6. Relay the durable Run event stream. The Renderer cannot reach the

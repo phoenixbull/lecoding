@@ -361,7 +361,7 @@ describe("buildForgeConfig", () => {
     ).toThrow(/must point at index\.html/);
   });
 
-  it("configures electron-updater with the GitHub releases feed and signature gating", () => {
+  it("does not expose a boolean-only auto-update config as a security guarantee", () => {
     const config = buildForgeConfig({
       appName: "LeCoding",
       appVersion: "0.1.0",
@@ -371,13 +371,9 @@ describe("buildForgeConfig", () => {
       signEnv: {},
       repository: "phoenixbull/lecoding"
     });
-    expect(config.autoUpdate).toMatchObject({
-      provider: "github",
-      owner: "phoenixbull",
-      repo: "lecoding"
-    });
-    // PRD § 10.1: "自动更新只接受签名清单和签名包"
-    expect(config.autoUpdate?.verifySignature).toBe(true);
+    // Forge does not consume a `verifySignature` option. Shipping such a field
+    // would silently do nothing while implying unsigned updates are rejected.
+    expect("autoUpdate" in config).toBe(false);
   });
 
   it("packs the app id and product name consistently so the auto-update feed matches the installer", () => {

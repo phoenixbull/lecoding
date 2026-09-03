@@ -42,6 +42,7 @@ export interface SigningEnvironment {
   APPLE_TEAM_ID?: string;
 }
 
+/** Reviewed packaging inputs; callers must supply a normalized non-placeholder version. */
 export interface ForgeConfigInputs {
   appName: string;
   appVersion: string;
@@ -71,14 +72,7 @@ export interface ForgePackagerConfig {
   osxNotarize?: Record<string, unknown>;
 }
 
-export interface AutoUpdateConfig {
-  provider: "github";
-  owner: string;
-  repo: string;
-  verifySignature: true;
-  tagPrefix?: string;
-}
-
+/** Forge-compatible package and maker configuration returned to the CLI. */
 export interface ForgeConfig {
   appName: string;
   appId: string;
@@ -88,7 +82,6 @@ export interface ForgeConfig {
   preloadEntry: string;
   packagerConfig: ForgePackagerConfig;
   makers: ForgeMaker[];
-  autoUpdate: AutoUpdateConfig;
 }
 
 /** Inputs used to normalize a tag or an explicit local package version. */
@@ -341,8 +334,8 @@ export function buildForgeConfig(inputs: ForgeConfigInputs): ForgeConfig {
       `forge-config: rendererEntry "${rendererEntry}" must point at index.html`
     );
   }
-  const [owner, repo] = repository.split("/");
-  if (!owner || !repo) {
+  const repositoryParts = repository.split("/");
+  if (repositoryParts.length !== 2 || repositoryParts.some((part) => part === "")) {
     throw new Error(
       `forge-config: invalid repository "${repository}" (expected owner/repo)`
     );
@@ -355,13 +348,7 @@ export function buildForgeConfig(inputs: ForgeConfigInputs): ForgeConfig {
     mainEntry,
     preloadEntry,
     packagerConfig: buildPackagerConfig(signEnv, appVersion),
-    makers: [...buildMacosMakers(), buildWindowsMaker(signEnv, appVersion)],
-    autoUpdate: {
-      provider: "github",
-      owner,
-      repo,
-      verifySignature: true
-    }
+    makers: [...buildMacosMakers(), buildWindowsMaker(signEnv, appVersion)]
   };
 }
 

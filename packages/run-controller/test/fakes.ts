@@ -319,7 +319,7 @@ export function createFakeGateway(options: FakeGatewayOptions = {}): FakeGateway
         deviceId: `device-${devices.length + 1}`,
         deviceLabel: input.deviceLabel,
         platform: input.platform,
-        projectId: input.projectId,
+        projectId: "project-a",
         projectName: "Project A",
         createdAt: "2026-01-01T00:00:00.000Z",
         lastUsedAt: "2026-01-01T00:00:00.000Z",

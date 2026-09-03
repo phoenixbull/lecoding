@@ -5,6 +5,7 @@ import {
 } from "@lecoding/presentation";
 import type { RunConsoleController, RunConsoleState } from "@lecoding/run-controller";
 
+/** Controller snapshot and commands required to resolve one pending approval. */
 export interface ApprovalCardProps {
   controller: RunConsoleController;
   state: RunConsoleState;

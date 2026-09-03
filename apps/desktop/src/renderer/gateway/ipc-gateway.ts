@@ -82,8 +82,7 @@ export function createIpcRunGateway(bridge: LeCodingBridge): RunGateway {
       await bridge["devices.exchange"]({
         code: input.code,
         deviceLabel: input.deviceLabel,
-        platform: input.platform as "darwin" | "win32" | "linux",
-        projectId: input.projectId
+        platform: input.platform as "darwin" | "win32" | "linux"
       });
     },
     async listDevices() {

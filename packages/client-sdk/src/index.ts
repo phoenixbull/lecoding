@@ -182,10 +182,18 @@ export class LeCodingHttpError extends Error {
 export function createClient(options: ClientOptions): LeCodingClient {
   const fetchImplementation = options.fetch ?? globalThis.fetch;
   const baseUrl = options.baseUrl.replace(/\/+$/, "");
-  const authenticatedFetch: typeof globalThis.fetch = (input, init = {}) => {
+  const authenticatedFetch: typeof globalThis.fetch = async (input, init = {}) => {
     const headers = new Headers(init.headers);
     if (options.accessToken) {
       headers.set("authorization", `Bearer ${options.accessToken}`);
+    } else {
+      // Desktop sessions recover their scoped bearer from the secure store on
+      // every process start. The token is attached here in the SDK and never
+      // needs to cross the Renderer boundary.
+      const credential = await resolveDeviceCredential();
+      if (credential) {
+        headers.set("authorization", `Bearer ${credential.accessToken}`);
+      }
     }
     return fetchImplementation(input, { ...init, headers });
   };
@@ -198,6 +206,23 @@ export function createClient(options: ClientOptions): LeCodingClient {
     deviceStore = createDeviceCredentialStore({ backend: options.secureStore });
   }
   let cachedCredential: ExchangedDevice | undefined = options.deviceCredential;
+
+  async function resolveDeviceCredential(): Promise<ExchangedDevice | undefined> {
+    if (cachedCredential) {
+      return cachedCredential;
+    }
+    if (!deviceStore) {
+      return undefined;
+    }
+    const [deviceId] = await deviceStore.list();
+    if (!deviceId) {
+      return undefined;
+    }
+    cachedCredential = (await deviceStore.load(deviceId)) as
+      | ExchangedDevice
+      | undefined;
+    return cachedCredential;
+  }
 
   const openRunEventStream = async (
     runId: RunId,

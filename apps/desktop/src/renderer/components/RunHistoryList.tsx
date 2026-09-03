@@ -1,6 +1,7 @@
 import { statusLabel } from "@lecoding/presentation";
 import type { RunConsoleController, RunConsoleState } from "@lecoding/run-controller";
 
+/** Recent Run projection and selection command used by the history list. */
 export interface RunHistoryListProps {
   controller: RunConsoleController;
   state: RunConsoleState;

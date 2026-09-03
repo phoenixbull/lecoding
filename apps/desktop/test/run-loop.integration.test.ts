@@ -12,10 +12,18 @@ import {
 } from "@lecoding/device-binding";
 import { encodeRunEventSse } from "@lecoding/run-events";
 import type { Engine } from "@lecoding/run-engine";
+import { createRunConsoleController } from "@lecoding/run-controller";
 import { startWorkerHttpServer } from "@lecoding/worker";
 import type { ElectronHost, IpcHandler } from "../src/main/host.js";
 import { createDesktopMain } from "../src/main/index.js";
-import type { IpcRequest, IpcResponse } from "../src/shared/ipc-contract.js";
+import { createIpcRunEventSource } from "../src/renderer/gateway/ipc-event-source.js";
+import { createIpcRunGateway } from "../src/renderer/gateway/ipc-gateway.js";
+import type { LeCodingBridge } from "../src/renderer/gateway/bridge.js";
+import {
+  IPC_CHANNELS,
+  type IpcRequest,
+  type IpcResponse
+} from "../src/shared/ipc-contract.js";
 
 /**
  * Deep business end-to-end coverage for the desktop shell.
@@ -207,12 +215,15 @@ function controlPlane() {
     eventStream: {
       async handle(request: Request) {
         const lastEventId = request.headers.get("last-event-id");
+        const requestedRunId = new URL(request.url).pathname.split("/").at(-2);
         let cursor = lastEventId ? Number(lastEventId) : 0;
         const encoder = new TextEncoder();
         const stream = new ReadableStream<Uint8Array>({
           start(controller) {
             const send = (event: RunEventV1): void => {
-              if (event.sequence <= cursor) {
+              // A real Run SSE endpoint is scoped by its URL; retaining the
+              // filter here prevents one harness Run leaking into another.
+              if (event.runId !== requestedRunId || event.sequence <= cursor) {
                 return;
               }
               cursor = event.sequence;
@@ -285,11 +296,13 @@ function createFakeHost(): ElectronHost & {
   windows: FakeWindow[];
   handlers: Map<string, IpcHandler>;
   pushes: Array<{ channel: string; payload: unknown }>;
+  subscribePush(channel: string, listener: (payload: unknown) => void): () => void;
   closeWindow(): void;
 } {
   const handlers = new Map<string, IpcHandler>();
   const windows: FakeWindow[] = [];
   const pushes: Array<{ channel: string; payload: unknown }> = [];
+  const pushListeners = new Map<string, Set<(payload: unknown) => void>>();
   const host = {
     app: {
       on: vi.fn(),
@@ -318,18 +331,30 @@ function createFakeHost(): ElectronHost & {
           setWindowOpenHandler: vi.fn(() => ({ action: "deny" as const })),
           send: vi.fn((channel: string, payload: unknown) => {
             pushes.push({ channel, payload });
+            for (const listener of pushListeners.get(channel) ?? []) {
+              listener(payload);
+            }
           }),
           session: { webRequest: { onHeadersReceived: vi.fn() } }
         };
         windows.push(this as unknown as FakeWindow);
       }
     } as unknown as ElectronHost["BrowserWindow"],
-    setCspHeader: vi.fn()
+    setCspHeader: vi.fn(),
+    openExternal: vi.fn(async () => undefined)
   } satisfies ElectronHost;
   return Object.assign(host, {
     windows,
     handlers,
     pushes,
+    subscribePush(channel: string, listener: (payload: unknown) => void) {
+      const current = pushListeners.get(channel) ?? new Set();
+      current.add(listener);
+      pushListeners.set(channel, current);
+      return () => {
+        current.delete(listener);
+      };
+    },
     closeWindow() {
       const window = windows[0];
       const closed = window?.on.mock.calls.find((call) => call[0] === "closed");
@@ -339,6 +364,7 @@ function createFakeHost(): ElectronHost & {
     windows: FakeWindow[];
     handlers: Map<string, IpcHandler>;
     pushes: Array<{ channel: string; payload: unknown }>;
+    subscribePush(channel: string, listener: (payload: unknown) => void): () => void;
     closeWindow(): void;
   };
 }
@@ -386,6 +412,25 @@ async function call(
   return response.data;
 }
 
+/**
+ * Adapts the registered Main handlers and push channel into the exact preload
+ * API consumed by the production Renderer adapters.
+ */
+function createHarnessBridge(host: ReturnType<typeof createFakeHost>): LeCodingBridge {
+  const api: Record<string, unknown> = {};
+  for (const channel of IPC_CHANNELS) {
+    api[channel] = async (payload: unknown) =>
+      call(host, { channel, payload } as IpcRequest);
+  }
+  api["onRunEvent"] = (listener: (payload: unknown) => void) =>
+    host.subscribePush("runs.event", listener);
+  api["onStreamState"] = (listener: (payload: unknown) => void) =>
+    host.subscribePush("runs.streamState", listener);
+  api["onCredentialState"] = (listener: (payload: unknown) => void) =>
+    host.subscribePush("session.credentialState", listener);
+  return api as unknown as LeCodingBridge;
+}
+
 await tryStartServer();
 
 afterAll(async () => {
@@ -395,6 +440,42 @@ afterAll(async () => {
 describe.skipIf(skipReason !== undefined)(
   `desktop Run loop integration${skipReason ? ` (skipped: ${skipReason})` : ""}`,
   () => {
+    it("drives the production Controller and IPC adapters over real Main, SDK, and Worker", async () => {
+      const { host } = await bootDesktop();
+      const bridge = createHarnessBridge(host);
+      const controller = createRunConsoleController({
+        gateway: createIpcRunGateway(bridge),
+        events: createIpcRunEventSource(bridge)
+      });
+
+      await controller.initialize();
+      expect(controller.getState().phase).toBe("ready");
+      controller.setComposerDraft({
+        task: "通过完整桌面链路创建 Run",
+        acceptanceCriteria: "状态进入执行中",
+        environmentId: "server-docker",
+        approvalMode: "manual"
+      });
+      await controller.createRun();
+
+      const runId = controller.getState().selectedRunId!;
+      expect(controller.getState().currentRun?.task).toBe("通过完整桌面链路创建 Run");
+      publish({
+        runId,
+        type: "status_changed",
+        data: { status: "running" }
+      } as never);
+      await settle();
+      expect(controller.getState().timeline.some((event) => event.runId === runId)).toBe(
+        true
+      );
+
+      await controller.cancelCurrentRun();
+      expect(runs.get(runId)?.status).toBe("cancelled");
+      controller.dispose();
+      host.closeWindow();
+    });
+
     it("drives device binding, Run creation, approvals, diff, and disposal over real HTTP", async () => {
       const { host } = await bootDesktop();
 
@@ -417,12 +498,10 @@ describe.skipIf(skipReason !== undefined)(
         payload: {
           code: issued.code,
           deviceLabel: "office-mac",
-          platform: "darwin",
-          projectId: PROJECT_ID
+          platform: "darwin"
         }
-      })) as { deviceId: string; projectName: string };
-      expect(exchanged.deviceId).toBeTruthy();
-      expect(exchanged.projectName).toBe("Project One");
+      })) as { bound: boolean };
+      expect(exchanged).toEqual({ bound: true });
 
       const listing = (await call(host, {
         channel: "devices.list",
@@ -431,6 +510,7 @@ describe.skipIf(skipReason !== undefined)(
       expect(listing.devices.map((device) => device.deviceLabel)).toEqual([
         "office-mac"
       ]);
+      const boundDeviceId = listing.devices[0]!.deviceId;
 
       // --- create a Run ---------------------------------------------------
       const created = (await call(host, {
@@ -520,7 +600,7 @@ describe.skipIf(skipReason !== undefined)(
       // --- device revocation clears the server-side device ----------------
       await call(host, {
         channel: "devices.revoke",
-        payload: { deviceId: exchanged.deviceId }
+        payload: { deviceId: boundDeviceId }
       });
       const afterRevoke = (await call(host, {
         channel: "devices.list",

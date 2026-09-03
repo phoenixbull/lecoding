@@ -1,6 +1,7 @@
 import { canResolveRunResult, isTerminalStatus, statusLabel } from "@lecoding/presentation";
 import type { RunConsoleController, RunConsoleState } from "@lecoding/run-controller";
 
+/** Selected Run commands plus confirmation required before discarding results. */
 export interface RunDetailProps {
   controller: RunConsoleController;
   state: RunConsoleState;

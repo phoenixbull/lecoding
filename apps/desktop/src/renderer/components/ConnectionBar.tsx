@@ -1,5 +1,6 @@
 import type { RunConsoleState } from "@lecoding/run-controller";
 
+/** Connection snapshot and non-secret control-plane origin shown in the bar. */
 export interface ConnectionBarProps {
   state: RunConsoleState;
   serverUrl: string;

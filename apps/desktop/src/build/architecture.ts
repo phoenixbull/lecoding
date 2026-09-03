@@ -15,6 +15,7 @@ export type ReleaseArch = "x64" | "arm64";
  */
 export type BinaryArch = ReleaseArch | "unknown";
 
+/** One shipped native binary and the architecture slices parsed from its header. */
 export interface ArchitectureEntry {
   /** Path relative to the validated root, in POSIX form. */
   relativePath: string;
@@ -315,6 +316,7 @@ function readEntryArch(bytes: Uint8Array): {
   return { architectures, arch };
 }
 
+/** Expected target and collected binaries for one fail-closed artifact check. */
 export interface ValidateArchitecturesInput {
   /** Architecture the release matrix promised for this job. */
   expected: ReleaseArch;

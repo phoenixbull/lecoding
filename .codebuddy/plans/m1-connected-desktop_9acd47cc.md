@@ -1,6 +1,6 @@
 ---
 name: m1-connected-desktop
-overview: 完成 Phase 4A Connected Desktop 用户闭环。核心做法：把 `apps/web` 里 1080 行手写 DOM 控制逻辑提炼为框架无关的共享 controller 与投影 seam，桌面 Renderer 用 React 只承担渲染、不持有状态架构；补齐 IPC 事件推送通道、`safeStorage` 原生凭据后端、以及 preload 未接线与 renderer 构建产物缺失两个阻塞缺陷；E2E 拆为「深业务 E2E」（自动化、无 GUI）与「浅 GUI E2E」（真实安装包、仅冒烟分支）；发布矩阵改为 macOS arm64/x64 分别原生构建并加入实际架构校验，MSI / PKG 不作为默认消费者版本交付。
+overview: 完成 Phase 4A Connected Desktop 用户闭环。核心做法：把 `apps/web` 里 1080 行手写 DOM 控制逻辑提炼为框架无关的共享 controller 与投影 seam，桌面 Renderer 用 React 只承担渲染、不持有状态架构；补齐 IPC 事件推送通道、`safeStorage` 原生凭据后端、以及 preload 未接线与 renderer 构建产物缺失两个阻塞缺陷；E2E 拆为「深业务 E2E」（自动化、无 GUI）与「安装产物结构 smoke + 真实平台黄金 smoke」；发布矩阵改为 macOS arm64/x64 分别原生构建并加入实际架构校验，MSI / PKG 不作为默认消费者版本交付。
 design:
   architecture:
     framework: react
@@ -74,12 +74,14 @@ todos:
     dependencies:
       - react-renderer-adapter
   - id: shallow-gui-e2e-and-docs
-    content: 用 [skill:code-review] 补浅 GUI smoke 与人工验收清单，归档证据并更新 Phase 4 状态与 M1 总结
+    content: 用 [skill:code-review] 补安装产物结构 smoke 与真实平台人工验收清单，归档证据并更新 Phase 4 状态与 M1 总结
     status: completed
     dependencies:
       - deep-business-e2e
       - release-pipeline-hardening
 ---
+
+> 2026-09-03 复核：代码任务已落地，但 M1 退出条件尚未关闭。真实安装、双平台安全存储、签名、公证及真实升级证据仍须按 `docs/evidence/desktop-m1-smoke-checklist.md` 归档；在此之前不得将本计划的 todo 完成等同于里程碑验收完成。
 
 ## 产品概述
 
@@ -108,7 +110,7 @@ todos:
 **M1.3 桌面端到端测试（拆两层）**
 
 - 深业务 E2E：假 ElectronHost + 真实 Worker HTTP 服务 + 真实 client-sdk，覆盖绑定、Run 创建、SSE 恢复、审批、Diff、验证、取消、keep/discard、关闭重开、设备撤销；并回归不受信 IPC sender、外部导航、弹窗阻断
-- 浅 GUI E2E：安装后客户端 smoke（环境 gate 显式分类）+ Windows/macOS 人工验收清单与证据归档
+- 安装与平台验收：安装产物结构 smoke（环境 gate 显式分类）+ Windows/macOS 真实平台黄金 smoke 清单与证据归档
 
 **M1.4 正式安装包链路**
 
@@ -344,7 +346,7 @@ apps/desktop/
 │   ├── architecture.test.ts             [NEW]  Mach-O / PE 头解析与架构不一致拒绝
 │   ├── release-assets.test.ts           [NEW]  同名资产与缺失资产拒绝
 │   ├── run-loop.integration.test.ts     [NEW]  深业务 E2E（真实 Worker HTTP + 假 ElectronHost）
-│   └── installed-app.smoke.test.ts      [NEW]  浅 GUI E2E（LECODING_INSTALLED_APP_PATH 环境 gate）
+│   └── installed-app.smoke.test.ts      [NEW]  安装产物结构 smoke（LECODING_INSTALLED_APP_PATH 环境 gate）
 ├── forge.config.ts                      [MOD]  rendererEntry 修正为 dist/renderer/index.html
 ├── tsconfig.json                        [MOD]  增加 jsx: react-jsx
 ├── vite.renderer.config.ts              [NEW]  见上

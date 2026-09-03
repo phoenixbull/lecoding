@@ -1,3 +1,4 @@
+/** Release asset names and matrix dimensions checked before GitHub publication. */
 export interface ValidateReleaseAssetsInput {
   version: string;
   platform: "darwin" | "win32";

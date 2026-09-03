@@ -52,7 +52,7 @@ export interface AppProps {
   appVersion: string;
   platform: "darwin" | "win32" | "linux";
   onConnect: (serverUrl: string) => void;
-  onGitHubLogin: () => void;
+  onGitHubLogin: (serverUrl: string) => void;
   /** Injectable so tests can assert destructive actions without a dialog. */
   confirmAction?: (message: string) => boolean;
 }

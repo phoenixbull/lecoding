@@ -39,6 +39,7 @@ import type {
 
 export const IPC_CHANNELS = [
   "session.bootstrap",
+  "session.openGitHubLogin",
   "session.status",
   "session.logout",
   "config.load",
@@ -118,6 +119,11 @@ export interface SessionBootstrapPayload {
   authToken?: string;
 }
 
+/** Opens the Main-owned GitHub login URL in the operating system browser. */
+export interface SessionOpenGitHubLoginPayload {
+  reason?: string;
+}
+
 /** Session probe; carries no input because the main process owns the state. */
 export interface SessionStatusPayload {
   reason?: string;
@@ -153,7 +159,6 @@ export interface DevicesExchangePayload {
   code: string;
   deviceLabel: string;
   platform: "darwin" | "win32" | "linux";
-  projectId: ProjectId;
 }
 
 /**
@@ -308,6 +313,7 @@ export interface PolicyRevokePayload {
 
 export interface IpcRequestByChannel {
   "session.bootstrap": SessionBootstrapPayload;
+  "session.openGitHubLogin": SessionOpenGitHubLoginPayload;
   "session.status": SessionStatusPayload;
   "session.logout": SessionLogoutPayload;
   "config.load": ConfigLoadPayload;
@@ -394,6 +400,8 @@ export function ipcRequestSchema(channel: IpcChannel): ChannelValidator | null {
   switch (channel) {
     case "session.bootstrap":
       return validateSessionBootstrap;
+    case "session.openGitHubLogin":
+      return validateSessionOpenGitHubLogin;
     case "session.status":
       return validateSessionStatus;
     case "session.logout":
@@ -585,6 +593,13 @@ function validateSessionStatus(payload: unknown): SessionStatusPayload {
   return {};
 }
 
+function validateSessionOpenGitHubLogin(
+  payload: unknown
+): SessionOpenGitHubLoginPayload {
+  validateEmptyPayload(payload, "session.openGitHubLogin");
+  return {};
+}
+
 function validateConfigLoad(payload: unknown): ConfigLoadPayload {
   validateEmptyPayload(payload, "config.load");
   return {};
@@ -625,8 +640,7 @@ function validateDevicesExchange(payload: unknown): DevicesExchangePayload {
   return {
     code,
     deviceLabel,
-    platform: platformRaw,
-    projectId: requireProjectId(payload, "devices.exchange")
+    platform: platformRaw
   };
 }
 

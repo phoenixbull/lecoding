@@ -1,6 +1,7 @@
 import { verificationTone } from "@lecoding/presentation";
 import type { RunConsoleState } from "@lecoding/run-controller";
 
+/** Console snapshot containing server-authored verifier evidence. */
 export interface VerificationPanelProps {
   state: RunConsoleState;
 }

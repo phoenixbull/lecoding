@@ -2,6 +2,7 @@ import type { ApprovalMode } from "@lecoding/contracts";
 import { approvalModeOptions } from "@lecoding/presentation";
 import type { RunConsoleController, RunConsoleState } from "@lecoding/run-controller";
 
+/** Composer snapshot, role-bounded modes, and command owner used by the form. */
 export interface RunComposerProps {
   controller: RunConsoleController;
   state: RunConsoleState;

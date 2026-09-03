@@ -31,6 +31,7 @@ describe("IPC contract", () => {
   it("exposes a closed set of channels (no string literals leak through)", () => {
     expect(IPC_CHANNELS).toEqual([
       "session.bootstrap",
+      "session.openGitHubLogin",
       "session.status",
       "session.logout",
       "config.load",

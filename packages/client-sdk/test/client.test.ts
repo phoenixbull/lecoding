@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import { createInMemorySecureStore } from "@lecoding/secure-store";
 import { createClient, LeCodingHttpError } from "../src/index.js";
 
 describe("LeCodingClient", () => {
@@ -538,6 +539,46 @@ describe("LeCodingClient", () => {
     expect(observedAuthorization).toBeNull();
     const [url] = fetch.mock.calls[0] as [string];
     expect(url).toContain("/api/v1/devices/exchange");
+  });
+
+  it("authenticates later API requests with the persisted device credential", async () => {
+    const secureStore = createInMemorySecureStore();
+    const token = "d".repeat(64);
+    const exchangeClient = createClient({
+      baseUrl: "https://agent.example",
+      secureStore,
+      fetch: async () =>
+        Response.json({
+          deviceId: "device-1",
+          accessToken: token,
+          userId: "user-1",
+          email: "alice@example.com",
+          projectId: "project-1",
+          projectName: "Project One",
+          deviceLabel: "Alice's laptop",
+          platform: "darwin",
+          expiresAt: "2099-09-01T10:00:00.000Z",
+          createdAt: "2026-08-31T10:00:00.000Z"
+        })
+    });
+    await exchangeClient.exchangeDeviceCode({ code: "ABCDEFGHI" });
+
+    let authorization: string | null = null;
+    const restartedClient = createClient({
+      baseUrl: "https://agent.example",
+      secureStore,
+      fetch: async (_input, init) => {
+        authorization = new Headers(init?.headers).get("authorization");
+        return Response.json({
+          projectId: "project-1",
+          projects: [{ id: "project-1", role: "developer" }],
+          defaultEnvironmentId: "sandbox-v1"
+        });
+      }
+    });
+
+    await restartedClient.getControlPlaneConfig();
+    expect(authorization).toBe(`Bearer ${token}`);
   });
 
   it("lists and revokes devices through the bearer session", async () => {

@@ -1,7 +1,7 @@
 # 桌面端 M1 安装包人工验收清单
 
 更新日期：2026-09-02
-适用范围：[latest-development-plan.md](../latest-development-plan.md) § 6 M1.3「桌面端到端测试」的浅 GUI 部分
+适用范围：[latest-development-plan.md](../latest-development-plan.md) § 6 M1.3 的真实平台黄金 smoke
 
 ## 1. 这份清单为什么存在
 
@@ -10,7 +10,7 @@ M1.3 把桌面端到端测试拆成两层：
 | 层 | 覆盖面 | 执行方式 | 可复现性 |
 |---|---|---|---|
 | 深业务 E2E | 设备绑定、Run 创建、SSE 恢复、审批、Diff、验证、取消、keep/discard、设备撤销、不受信 sender / 导航 / 弹窗阻断 | 自动化（`apps/desktop/test/run-loop.integration.test.ts`） | CI 上确定可复现 |
-| 浅 GUI E2E | 安装后客户端能启动、能连上、能完成一次真实闭环 | 本清单 + `installed-app.smoke.test.ts` | 需在真实 Windows / macOS 上人工执行 |
+| 真实平台黄金 smoke | 安装后客户端能启动、能连上、能完成一次真实闭环 | 本清单；`installed-app.smoke.test.ts` 仅提供产物结构证据 | 需在真实 Windows / macOS 上人工执行 |
 
 不要求真实 Electron GUI 覆盖全部分支：headless Electron 在 macOS / Windows runner 上的稳定性不足以作为发布门禁。业务分支由深业务 E2E 以确定性方式覆盖，GUI 层只负责证明「装得起来、连得上、点得动」。
 

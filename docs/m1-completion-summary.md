@@ -1,6 +1,6 @@
-# M1 里程碑完成总结
+# M1 开发完成度与验收状态
 
-更新日期：2026-09-02
+更新日期：2026-09-03
 执行范围：[latest-development-plan.md](latest-development-plan.md) § 6 M1：完成 Phase 4A Connected Desktop
 前置基线：[m0-completion-summary.md](m0-completion-summary.md)（`pnpm typecheck` 20/20，`pnpm test` 585 通过 / 4 跳过）
 
@@ -10,10 +10,12 @@
 
 | 工作包 | 范围 | 状态 |
 |---|---|---|
-| M1.1 | 共享 controller + React 视图适配器 | 已完成 |
-| M1.2 | 原生凭据安全存储 | 已完成 |
-| M1.3 | 桌面端到端测试（深业务 + 浅 GUI） | 已完成（浅 GUI 自动化部分；人工清单待目标平台执行） |
-| M1.4 | 正式安装包链路 | 已完成（签名 / 公证待外部证书） |
+| M1.1 | 共享 controller + React 视图适配器 | 代码完成；真实安装验收待办 |
+| M1.2 | 原生凭据安全存储 | 代码完成；双平台 keychain smoke 待办 |
+| M1.3 | 桌面端到端测试（深业务 + 产物结构 smoke） | 自动化完成；平台黄金 smoke 待办 |
+| M1.4 | 正式安装包链路 | 链路完成；签名、公证、真实升级证据待办 |
+
+因此本文不再把 M1 描述为已验收完成；只有第 5 节列出的外部证据全部归档后，才能关闭里程碑。
 
 ## 2. 验收命令与结果
 
@@ -21,9 +23,9 @@
 |---|---|---|
 | `pnpm install --frozen-lockfile` | 干净安装无 drift | exit 0 |
 | `pnpm typecheck` | 全部 workspace 通过 | **23/23 通过**（新增 2 个 package，另有 `@lecoding/test-harness` 无 typecheck 任务） |
-| `pnpm test` | 全量门禁 | **805 通过 / 9 跳过 / 0 失败；101 文件通过 / 4 跳过；EXIT=0** |
-| `pnpm vitest run apps/desktop/test` | 桌面端全部通过 | **184 通过 / 4 跳过**（15 个测试文件） |
-| `pnpm vitest run apps/desktop/test/run-loop.integration.test.ts` | 深业务 E2E | **3 通过**（受限沙箱中显式跳过并给出原因） |
+| `pnpm test` | 全量门禁 | **817 通过 / 9 跳过 / 0 失败；103 文件通过 / 4 跳过；EXIT=0** |
+| `pnpm vitest run apps/desktop/test` | 桌面端全部通过 | **193 通过 / 4 跳过**（15 个文件通过 / 1 个文件跳过） |
+| `pnpm vitest run apps/desktop/test/run-loop.integration.test.ts` | 深业务 E2E | **4 通过**（受限沙箱中显式跳过并给出原因） |
 | `pnpm vitest run apps/desktop/test/installed-app.smoke.test.ts` | 安装包 smoke | **4 跳过**（未设置 `LECODING_INSTALLED_APP_PATH`），已用合成产物验证通过 / 失败两条路径 |
 
 ### vs M0 基线
@@ -31,9 +33,9 @@
 | 指标 | M0 基线 | M1 完成时 |
 |---|---:|---:|
 | workspace typecheck | 20/20 | **23/23** |
-| `pnpm test` 通过数 | 585 | **805** |
+| `pnpm test` 通过数 | 585 | **817** |
 | 失败数 | 0 | **0** |
-| 桌面端测试数 | 约 90 | **184 通过 / 4 跳过** |
+| 桌面端测试数 | 约 90 | **193 通过 / 4 跳过** |
 
 ## 3. 各工作包变更摘要
 
@@ -54,7 +56,7 @@
 2. 全仓库没有生产 Electron bootstrap：`createDesktopMain` / `createPreloadBridge` 只在测试中被调用，而 `package.json` 的 `main` 指向只导出工厂函数的 `dist/main/index.js`。新增 `src/main/electron.ts` 作为真实入口。
 3. `forge.config.ts` 的 `rendererEntry` 指向不存在的 `apps/renderer/dist/index.html`，改为 `dist/renderer/index.html` 并由 CI 的 `build:renderer` 产出。
 
-**IPC 契约扩展**：`IPC_CHANNELS` 从 11 个扩到 24 个，补齐 `config.load`、`runs.approve` / `runs.reject` / `runs.editApprove`、`runs.answer`、`runs.steer`、`runs.changes`、`runs.artifact`、`runs.subscribe` / `runs.unsubscribe`、`policy.list` / `policy.revoke`、`session.status`。新增 `PUSH_CHANNELS = ["runs.event", "runs.streamState", "session.credentialState"]`，preload 只暴露 `onRunEvent` / `onStreamState` / `onCredentialState` 三个具名订阅函数，**不暴露 `ipcRenderer.on` 本身**。
+**IPC 契约扩展**：`IPC_CHANNELS` 从 11 个扩到 25 个，补齐 `session.openGitHubLogin`、`config.load`、`runs.approve` / `runs.reject` / `runs.editApprove`、`runs.answer`、`runs.steer`、`runs.changes`、`runs.artifact`、`runs.subscribe` / `runs.unsubscribe`、`policy.list` / `policy.revoke`、`session.status`。新增 `PUSH_CHANNELS = ["runs.event", "runs.streamState", "session.credentialState"]`，preload 只暴露 `onRunEvent` / `onStreamState` / `onCredentialState` 三个具名订阅函数，**不暴露 `ipcRenderer.on` 本身**。
 
 **SSE 归属**：Renderer 的 CSP 是 `connect-src 'self'`、且 `sandbox: true`、凭据不得进入 Renderer，因此 SSE 由 main 进程持有。新增 `src/main/stream-broker.ts`，用 `followRunEventStream` 做续传与去重，再通过 `webContents.send("runs.event", …)` 推送；窗口关闭与 `before-quit` 时中止订阅。
 
@@ -69,8 +71,8 @@
 
 按用户决策拆两层：
 
-- **深业务 E2E**（`apps/desktop/test/run-loop.integration.test.ts`）：真实 Worker HTTP 服务（loopback 临时端口）+ 真实 client SDK + 真实设备绑定服务 + 真实 main 进程 IPC 分发，只假 Electron 壳与 Run 状态机。覆盖设备码生成与兑换、设备列表、Run 创建、SSE 事件推送、审批、Diff、结果处置、设备撤销；并回归不受信 IPC sender、外部导航、弹窗阻断。断言推送流量中不含 `accessToken`。
-- **浅 GUI E2E**（`apps/desktop/test/installed-app.smoke.test.ts`）：由 `LECODING_INSTALLED_APP_PATH` / `LECODING_INSTALLED_APP_ARCH` 环境 gate 控制，校验打包产物的 Renderer 入口、preload 与 main 入口、所有原生二进制的实际架构、包内版本不为 `0.0.0`。
+- **深业务 E2E**（`apps/desktop/test/run-loop.integration.test.ts`）：真实 Worker HTTP 服务（loopback 临时端口）+ 真实 client SDK + 真实设备绑定服务 + 真实 main 进程 IPC 分发；新增真实 Controller 与 Desktop IPC adapters 入口，覆盖从共享状态机到 Worker 的完整链路。Electron 壳与 RunEngine 仍分别由策略测试和引擎测试承担。
+- **安装产物结构 smoke**（`apps/desktop/test/installed-app.smoke.test.ts`）：由 `LECODING_INSTALLED_APP_PATH` / `LECODING_INSTALLED_APP_ARCH` 环境 gate 控制，校验打包产物的 Renderer 入口、preload 与 main 入口、所有原生二进制的实际架构、包内版本不为 `0.0.0`。它不启动 GUI、不等价于真实安装或 keychain smoke。
 - **人工验收清单**：`docs/evidence/desktop-m1-smoke-checklist.md`，覆盖三平台 × 安装 / 绑定 / Run 闭环 / 重启撤销 / 安全回归五组。
 
 **顺带发现并修复的真实缺口**：设备绑定 HTTP 路由（`packages/device-binding/src/http.ts`）此前**从未挂载到 Worker**，桌面端根本无法绑定设备。现已接入 `WorkerControlPlane.devices` 并在 `http-server.ts` 中于 API bearer 检查之前路由（因为 `exchange` 按设计不携带会话）。为此 `RunApiPrincipal` 增加可选 `email`，`createPostgresRunApiAccessControl` 的 `authenticate` 联查 `users` 表。
@@ -118,7 +120,7 @@ M1 完成后按 `code-review` skill 做了标准（Standards）与规格（Spec�
 | `apps/desktop/src/main/index.ts` | 修改 | 修 preload 未挂载、清调试输出、补新通道分发 |
 | `apps/desktop/src/main/host.ts` | 修改 | `webContents.send`、原生能力抽象、`ClientSdk` 补齐 |
 | `apps/desktop/src/preload/index.ts` | 修改 | 白名单事件订阅（`onRunEvent` 等） |
-| `apps/desktop/src/shared/ipc-contract.ts` | 修改 | 11 → 24 通道 + 3 推送通道 |
+| `apps/desktop/src/shared/ipc-contract.ts` | 修改 | 11 → 25 通道 + 3 推送通道 |
 | `packages/secure-store/src/safe-storage-store.ts` | 新增 | Electron `safeStorage` 后端 |
 | `packages/secure-store/src/select-backend.ts` | 新增 | 显式降级链与 health |
 | `packages/secure-store/src/atomic-json.ts` | 新增 | 原子写，两个后端共用 |
@@ -144,7 +146,7 @@ M1 完成后按 `code-review` skill 做了标准（Standards）与规格（Spec�
 | macOS Developer ID 签名 + 公证 | `APPLE_ID` / `APPLE_APP_SPECIFIC_PASSWORD` / `APPLE_TEAM_ID` | 开发者账号后配置 |
 | 自动更新拒绝错误签名 | 真实签名产物的升级路径验证 | M3 运维演练 |
 
-证书未就绪时：产物仍可构建并以 **pre-release** 发布，但 `LECODING_REQUIRE_SIGNED_ARTIFACTS=true`（tag 推送默认）会让构建失败。这是刻意的失败关闭——不得通过降级 `verifySignature` 或移除校验来「让 CI 变绿」。
+证书未就绪时：手工 workflow 可生成实验性 pre-release；tag 推送默认启用 `LECODING_REQUIRE_SIGNED_ARTIFACTS=true` 并失败关闭。Forge 不存在可生效的布尔 `verifySignature` 开关；更新安装必须通过代码中的 Ed25519 清单签名和 Artifact SHA-256 安装门。
 
 ### 5.2 环境 gate（非回归）
 
@@ -170,8 +172,8 @@ M1 完成后按 `code-review` skill 做了标准（Standards）与规格（Spec�
 ```bash
 pnpm install --frozen-lockfile
 pnpm typecheck                       # 期望 23/23
-pnpm test                            # 期望 805 通过 / 9 跳过 / 0 失败, EXIT=0
-pnpm vitest run apps/desktop/test    # 期望 184 通过 / 4 跳过
+pnpm test                            # 期望 817 通过 / 9 跳过 / 0 失败, EXIT=0
+pnpm vitest run apps/desktop/test    # 期望 193 通过 / 4 跳过
 ```
 
 带真实产物时：

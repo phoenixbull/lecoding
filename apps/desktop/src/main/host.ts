@@ -111,6 +111,8 @@ export interface ElectronHost {
    * an in-memory recorder.
    */
   setCspHeader(value: string | null): void;
+  /** Opens one Main-approved HTTPS URL in the user's default browser. */
+  openExternal(url: string): Promise<void>;
 }
 
 /**

@@ -9,14 +9,76 @@
  * - emit a deterministic version comparison so dev builds can roll forward
  */
 
-import { describe, expect, it } from "vitest";
+import { createHash, generateKeyPairSync, sign } from "node:crypto";
+import { describe, expect, it, vi } from "vitest";
 import {
   buildAutoUpdateFeed,
   compareVersions,
+  installVerifiedUpdate,
   isDowngradeAllowed,
   parseVersion,
   type AutoUpdateChannel
 } from "../src/build/auto-update.js";
+
+describe("installVerifiedUpdate", () => {
+  it("installs only an artifact covered by a valid signed manifest", async () => {
+    const { privateKey, publicKey } = generateKeyPairSync("ed25519");
+    const artifact = Buffer.from("signed desktop package");
+    const manifest = Buffer.from(
+      JSON.stringify({
+        version: "1.2.0",
+        platform: "darwin",
+        arch: "arm64",
+        artifactUrl: "https://downloads.example/LeCoding-1.2.0-arm64.zip",
+        sha256: createHash("sha256").update(artifact).digest("hex")
+      })
+    );
+    const signature = sign(null, manifest, privateKey).toString("base64");
+    const install = vi.fn(async () => undefined);
+
+    await installVerifiedUpdate({
+      manifest,
+      signature,
+      artifact,
+      publicKey: publicKey.export({ type: "spki", format: "pem" }).toString(),
+      currentVersion: "1.1.0",
+      platform: "darwin",
+      arch: "arm64",
+      install
+    });
+
+    expect(install).toHaveBeenCalledWith(artifact);
+  });
+
+  it("rejects an invalid signature before the installer receives any bytes", async () => {
+    const { publicKey } = generateKeyPairSync("ed25519");
+    const artifact = Buffer.from("untrusted package");
+    const manifest = Buffer.from(
+      JSON.stringify({
+        version: "1.2.0",
+        platform: "win32",
+        arch: "x64",
+        artifactUrl: "https://downloads.example/LeCoding-Setup-1.2.0.exe",
+        sha256: createHash("sha256").update(artifact).digest("hex")
+      })
+    );
+    const install = vi.fn(async () => undefined);
+
+    await expect(
+      installVerifiedUpdate({
+        manifest,
+        signature: Buffer.from("forged").toString("base64"),
+        artifact,
+        publicKey: publicKey.export({ type: "spki", format: "pem" }).toString(),
+        currentVersion: "1.1.0",
+        platform: "win32",
+        arch: "x64",
+        install
+      })
+    ).rejects.toThrow(/signature/i);
+    expect(install).not.toHaveBeenCalled();
+  });
+});
 
 describe("parseVersion", () => {
   it("splits semver into numeric triple + pre-release", () => {
@@ -156,13 +218,14 @@ describe("buildAutoUpdateFeed", () => {
     expect(beta.tagPrefix).toBe("beta-v");
   });
 
-  it("forces signature verification on every artifact", () => {
+  it("declares the mandatory manifest and artifact signature policy", () => {
     const feed = buildAutoUpdateFeed({
       repository: "phoenixbull/lecoding",
       channel: "stable" as AutoUpdateChannel
     });
-    expect(feed.verifyManifestSignature).toBe(true);
-    expect(feed.verifyArtifactSignatures).toBe(true);
+    expect(feed.signaturePolicy).toBe(
+      "ed25519-manifest-sha256-artifact"
+    );
   });
 
   it("rejects unsupported channel strings so misconfiguration is loud", () => {

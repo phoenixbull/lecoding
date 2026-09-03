@@ -1,12 +1,13 @@
 import { useEffect, useState } from "react";
 import type { RunConsoleController, RunConsoleState } from "@lecoding/run-controller";
 
+/** Connection and binding commands supplied by the production composition root. */
 export interface ConnectionScreenProps {
   controller: RunConsoleController;
   state: RunConsoleState;
   platform: "darwin" | "win32" | "linux";
   /** Opens the GitHub sign-in flow; the desktop delegates it to the OS shell. */
-  onGitHubLogin: () => void;
+  onGitHubLogin: (serverUrl: string) => void;
   onConnect: (serverUrl: string) => void;
 }
 
@@ -36,6 +37,7 @@ export function ConnectionScreen({
   }, [controller]);
 
   const busy = state.binding;
+  const canExchangeWebCode = state.phase !== "loading";
 
   return (
     <div className="connect-screen">
@@ -70,7 +72,14 @@ export function ConnectionScreen({
             >
               连接
             </button>
-            <button className="secondary-button" type="button" onClick={onGitHubLogin}>
+            <button
+              className="secondary-button"
+              type="button"
+              disabled={serverUrl.trim() === ""}
+              onClick={() => {
+                onGitHubLogin(serverUrl.trim());
+              }}
+            >
               使用 GitHub 登录
             </button>
           </div>
@@ -102,7 +111,7 @@ export function ConnectionScreen({
               id="device-code-input"
               className="mono"
               value={code}
-              disabled={busy || state.phase !== "ready"}
+              disabled={busy || !canExchangeWebCode}
               placeholder="在已登录的 Web 控制台生成后粘贴到这里"
               onChange={(event) => {
                 setCode(event.target.value);
@@ -114,7 +123,7 @@ export function ConnectionScreen({
             <button
               className="primary-button"
               type="button"
-              disabled={busy || state.phase !== "ready" || code.trim() === ""}
+              disabled={busy || !canExchangeWebCode || code.trim() === ""}
               onClick={() => {
                 void controller.bindDevice({ code, deviceLabel, platform });
               }}

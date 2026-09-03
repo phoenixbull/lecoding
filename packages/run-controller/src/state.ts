@@ -27,6 +27,7 @@ export type StreamPhase =
 /** Backend currently holding the device credential, if the surface reports one. */
 export type CredentialBackend = "safeStorage" | "encryptedFile";
 
+/** Non-secret credential health mirrored from the desktop Main process. */
 export interface CredentialState {
   backend: CredentialBackend;
   /** True when the OS keychain was unavailable and a weaker backend took over. */
@@ -45,6 +46,7 @@ export interface ComposerDraft {
   approvalMode: ApprovalMode;
 }
 
+/** Immutable controller snapshot consumed by Web DOM and Desktop React views. */
 export interface RunConsoleState {
   phase: ConsolePhase;
   bootstrap?: ControlPlaneConfig;

@@ -54,6 +54,29 @@ describe("createIpcRunGateway", () => {
 });
 
 describe("createIpcRunEventSource", () => {
+  it("starts and stops the Main-owned stream with the iterator lifetime", async () => {
+    const bridge = createFakeBridge();
+    const source = createIpcRunEventSource(bridge);
+    const controller = new AbortController();
+    const iterator = source.subscribe("run-1", { signal: controller.signal })[
+      Symbol.asyncIterator
+    ]();
+
+    await Promise.resolve();
+    expect(bridge.calls).toContainEqual({
+      channel: "runs.subscribe",
+      payload: { runId: "run-1" }
+    });
+
+    controller.abort();
+    await iterator.next();
+    await Promise.resolve();
+    expect(bridge.calls).toContainEqual({
+      channel: "runs.unsubscribe",
+      payload: { runId: "run-1" }
+    });
+  });
+
   it("delivers only events for the subscribed Run", async () => {
     const bridge = createFakeBridge();
     const source = createIpcRunEventSource(bridge);

@@ -1,6 +1,7 @@
 import { formatRunBudget } from "@lecoding/presentation";
 import type { RunConsoleState } from "@lecoding/run-controller";
 
+/** Console snapshot from which the bounded budget projection is rendered. */
 export interface BudgetPanelProps {
   state: RunConsoleState;
 }
