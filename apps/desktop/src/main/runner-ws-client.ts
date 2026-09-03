@@ -26,7 +26,13 @@ export function runnerWebSocketUrl(baseUrl: string): string {
 
 /** Opens a WSS connection and adapts it to the transport-agnostic interface. */
 export function createRunnerWebSocket(url: string): RunnerSocket {
-  const client = new WebSocket(url);
+  const client = new WebSocket(url, {
+    // Permessage-deflate is on by default in `ws` clients and has a known
+    // history of compression-oracle issues (CRIME/BREACH family). Run payloads
+    // mix attacker-influenced output with secrets, so compression is disabled
+    // rather than configured; the frames are small enough that it buys nothing.
+    perMessageDeflate: false
+  });
   return adaptRunnerWebSocket(client);
 }
 

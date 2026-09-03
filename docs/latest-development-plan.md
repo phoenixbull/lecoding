@@ -50,7 +50,7 @@ M1 当前开发基线见 [m1-completion-summary.md](m1-completion-summary.md)。
 |---|---|---:|---|---|
 | M0 | 恢复全仓库可信质量门禁 | 3–5 个工作日 | 无 | 已完成 |
 | M1 | 完成 Phase 4A Connected Desktop 用户闭环 | 7–12 个工作日 | M0 | 验收中（代码链路完成，外部证据待补） |
-| M2 | 完成 Phase 4B Local Runner 闭环 | 14–22 个工作日 | M0、M1 的 UI / 凭据 seam | 决策确认中 |
+| M2 | 完成 Phase 4B Local Runner 闭环 | 14–22 个工作日 | M0、M1 的 UI / 凭据 seam | 代码完成（2026-09-03）；目标平台证据待补，见 [m2-completion-summary.md](m2-completion-summary.md) |
 | M3 | 完成正式发布证据和文档收口 | 3–5 个工作日 | M0–M2 | 未开始 |
 
 预计：服务器 / Web 私有 Beta 还需 3–7 个工作日；严格完成 Phase 4A 还需约 2–3 周；严格完成 Phase 4A + 4B 还需约 5–8 周。M2 原估时 10–15 天建立在应用层路径检查假设上；确认采用 OS 级文件权限强制后，调整为 14–22 个工作日。
@@ -220,28 +220,28 @@ pnpm typecheck
 
 - [x] WSS 传输采用成熟的 `ws` 作为 Worker 与 Desktop Main 的 Adapter；版本化协议核心保持纯 TypeScript、零运行时依赖，禁止手写 RFC 6455 framing。
 - [x] 三档文件权限由独立 Local Runner 的 OS Sandbox Adapter 在创建子进程时最终强制；Desktop Main 签发 Run 级 `FileAccessGrant`；PolicyEngine 只承担固定 deny 和权限升级审批。
-- [ ] WSS 身份证明采用设备 Bearer，还是落实 PRD 的设备私钥 challenge-response。
-- [ ] Local Runner 本轮即交付独立签名进程，还是先以内嵌 Main 的开发形态验证协议后再拆分。
-- [ ] macOS 与 Windows 分别采用哪种 OS Sandbox / 受限进程机制。
-- [ ] `selected_directories` 授权如何使用系统能力持久化，并在重启后恢复且可撤销。
-- [ ] 恢复状态由 Worker 还是 Runner 持有最终权威，以及未知执行结果的保守结算规则。
-- [ ] M2 关闭是否要求本轮同时归档 Windows/macOS 真实平台证据；若不要求，只能标记“代码完成、平台验收待办”。
+- [x] WSS 身份证明采用设备 Bearer（`hello` 首帧携带 accessToken，凭据不进 URL 与日志）；设备私钥 challenge-response 留待 PRD 后续收紧。
+- [x] Local Runner 本轮以内嵌 Desktop Main 的形态验证协议与权限，独立签名进程拆分留待独立工作包。
+- [x] macOS 采用 Seatbelt（SBPL，经 `sandbox-exec`，启动探针失败即失败关闭）；Windows 采用 Job Object 进程树 containment + argv 围栏，能力报告如实标注 `argv_fence`，内核级 FS 限制（AppContainer）列为目标平台待办。
+- [x] `selected_directories` 由 OS 原生目录选择器授权，签发时 canonicalize 并收敛为最小必要集合；重启后经持久化 grant 恢复，撤销即失效。
+- [x] 恢复状态由 Runner 持有最终权威（durable handle journal + 命令 started/settled 记录）；未知执行结果一律按 `command_interrupted` 保守结算，绝不重放。
+- [x] 本轮不归档 Windows/macOS 真实平台证据，M2 只标记「代码完成、平台验收待办」；证据清单见 [desktop-m2-smoke-checklist.md](evidence/desktop-m2-smoke-checklist.md)。
 
 ### M2.1 Runner WSS 协议
 
 优先级：P1  
 估时：3–5 天
 
-- [ ] 新建纯 TypeScript Runner 协议模块和小型 `RunnerTransport` interface；`ws` 仅存在于 Worker/Desktop Adapter。
-- [ ] Local Runner 主动建立出站连接；生产使用 `wss://`，TLS 默认由部署入口终止，测试使用 loopback `ws://`。
-- [ ] 定义版本化 WSS envelope、命令 ID、事件游标和错误码。
-- [ ] 使用设备凭据认证 Runner，并绑定 user / project / device。
-- [ ] 实现断线重连、指数退避、心跳和会话恢复。
-- [ ] 服务端和 Runner 对重复命令进行幂等去重。
-- [ ] 从最后确认游标续传事件，禁止丢失或重复执行副作用。
-- [ ] 设备撤销后立即终止现有 WSS 会话。
-- [ ] 固定子协议版本，限制最大消息、发送队列和背压；默认禁用压缩。WebSocket ping/pong 只判断连接存活，业务恢复使用独立的 resume / ack cursor。
-- [ ] 凭据只由 Main/Runner 持有，不进入 URL、日志、Renderer 或普通错误消息。
+- [x] 新建纯 TypeScript Runner 协议模块和小型 `RunnerTransport` interface；`ws` 仅存在于 Worker/Desktop Adapter。
+- [x] Local Runner 主动建立出站连接；生产使用 `wss://`，TLS 默认由部署入口终止，测试使用 loopback `ws://`。
+- [x] 定义版本化 WSS envelope、命令 ID、事件游标和错误码。
+- [x] 使用设备凭据认证 Runner，并绑定 user / project / device。
+- [x] 实现断线重连、指数退避、心跳和会话恢复。
+- [x] 服务端和 Runner 对重复命令进行幂等去重。
+- [x] 从最后确认游标续传事件，禁止丢失或重复执行副作用。
+- [x] 设备撤销后立即终止现有 WSS 会话。
+- [x] 固定子协议版本，限制最大消息、发送队列和背压；默认禁用压缩（客户端与服务端 `perMessageDeflate: false`）。WebSocket ping/pong 只判断连接存活，业务恢复使用独立的 resume / ack cursor。
+- [x] 凭据只由 Main/Runner 持有，不进入 URL、日志、Renderer 或普通错误消息。
 
 实施切片：先跑通认证后的单连接和单命令往返，再依次加入心跳、重连、去重、游标续传和设备撤销。退出条件：故意断网、重启桌面客户端和撤销设备后，Run 状态与副作用仍满足契约。
 
@@ -250,13 +250,13 @@ pnpm typecheck
 优先级：P1  
 估时：5–8 天
 
-- [ ] 控制面准入：Server Docker 只接受 `workspace_only`；另外两档只允许在线 Local Runner；组织策略可禁用 `host_full`；远端只能降权，不能绕过本机确认升权。
-- [ ] Desktop Main 通过 OS 原生交互签发仅绑定当前 Run 的 `FileAccessGrant`；WSS 只传 grant ID 和 scope，不接受远端提供任意允许路径。
-- [ ] 在 Local Runner 增加 `ExecutionSandbox` seam，由 macOS/Windows Adapter 在创建进程时施加最终文件权限；不得把 TypeScript 路径判断当成安全隔离。
-- [ ] 先完整实现 `workspace_only`，再实现来自 OS 原生选择器的 `selected_directories`，最后实现 `host_full` 的二次确认、醒目持续状态和一键降权 / 中止。
-- [ ] canonicalize 预检和审计覆盖符号链接、大小写、Windows junction、路径穿越及不存在目标的最近已存在父目录；任意子进程访问仍以 OS Sandbox 为最终拒绝点。
-- [ ] 每次工作区外访问进入不可变审计记录；现有 `ApprovalGate` 和 `HostAccessLog` 只算交互/审计，不算权限强制证据。
-- [ ] 为 PolicyEngine 增加明确的 scope escalation capability；保留凭据、浏览器数据、钥匙串和宿主控制入口等固定 deny。清理当前从未参与决策的 `CapabilityRequest.fileAccessScope`，避免虚假安全承诺。
+- [x] 控制面准入：Server Docker 只接受 `workspace_only`；另外两档只允许在线 Local Runner；远端只能降权，不能绕过本机确认升权。组织策略禁用 `host_full` 留待服务端策略面扩展。
+- [x] Desktop Main 通过 OS 原生交互签发仅绑定当前 Run 的 `FileAccessGrant`（目录选择器 / host_full 危险确认；对话框缺失即拒绝，绝不降级为文本输入）。
+- [x] 在 Local Runner 增加 `HostSandbox` seam，由 macOS/Windows Adapter 在创建进程时施加最终文件权限；能力报告如实标注每档实际强制等级，未达等级即拒绝执行。
+- [x] 完整实现 `workspace_only`；`selected_directories` 来自 OS 原生选择器并收敛为最小必要集合；`host_full` 需要 OS 原生二次确认。
+- [x] canonicalize 预检和审计覆盖符号链接、大小写、Windows junction、路径穿越及不存在目标的最近已存在父目录；越权时进程不被创建。
+- [x] 每次工作区外访问进入不可变审计记录（append-only、0o600、注入时钟）；现有 `ApprovalGate` 和 `HostAccessLog` 只算交互/审计，不算权限强制证据。
+- [ ] 为 PolicyEngine 增加明确的 scope escalation capability；保留凭据、浏览器数据、钥匙串和宿主控制入口等固定 deny（固定 deny 已验证生效）。清理当前从未参与决策的 `CapabilityRequest.fileAccessScope`，避免虚假安全承诺。
 
 实施切片：`workspace_only → selected_directories → host_full/降权/中止`。退出条件：三档权限的允许、拒绝和越权矩阵在 Windows/macOS 全部通过，并有 OS 强制而非仅应用层检查的直接证据。
 
@@ -265,11 +265,11 @@ pnpm typecheck
 优先级：P1  
 估时：3–5 天
 
-- [ ] Local Runner 重启后恢复 worktree 和 Run handle。
-- [ ] 断线时不重复执行正在进行或结果未知的工具调用。
-- [ ] keep/discard 幂等，且不污染源仓库。
-- [ ] 取消覆盖准备、命令执行、验证和等待审批状态。
-- [ ] 清理失败必须留下可观测的残留路径和人工恢复说明。
+- [x] Local Runner 重启后恢复 worktree 和 Run handle（durable handle journal + `recoverRunState`）。
+- [x] 断线时不重复执行正在进行或结果未知的工具调用（started/settled 差集按 `command_interrupted` 结算）。
+- [x] keep/discard 幂等，且不污染源仓库（已消失的 worktree 视为成功；首次决定永久生效）。
+- [x] 取消覆盖准备、命令执行、验证和等待审批状态（同一 cancel 路径 + 引擎侧 abort）。
+- [x] 清理失败必须留下可观测的残留路径和人工恢复说明（residual 记录含路径、原因、处置步骤）。
 
 实施切片：断线恢复 → Runner 重启 → 未知执行结果 → keep/discard 恢复。退出条件：崩溃窗口、断线和重复请求集成测试全部通过。
 
@@ -278,11 +278,11 @@ pnpm typecheck
 优先级：P1  
 估时：3–4 天
 
-- [ ] DesktopLocalEnvironment 运行与 ServerDockerEnvironment 相同的接口契约测试。
+- [x] DesktopLocalEnvironment 运行与 ServerDockerEnvironment 相同的接口契约测试（`runRunEnvironmentContractSuite`，三适配器共用；Docker 套件受 daemon gate 显式跳过）。
 - [ ] 验证项目声明的 test/typecheck/lint/build 最低集合。
-- [ ] 明确本地环境无法提供 Docker 等级 CPU / memory / PID 隔离，并在 UI 中展示差异。
-- [ ] 固定 deny、protectedPaths 和 network.askDomains 在本地环境仍然生效。
-- [ ] Renderer 不直接获得本机执行、文件或凭据能力。
+- [x] 明确本地环境无法提供 Docker 等级 CPU / memory / PID 隔离，并在 UI 中展示差异（`RunnerStatePush.sandbox.isolationGaps` + `LocalIsolationNotice`）。
+- [x] 固定 deny、protectedPaths 和 network.askDomains 在本地环境仍然生效（`local-policy-baseline.test.ts`）。
+- [x] Renderer 不直接获得本机执行、文件或凭据能力（`renderer-local-boundary.test.ts` 钉死 preload 暴露面）。
 - [ ] 同一套公开契约测试依次运行内存 Adapter、macOS Adapter 和 Windows Adapter；真实平台证据按决策门约定归档。
 
 退出条件：Phase 4B 的五项 PRD 退出条件均有直接代码与目标平台证据。
@@ -340,11 +340,13 @@ M2 调整后总估时为 **14–22 个工作日**。若退回仅使用 TypeScrip
 
 以下条件全部满足后，才能把 Phase 4B 标记为完成：
 
-- [ ] Runner WSS 断线重连、去重、续传和设备撤销测试通过。
-- [ ] 三档文件访问权限和 OS 二次确认通过目标平台测试。
-- [ ] 本地 worktree 不污染源仓库，keep/discard、取消和恢复均通过。
-- [ ] 工作区外访问可审计，固定 deny 不可绕过。
-- [ ] DesktopLocalEnvironment 通过与 ServerDockerEnvironment 相同的接口契约测试。
+- [x] Runner WSS 断线重连、去重、续传和设备撤销测试通过。（确定性测试；真实网络抖动证据待归档）
+- [ ] 三档文件访问权限和 OS 二次确认通过目标平台测试。（代码与确定性测试完成；macOS kernel 级与 Windows `argv_fence` 级证据待归档，Windows 内核级 FS 限制为已声明缺口）
+- [x] 本地 worktree 不污染源仓库，keep/discard、取消和恢复均通过。
+- [x] 工作区外访问可审计，固定 deny 不可绕过。
+- [x] DesktopLocalEnvironment 通过与 ServerDockerEnvironment 相同的接口契约测试。
+
+对应证据清单：[desktop-m2-smoke-checklist.md](evidence/desktop-m2-smoke-checklist.md)。
 
 ## 10. 推荐提交顺序
 
@@ -367,17 +369,17 @@ M1（验收中）：
 12. `fix(ci): build macOS arm64/x64 natively and verify real binary architectures`
 13. `docs: close phase 4A code paths and record the M1 verification baseline`
 
-M2（决策确认中）/ M3（未开始）：
+M2（代码完成，平台证据待补）：
 
-14. `feat(runner-protocol): define versioned resumable transport contracts`
-15. `feat(worker): accept authenticated Local Runner websocket sessions`
-16. `feat(local-runner): connect and resume over the websocket adapter`
-17. `feat(local-runner): enforce workspace-only host file access`
-18. `feat(local-runner): add selected-directory OS grants`
-19. `feat(local-runner): gate host-full access and live privilege reduction`
-20. `test(local-runner): prove crash recovery and result disposition`
-21. `test(local-runner): run shared contracts across platform adapters`
-22. `docs: close phase four with target-platform evidence`
+14. `feat(runner-protocol): add authenticated resumable WSS transport`
+15. `feat(local-runner): enforce three-tier host file access`
+16. `test(local-runner): prove crash recovery and result disposition`
+17. `test(desktop): add the local verification and security baseline`
+18. `docs: close phase four code paths and record the M2 verification baseline`
+
+M3（未开始）：
+
+19. `docs: close phase four with target-platform evidence`
 
 ## 11. M2 第一周执行建议
 

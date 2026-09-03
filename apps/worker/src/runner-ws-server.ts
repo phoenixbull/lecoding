@@ -44,7 +44,11 @@ export function attachRunnerWsServer(
     // reaches us for the exact Runner path, and every other request is
     // untouched.
     noServer: true,
-    maxPayload: 2 * 1024 * 1024
+    maxPayload: 2 * 1024 * 1024,
+    // Compression is refused on the server too, matching the client. If either
+    // side enabled it while the other did not, the negotiated result would
+    // still surprise whoever audited the transport.
+    perMessageDeflate: false
   });
 
   const onUpgrade = (request: IncomingMessage, socket: import("node:net").Socket, head: Buffer) => {
