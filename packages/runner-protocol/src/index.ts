@@ -91,3 +91,9 @@ export {
   type RunnerSocketPair,
   type WireFrame
 } from "./paired-sockets.js";
+
+export {
+  createQueuedRunnerSocket,
+  type QueuedSocketOptions,
+  type RawRunnerDuplex
+} from "./queued-socket.js";

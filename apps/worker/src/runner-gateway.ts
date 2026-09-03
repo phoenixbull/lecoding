@@ -6,11 +6,18 @@
  * - **Authentication** through the existing `DeviceBindingService`, so a Runner
  *   session is bound to a real user, project and device with no second identity
  *   system.
- * - **The consumed cursor per device.** A reconnect creates a new session, and
- *   carrying this forward is what turns "replay from the beginning" into
- *   "replay from where the server actually stopped".
+ * - **The command-id high-water mark per device.** A reconnect creates a new
+ *   session, and the Runner keeps its dedupe table across it. Numbering must
+ *   therefore continue from where the device left off, or a new command would
+ *   be answered from a stale cache and never run.
+ * - **The consumed upward cursor per device**, so a reconnect replays from
+ *   where the server stopped rather than from zero. This is in-process only:
+ *   it does not survive a Worker restart. See `HostSession.consumedCursor()`.
  * - **Revocation.** `terminateDevice` closes a device's session with close code
- *   4001, which the Runner reads as "the credential is dead, go rebind".
+ *   4001, which the Runner reads as "the credential is dead, go rebind". A
+ *   revocation written by *another* Worker is caught by the per-heartbeat
+ *   credential revalidation instead, which is what makes the documented
+ *   "within one heartbeat interval" bound true rather than aspirational.
  *
  * A socket is only entered into the routing table from inside `authenticate`,
  * i.e. after the device token has been verified. Until then the connection is
@@ -70,8 +77,28 @@ export function createRunnerGateway(options: RunnerGatewayOptions): RunnerGatewa
 
   /** At most one live session per device; a reconnect replaces the entry. */
   const sessionsByDevice = new Map<string, HostSession>();
-  /** Highest cursor durably consumed per device, carried across reconnects. */
+  /**
+   * Sessions that have not authenticated yet.
+   *
+   * They are not in `sessionsByDevice` — their device is unknown — so without
+   * tracking them separately `tick()` would never visit them and a silent peer
+   * would hold a socket open forever.
+   */
+  const pendingHello = new Set<HostSession>();
+  /**
+   * Highest upward cursor consumed per device, carried across reconnects
+   * *within this process*. Lost on restart; see `HostSession.consumedCursor()`.
+   */
   const consumedByDevice = new Map<string, number>();
+  /**
+   * Next command id to issue per device.
+   *
+   * Monotonic for the lifetime of this Worker process, and combined with the
+   * Runner's own `lastReceivedCommandId` on every reconnect so the sequence can
+   * never go backwards — even if the Runner remembers ids this process has
+   * forgotten.
+   */
+  const nextCommandIdByDevice = new Map<string, number>();
 
   const timer = setInterval(() => {
     gateway.tick();
@@ -100,25 +127,78 @@ export function createRunnerGateway(options: RunnerGatewayOptions): RunnerGatewa
     accept(socket) {
       let bound: string | undefined;
       let session: HostSession | undefined;
+      /** Device access token for this connection, held only for revalidation. */
+      let heldToken: string | undefined;
 
       session = createHostSession({
         socket,
         sessionId: `runner-${randomUUID()}`,
+        heartbeatIntervalMs,
 
         async authenticate(token) {
           const result = await authenticateDevice(token);
           if (!result.ok || !session) {
             return result;
           }
+          // Held for the session's lifetime only, so the credential can be
+          // re-proven on each heartbeat. It is never logged and never leaves
+          // this closure; it dies with the socket.
+          heldToken = token;
           // Registration happens here and nowhere else: this is the first point
           // at which the device identity has been proven.
           bound = result.identity.deviceId;
+          pendingHello.delete(session);
           sessionsByDevice.set(bound, session);
           return result;
         },
 
         initialConsumedCursor(identity) {
           return consumedByDevice.get(identity.deviceId) ?? 0;
+        },
+
+        initialCommandId(identity, lastReceivedCommandId) {
+          // The larger of "what I last issued" and "what the Runner last saw".
+          // Either alone can be too low: the Runner may remember a command this
+          // process never issued (issued by a previous Worker), and this
+          // process may have issued commands the Runner never received.
+          const issued = nextCommandIdByDevice.get(identity.deviceId) ?? 1;
+          return Math.max(issued, lastReceivedCommandId + 1);
+        },
+
+        onCommandIdIssued(commandId) {
+          if (bound !== undefined) {
+            nextCommandIdByDevice.set(bound, commandId + 1);
+          }
+        },
+
+        async revalidate(identity) {
+          // Same evaluation as the initial `hello`, so a device revoked since
+          // it connected is dropped on the next tick rather than lingering
+          // until its next reconnect.
+          if (heldToken === undefined) {
+            return { ok: false, code: "auth_failed" };
+          }
+          try {
+            const device = await devices.authenticate({ accessToken: heldToken });
+            // Reject if the token now resolves to a *different* device: that
+            // means the credential was rotated and this session is stale.
+            if (
+              !projectIds.includes(device.projectId) ||
+              device.deviceId !== identity.deviceId
+            ) {
+              return { ok: false, code: "device_revoked" };
+            }
+            return {
+              ok: true,
+              identity: {
+                deviceId: device.deviceId,
+                userId: device.userId,
+                projectId: device.projectId
+              }
+            };
+          } catch (error) {
+            return { ok: false, code: mapDeviceError(error) };
+          }
         },
 
         onConsumedCursor(cursor) {
@@ -128,15 +208,19 @@ export function createRunnerGateway(options: RunnerGatewayOptions): RunnerGatewa
         },
 
         onClose() {
+          if (session) {
+            pendingHello.delete(session);
+          }
           // Only clear the entry if it still points at this session, so a
           // superseded session cannot delete its own replacement.
           if (bound !== undefined && sessionsByDevice.get(bound) === session) {
             sessionsByDevice.delete(bound);
           }
-        },
-
-        heartbeatIntervalMs
+          // Drop the held credential the moment the connection is gone.
+          heldToken = undefined;
+        }
       });
+      pendingHello.add(session);
     },
 
     sessionFor(deviceId) {
@@ -154,6 +238,16 @@ export function createRunnerGateway(options: RunnerGatewayOptions): RunnerGatewa
     },
 
     tick() {
+      // Unauthenticated peers are ticked first and separately: they are not in
+      // `sessionsByDevice` yet, so folding them into the loop below would leave
+      // them unvisited and unbounded.
+      for (const session of [...pendingHello]) {
+        try {
+          session.tick();
+        } catch (error) {
+          options.onBackgroundError?.(error);
+        }
+      }
       for (const session of [...sessionsByDevice.values()]) {
         try {
           session.tick();
@@ -165,11 +259,16 @@ export function createRunnerGateway(options: RunnerGatewayOptions): RunnerGatewa
 
     stop() {
       clearInterval(timer);
+      for (const session of [...pendingHello]) {
+        session.close(4003, "worker shutting down");
+      }
+      pendingHello.clear();
       for (const session of [...sessionsByDevice.values()]) {
         session.close(4003, "worker shutting down");
       }
       sessionsByDevice.clear();
       consumedByDevice.clear();
+      nextCommandIdByDevice.clear();
     }
   };
 

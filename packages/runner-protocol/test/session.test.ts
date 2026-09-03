@@ -45,7 +45,7 @@ interface Harness {
   runner: RunnerSession;
   calls: Array<{ op: string; payload: JsonValue }>;
   events: RunnerProgressEvent[];
-  welcomes: Array<{ replayFromCursor: number; replayFromCommandId: number }>;
+  welcomes: Array<{ replayFromCursor: number; nextCommandId: number }>;
   disconnects: number;
 }
 
@@ -107,7 +107,7 @@ function createHarness(
     onWelcome: (info) =>
       welcomes.push({
         replayFromCursor: info.replayFromCursor,
-        replayFromCommandId: info.replayFromCommandId
+        nextCommandId: info.nextCommandId
       }),
     onDisconnect: () => {
       disconnects += 1;
@@ -142,7 +142,7 @@ describe("runner session handshake", () => {
     await settle();
 
     expect(h.host.identity()).toEqual(identity);
-    expect(h.welcomes).toEqual([{ replayFromCursor: 1, replayFromCommandId: 1 }]);
+    expect(h.welcomes).toEqual([{ replayFromCursor: 1, nextCommandId: 1 }]);
   });
 
   it("passes the device token in the hello frame, never in the URL", async () => {
@@ -362,7 +362,7 @@ describe("runner session events and replay", () => {
     await settle();
 
     // Server redelivers from 8; the runner asked to resume after 7.
-    expect(h.welcomes[0]?.replayFromCommandId).toBe(8);
+    expect(h.welcomes[0]?.nextCommandId).toBe(8);
   });
 
   it("replays events in their original order after a reconnect", async () => {
@@ -553,7 +553,7 @@ describe("runner session lifecycle", () => {
         projectId: "p",
         heartbeatIntervalMs: 1000,
         replayFromCursor: 1,
-        replayFromCommandId: 1
+        nextCommandId: 1
       })
     );
     expect(h.welcomes.length).toBe(welcomesBefore);

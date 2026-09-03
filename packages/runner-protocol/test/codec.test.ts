@@ -35,7 +35,7 @@ const roundTripCases: ReadonlyArray<RunnerEnvelope> = [
     projectId: "p1",
     heartbeatIntervalMs: 15_000,
     replayFromCursor: 8,
-    replayFromCommandId: 42
+    nextCommandId: 42
   },
   {
     v: 1,

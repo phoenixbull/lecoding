@@ -12,6 +12,7 @@
  */
 
 import WebSocket from "ws";
+import { createQueuedRunnerSocket } from "@lecoding/runner-protocol";
 import type { RunnerSocket, RunnerSocketClose } from "@lecoding/runner-protocol";
 
 /** Path the Worker serves the Runner endpoint on. */
@@ -36,23 +37,34 @@ export function createRunnerWebSocket(url: string): RunnerSocket {
   return adaptRunnerWebSocket(client);
 }
 
-/** Adapts an already-constructed `ws` client to `RunnerSocket`. */
+/**
+ * Adapts an already-constructed `ws` client to `RunnerSocket`.
+ *
+ * Outbound frames go through the shared queue in `@lecoding/runner-protocol`,
+ * because a freshly constructed `ws` client is still CONNECTING. Without that
+ * queue the `hello` frame is dropped before the handshake completes and the
+ * Runner never authenticates — a bug that cannot be reproduced with in-memory
+ * sockets, which are open from the outset.
+ */
 export function adaptRunnerWebSocket(client: WebSocket): RunnerSocket {
-  return {
-    send(text: string): void {
-      // A send during teardown must be a silent no-op: the session routinely
-      // races its own shutdown (a heartbeat firing as the app quits).
-      if (client.readyState !== WebSocket.OPEN) {
-        return;
-      }
+  return createQueuedRunnerSocket({
+    send(text) {
       client.send(text);
     },
-
-    close(code: number, reason?: string): void {
+    close(code, reason) {
       client.close(code, reason ?? "");
     },
-
-    onMessage(listener: (text: string) => void): () => void {
+    onOpen(listener) {
+      if (client.readyState === WebSocket.OPEN) {
+        // Already open: fire on the next tick so callers can rely on the same
+        // ordering whether the socket was open or not.
+        queueMicrotask(listener);
+        return () => undefined;
+      }
+      client.on("open", listener);
+      return () => client.off("open", listener);
+    },
+    onMessage(listener) {
       const handler = (data: unknown) => {
         if (typeof data === "string") {
           listener(data);
@@ -69,8 +81,7 @@ export function adaptRunnerWebSocket(client: WebSocket): RunnerSocket {
       client.on("message", handler);
       return () => client.off("message", handler);
     },
-
-    onClose(listener: (info: RunnerSocketClose) => void): () => void {
+    onClose(listener) {
       const handler = (code: number, reason: Buffer) => {
         listener({ code, reason: reason.toString("utf8") });
       };
@@ -81,5 +92,5 @@ export function adaptRunnerWebSocket(client: WebSocket): RunnerSocket {
       client.on("error", () => undefined);
       return () => client.off("close", handler);
     }
-  };
+  });
 }

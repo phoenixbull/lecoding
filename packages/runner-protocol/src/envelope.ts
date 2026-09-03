@@ -210,8 +210,17 @@ export type RunnerEnvelope =
       heartbeatIntervalMs: number;
       /** Cursor the Runner must replay from: the last one the server consumed, plus one. */
       replayFromCursor: number;
-      /** Command id the server will redeliver from: the Runner's `lastReceivedCommandId`, plus one. */
-      replayFromCommandId: number;
+      /**
+       * Command id the *next* new command will carry.
+       *
+       * Named for what it is, not for a redelivery the server does not perform:
+       * the server never replays commands — an interrupted command is settled as
+       * `command_interrupted` and the engine re-drives it as new work. What this
+       * actually guarantees is that every future id is strictly above every id
+       * this device has already seen, so a new command can never be answered
+       * from the Runner's cache of an earlier one.
+       */
+      nextCommandId: number;
     }
   /** One unit of work. `id` is the server-allocated idempotency key. */
   | { v: 1; kind: "command"; id: number; op: RunnerCommandOp; payload: JsonValue }

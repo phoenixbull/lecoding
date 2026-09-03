@@ -3,13 +3,21 @@
  *
  * The host owns the two things that make recovery work: it *allocates*
  * `commandId` (so it alone decides what to redeliver) and it *tracks the
- * consumed cursor* (so the Runner knows what to replay). Both survive the
- * socket: a reconnect produces a new `HostSession` but the gateway carries the
- * consumed cursor forward, which is what makes replay resume rather than restart.
+ * consumed cursor* (so the Runner knows what to replay). Both must survive the
+ * socket, because a reconnect produces a new `HostSession` while the Runner's
+ * dedupe table deliberately does not reset.
  *
- * There are deliberately no timers in here. Liveness and reconnection are driven
- * by `tick()`, which the gateway calls from its own interval, so tests advance a
- * virtual clock instead of waiting for real time.
+ * **Command ids are allocated per device, not per session.** This is the single
+ * most important invariant here. The Runner caches a result per command id and
+ * keeps that cache across a dropped socket; if a reconnected session restarted
+ * numbering at 1, a genuinely new command would collide with a cached result
+ * from the previous connection and be answered without ever running — a silent
+ * lost side effect. The gateway therefore hands each session a starting point
+ * above every id the device has already seen.
+ *
+ * There are deliberately no timers in here. Liveness, hello timeouts and
+ * reconnection are driven by `tick()`, which the gateway calls from its own
+ * interval, so tests advance a virtual clock instead of waiting for real time.
  */
 
 import type { JsonValue } from "@lecoding/contracts";
@@ -56,8 +64,9 @@ export interface HostSessionOptions {
   /**
    * Called whenever the consumed cursor advances.
    *
-   * The gateway persists this per device so the next connection resumes from
-   * here rather than from zero.
+   * The gateway records this per device so a reconnect resumes from here rather
+   * than replaying the Runner's whole window. See the durability note on
+   * `consumedCursor()`.
    */
   onConsumedCursor?(cursor: number): void;
   /** Called when the transport dies and the session is finished. */
@@ -71,6 +80,32 @@ export interface HostSessionOptions {
    * reconnect resumes from where the previous connection stopped.
    */
   initialConsumedCursor?(identity: RunnerIdentity): number;
+  /**
+   * First command id this session may issue, read once `hello` succeeds.
+   *
+   * Must be strictly greater than every id the device has previously received,
+   * including ids reported back by the Runner in its `resume` frame. The
+   * gateway owns that high-water mark; this session only consumes it.
+   */
+  initialCommandId?(identity: RunnerIdentity, lastReceivedCommandId: number): number;
+  /** Reports each id as it is allocated so the gateway can advance its mark. */
+  onCommandIdIssued?(commandId: number): void;
+  /**
+   * Re-proves the credential during a heartbeat.
+   *
+   * Revocation and expiry are written to the database by another process, so a
+   * session that stops checking would keep serving a dead device until it
+   * happened to reconnect. Returning `{ ok: false }` closes with 4001.
+   */
+  revalidate?(identity: RunnerIdentity): Promise<RunnerAuthResult>;
+  /**
+   * How long an unauthenticated connection may stay open before it is dropped.
+   * Defaults to 10 seconds.
+   *
+   * A connection that never sends `hello` is not a Runner; without this bound it
+   * would hold a socket and a map entry indefinitely.
+   */
+  helloTimeoutMs?: number;
   heartbeatIntervalMs?: number;
   now?: () => number;
 }
@@ -99,7 +134,17 @@ export interface HostSession {
    */
   tick(): void;
 
-  /** Highest cursor durably consumed from the Runner. */
+  /**
+   * Highest cursor consumed from the Runner by *this Worker process*.
+   *
+   * Deliberately not described as durable: the gateway holds it in memory, so a
+   * Worker restart loses it and the next session asks to replay from the start.
+   * That re-delivery is safe because upward frames are progress and audit
+   * records written to append-only sinks — re-appending the same cursor is
+   * idempotent, and the server already ignores any cursor below its own mark.
+   * Side effects live in the *command* direction, which is exactly-once by
+   * command id and therefore does not depend on this value.
+   */
   consumedCursor(): number;
 
   /** Highest command id issued on this connection. */
@@ -130,19 +175,73 @@ export function createHostSession(options: HostSessionOptions): HostSession {
   const now = options.now ?? Date.now;
   const heartbeatIntervalMs = options.heartbeatIntervalMs ?? 15_000;
 
+  const helloTimeoutMs = options.helloTimeoutMs ?? 10_000;
+
   let identity: RunnerIdentity | undefined;
   /** Set from the gateway once authenticated, so replay resumes, not restarts. */
   let consumed = 0;
   /** Highest cursor acknowledged back to the Runner, so it can trim its window. */
   let lastAcked = 0;
-  let nextCommandId = 1;
+  /**
+   * Starts at 1 but is immediately replaced by the gateway's per-device
+   * high-water mark once `hello` succeeds. `call()` refuses to issue before
+   * that, so a command can never be numbered from a stale session's sequence.
+   */
+  let nextCommandId = 0;
   let closed = false;
+  const connectedAt = now();
 
   const pending = new Map<number, PendingCommand>();
   const monitor: HeartbeatMonitor = createHeartbeatMonitor({
     heartbeatIntervalMs,
     now
   });
+  /** In-flight revalidation, so overlapping ticks cannot start a second one. */
+  let revalidating: Promise<void> | undefined;
+  let lastRevalidatedAt = now();
+
+  /**
+   * Hands out the next command id and reports it upward.
+   *
+   * Reporting is what lets the gateway keep its per-device high-water mark
+   * ahead of whatever this session has issued, so the *next* session starts
+   * above it instead of colliding with it.
+   */
+  function allocateCommandId(): number {
+    const id = nextCommandId;
+    nextCommandId += 1;
+    options.onCommandIdIssued?.(id);
+    return id;
+  }
+
+  /**
+   * Re-proves the device credential on the heartbeat cadence.
+   *
+   * Revocation happens in the database, driven by another request or another
+   * Worker entirely. A session that validated once and then never looked again
+   * would keep running commands for a device the user has already revoked,
+   * which is the exact failure this closes.
+   */
+  async function revalidateCredential(): Promise<void> {
+    const current = identity;
+    if (!current) {
+      return;
+    }
+    try {
+      const result = await options.revalidate?.(current);
+      if (result && !result.ok) {
+        close(4001, result.code);
+        return;
+      }
+      lastRevalidatedAt = now();
+    } catch {
+      // A revalidation that cannot be evaluated is treated as a failure to
+      // prove the credential, not as permission to keep going.
+      close(4001, "device credential could not be revalidated");
+    } finally {
+      revalidating = undefined;
+    }
+  }
 
   const offMessage = socket.onMessage((text) => {
     void handleFrame(text);
@@ -206,9 +305,18 @@ export function createHostSession(options: HostSessionOptions): HostSession {
     identity = result.identity;
     consumed = options.initialConsumedCursor?.(identity) ?? 0;
     lastAcked = consumed;
-    // Resume is part of the same exchange as authenticate, so there is no
-    // window where a session is authenticated but not yet resumed.
-    const replayFromCommandId = (envelope.resume?.lastReceivedCommandId ?? 0) + 1;
+    /*
+     * Resume is part of the same exchange as authenticate, so there is no
+     * window where a session is authenticated but not yet resumed.
+     *
+     * The Runner's `lastReceivedCommandId` is the high-water mark from *its*
+     * side. It is combined with the gateway's own mark, and the larger wins:
+     * if the Runner remembers a command the gateway has forgotten, numbering
+     * must start above it or a new command would be answered from the Runner's
+     * stale cache.
+     */
+    const runnerMark = envelope.resume?.lastReceivedCommandId ?? 0;
+    nextCommandId = options.initialCommandId?.(identity, runnerMark) ?? runnerMark + 1;
     send({
       v: 1,
       kind: "welcome",
@@ -217,7 +325,9 @@ export function createHostSession(options: HostSessionOptions): HostSession {
       projectId: identity.projectId,
       heartbeatIntervalMs,
       replayFromCursor: consumed + 1,
-      replayFromCommandId
+      // Tells the Runner which id the next new command will carry, so a gap in
+      // its received sequence is detectable rather than silent.
+      nextCommandId
     });
   }
 
@@ -321,8 +431,7 @@ export function createHostSession(options: HostSessionOptions): HostSession {
         throw new DOMException("Command aborted before dispatch", "AbortError");
       }
 
-      const id = nextCommandId;
-      nextCommandId += 1;
+      const id = allocateCommandId();
 
       const settled = new Promise<JsonValue>((resolve, reject) => {
         pending.set(id, { resolve, reject, op });
@@ -340,10 +449,12 @@ export function createHostSession(options: HostSessionOptions): HostSession {
       return await new Promise<JsonValue>((resolve, reject) => {
         const onAbort = () => {
           pending.delete(id);
+          // The abort is itself a command and must take its own id from the
+          // same monotonic sequence, never a borrowed one.
           send({
             v: 1,
             kind: "command",
-            id: nextCommandId++,
+            id: allocateCommandId(),
             op: "env.abort",
             payload: { targetCommandId: id }
           });
@@ -359,6 +470,19 @@ export function createHostSession(options: HostSessionOptions): HostSession {
     tick() {
       if (closed) {
         return;
+      }
+      // An unauthenticated connection has no heartbeat monitor to fail — it has
+      // simply never identified itself, so it is bounded by its own deadline.
+      // Without this the gateway would never tick it and it would hold a socket
+      // indefinitely.
+      if (!identity) {
+        if (now() - connectedAt >= helloTimeoutMs) {
+          close(4001, "hello not received in time");
+        }
+        return;
+      }
+      if (revalidating === undefined && now() - lastRevalidatedAt >= heartbeatIntervalMs) {
+        revalidating = revalidateCredential();
       }
       if (monitor.isTimedOut()) {
         close(4002, "runner heartbeat timed out");

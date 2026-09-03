@@ -94,7 +94,7 @@ const ENVELOPE_FIELDS: Record<
       "projectId",
       "heartbeatIntervalMs",
       "replayFromCursor",
-      "replayFromCommandId"
+      "nextCommandId"
     ],
     optional: []
   },
@@ -192,7 +192,7 @@ function validateEnvelope(value: unknown): RunnerEnvelope {
         projectId: requireNonEmptyString(record, "projectId"),
         heartbeatIntervalMs: requirePositiveInteger(record, "heartbeatIntervalMs"),
         replayFromCursor: requireCursor(record, "replayFromCursor"),
-        replayFromCommandId: requirePositiveInteger(record, "replayFromCommandId")
+        nextCommandId: requirePositiveInteger(record, "nextCommandId")
       };
     case "command":
       return {

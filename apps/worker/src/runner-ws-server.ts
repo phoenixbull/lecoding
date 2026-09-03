@@ -13,6 +13,7 @@
 
 import type { IncomingMessage, Server } from "node:http";
 import { WebSocketServer, type WebSocket } from "ws";
+import { createQueuedRunnerSocket } from "@lecoding/runner-protocol";
 import type { RunnerSocket, RunnerSocketClose } from "@lecoding/runner-protocol";
 
 /** Path the desktop Local Runner connects to. */
@@ -81,23 +82,31 @@ export function attachRunnerWsServer(
   };
 }
 
-/** Adapts a `ws` client to the transport-agnostic `RunnerSocket` interface. */
+/**
+ * Adapts a `ws` client to the transport-agnostic `RunnerSocket` interface.
+ *
+ * Uses the same shared queue as the desktop client, so both ends treat
+ * "not yet open" identically. A server socket is open as soon as the upgrade
+ * completes, but `welcome` is emitted from inside an async `authenticate`, and
+ * queueing removes any ordering dependency on when that resolves.
+ */
 export function adaptWebSocket(client: WebSocket): RunnerSocket {
-  return {
-    send(text: string): void {
-      // send() throws once the socket is closing; the session routinely races
-      // its own teardown, so a dead socket must not become an exception.
-      if (client.readyState !== client.OPEN) {
-        return;
-      }
+  return createQueuedRunnerSocket({
+    send(text) {
       client.send(text);
     },
-
-    close(code: number, reason?: string): void {
+    close(code, reason) {
       client.close(code, reason ?? "");
     },
-
-    onMessage(listener: (text: string) => void): () => void {
+    onOpen(listener) {
+      if (client.readyState === client.OPEN) {
+        queueMicrotask(listener);
+        return () => undefined;
+      }
+      client.on("open", listener);
+      return () => client.off("open", listener);
+    },
+    onMessage(listener) {
       const handler = (data: unknown) => {
         if (typeof data === "string") {
           listener(data);
@@ -114,8 +123,7 @@ export function adaptWebSocket(client: WebSocket): RunnerSocket {
       client.on("message", handler);
       return () => client.off("message", handler);
     },
-
-    onClose(listener: (info: RunnerSocketClose) => void): () => void {
+    onClose(listener) {
       const handler = (code: number, reason: Buffer) => {
         listener({ code, reason: reason.toString("utf8") });
       };
@@ -123,9 +131,7 @@ export function adaptWebSocket(client: WebSocket): RunnerSocket {
       // A transport error always ends in close; the protocol's only recovery
       // action for a broken transport is reconnect, so it needs no other signal.
       client.on("error", () => undefined);
-      return () => {
-        client.off("close", handler);
-      };
+      return () => client.off("close", handler);
     }
-  };
+  });
 }

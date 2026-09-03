@@ -83,7 +83,7 @@ async function welcome(pair: RunnerSocketPair): Promise<void> {
       projectId: "project-1",
       heartbeatIntervalMs: 15_000,
       replayFromCursor: 1,
-      replayFromCommandId: 1
+      nextCommandId: 1
     })
   );
   await new Promise((resolve) => setTimeout(resolve, 0));

@@ -65,7 +65,7 @@ export interface RunnerWelcomeInfo {
   projectId: string;
   heartbeatIntervalMs: number;
   replayFromCursor: number;
-  replayFromCommandId: number;
+  nextCommandId: number;
 }
 
 export interface RunnerSessionOptions {
@@ -173,7 +173,7 @@ export function createRunnerSession(options: RunnerSessionOptions): RunnerSessio
           projectId: envelope.projectId,
           heartbeatIntervalMs: envelope.heartbeatIntervalMs,
           replayFromCursor: envelope.replayFromCursor,
-          replayFromCommandId: envelope.replayFromCommandId
+          nextCommandId: envelope.nextCommandId
         });
         replayFrom(envelope.replayFromCursor);
         return;
