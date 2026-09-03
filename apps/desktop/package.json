@@ -23,6 +23,7 @@
     "@lecoding/run-controller": "workspace:*",
     "@lecoding/runner-protocol": "workspace:*",
     "@lecoding/secure-store": "workspace:*",
+    "@lecoding/workspace": "workspace:*",
     "react": "^19.2.8",
     "react-dom": "^19.2.8",
     "ws": "^8.18.0"

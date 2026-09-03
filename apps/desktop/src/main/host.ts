@@ -213,6 +213,14 @@ export interface CredentialStoreHandle {
   clear(): Promise<void>;
   /** Drops a credential that passed its expiry. Idempotent. */
   purgeExpired(now?: Date): Promise<void>;
+  /**
+   * The device access token, for the Local Runner's `hello` frame.
+   *
+   * Read from inside the store rather than from the health projection, which
+   * deliberately omits it: the token must be available to the main process
+   * without ever becoming part of anything the Renderer can observe.
+   */
+  deviceAccessToken?(): Promise<string | undefined>;
 }
 
 export type LeCodingClientLike = LeCodingClient;

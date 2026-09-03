@@ -50,6 +50,9 @@ importers:
       '@lecoding/secure-store':
         specifier: workspace:*
         version: link:../../packages/secure-store
+      '@lecoding/workspace':
+        specifier: workspace:*
+        version: link:../../packages/workspace
       react:
         specifier: ^19.2.8
         version: 19.2.8

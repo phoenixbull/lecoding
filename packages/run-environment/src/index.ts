@@ -54,8 +54,11 @@ export {
   type RunEnvironmentContractOptions
 } from "./contract-suite.js";
 
+
+
 export {
   createRemoteRunnerEnvironment,
+  RunnerDeviceNotAuthorizedError,
   RunnerOfflineError,
   type RemoteRunnerEnvironmentOptions,
   type RunnerSessionSource

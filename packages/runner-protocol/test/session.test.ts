@@ -520,23 +520,58 @@ describe("runner session lifecycle", () => {
     const h = createHarness();
     await settle();
     await h.host.call("env.inspect", { handleId: "h" });
+    expect(h.host.lastIssuedCommandId()).toBe(1);
 
     h.pair.a.close(4003, "drop");
     const reconnected = createPairedRunnerSockets();
+    /*
+     * Mirrors the gateway: ids continue per device rather than restarting at 1.
+     * A restarted counter would let genuinely new work collide with the
+     * Runner's cache of the previous connection and be answered without ever
+     * running — the defect this invariant exists to prevent.
+     */
     const host2 = createHostSession({
       socket: reconnected.a,
       sessionId: "session-2",
-      authenticate: async () => ({ ok: true, identity })
+      authenticate: async () => ({ ok: true, identity }),
+      initialCommandId: () => 2
     });
     h.runner.connect(reconnected.b);
     await settle();
 
-    // Re-issue command id 1 (the new session restarts its counter at 1). The
-    // runner already executed id 1, so it must answer from cache, not re-run.
+    // New id, therefore new work: it must actually execute.
     await expect(host2.call("env.inspect", { handleId: "h" })).resolves.toEqual({
       changedFiles: []
     });
-    expect(h.calls).toHaveLength(1);
+    expect(h.calls).toHaveLength(2);
+
+    // The same id replayed is answered from cache and must not execute again.
+    const replay = reconnected.a;
+    replay.send(
+      JSON.stringify({
+        v: 1,
+        kind: "command",
+        id: 2,
+        op: "env.inspect",
+        payload: { handleId: "h" }
+      })
+    );
+    await settle();
+    expect(h.calls).toHaveLength(2);
+  });
+
+  it("refuses to issue a command before hello is accepted", async () => {
+    // A session that has not authenticated has no command-id basis, so
+    // allocating one would produce an id outside the device's sequence.
+    const pair = createPairedRunnerSockets();
+    const host = createHostSession({
+      socket: pair.a,
+      sessionId: "session-3",
+      authenticate: async () => ({ ok: true, identity })
+    });
+    await expect(host.call("env.inspect", { handleId: "h" })).rejects.toThrow(
+      /not authenticated/
+    );
   });
 
   it("ignores duplicate welcome frames", async () => {

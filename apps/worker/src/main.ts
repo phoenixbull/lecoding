@@ -8,6 +8,7 @@ import {
   startWorkerHttpServer
 } from "./http-server.js";
 import { createWorkerProcessHost } from "./worker-host.js";
+import { attachRunnerWsServer } from "./runner-ws-server.js";
 
 /** Reports only a stable message so database credentials cannot leak via errors. */
 function reportFatalWorkerError(): void {
@@ -31,13 +32,28 @@ const host = createWorkerProcessHost({
   onModelRetry: reportModelRetry,
   onArtifactRetentionReport: reportArtifactRetention,
   async startControlPlane(control) {
+    const runner = control.runner;
     const server = await startWorkerHttpServer({
       ...loadWorkerHttpConfig(process.env),
       control,
       webRoot: resolve(
         fileURLToPath(new URL("../../web/dist", import.meta.url))
       ),
-      onBackgroundError: reportFatalWorkerError
+      onBackgroundError: reportFatalWorkerError,
+      // Without this the Local Runner endpoint is never mounted and no
+      // desktop device can connect, even though the gateway exists. It is
+      // attached here rather than inside `startWorkerHttpServer` so the HTTP
+      // module stays free of Runner concerns.
+      ...(runner
+        ? {
+            configureServer: (httpServer) => {
+              attachRunnerWsServer({
+                server: httpServer,
+                onConnection: (socket) => runner.accept(socket)
+              });
+            }
+          }
+        : {})
     });
     console.log(`LeCoding Web/API listening at ${server.origin}`);
     return server;

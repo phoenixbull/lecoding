@@ -86,6 +86,12 @@ export async function createDesktopCredentialStore(
         // An expired token is unusable and must not survive a restart.
         await clearSecureStoreNamespace(selection.store, CREDENTIAL_NAMESPACE);
       }
+    },
+    async deviceAccessToken(): Promise<string | undefined> {
+      // Returned to the main process only, for the Runner session's `hello`.
+      // It is never placed in the health projection the Renderer receives.
+      const credential = await storedCredential();
+      return credential?.accessToken;
     }
   };
 }
