@@ -89,28 +89,18 @@ import {
   loadGitHubOAuthConfig,
   type GitHubOAuthLogin
 } from "./github-oauth.js";
+import { localRunnerDeviceId } from "./local-environment.js";
 import {
   createRunnerGateway,
   type RunnerGateway
 } from "./runner-gateway.js";
 import { attachRunnerWsServer, type RunnerWsServer } from "./runner-ws-server.js";
 
-/**
- * Environment ids of the form `local:<deviceId>` route a Run to that device's
- * Local Runner instead of this Worker's Docker sandbox.
- *
- * Routing on `environmentId` rather than adding a field to `StartRun` keeps
- * `packages/run-engine` untouched: the engine already passes `environmentId`
- * through to `EnvironmentSpec`, so Phase 4B adds no new engine concept.
- */
-const LOCAL_ENVIRONMENT_PREFIX = "local:";
-
-/** Returns the device id for a local environment id, or undefined for server runs. */
-export function localRunnerDeviceId(environmentId: string): string | undefined {
-  return environmentId.startsWith(LOCAL_ENVIRONMENT_PREFIX)
-    ? environmentId.slice(LOCAL_ENVIRONMENT_PREFIX.length)
-    : undefined;
-}
+export {
+  LOCAL_ENVIRONMENT_PREFIX,
+  isLocalEnvironmentId,
+  localRunnerDeviceId
+} from "./local-environment.js";
 
 /** Durable PostgreSQL resources supplied by the deployment-specific adapter. */
 export interface WorkerDatabase {
@@ -244,6 +234,20 @@ export interface WorkerControlPlane {
     revokeRequestSession(request: Request): Promise<void>;
   };
   eventStream: RunEventSseHandler;
+  /**
+   * Proves a bound device belongs to this caller and this project before a
+   * local Run is admitted.
+   *
+   * Absent means local Runs are refused: an ungated `local:<deviceId>` would
+   * let anyone who can guess a device id execute code on someone else's
+   * machine. The HTTP layer answers 404 rather than 403 when it fails, so the
+   * endpoint does not confirm that a device id exists.
+   */
+  isDeviceAuthorizedForProject?(input: {
+    deviceId: string;
+    projectId: string;
+    userId: string;
+  }): boolean | Promise<boolean>;
   /**
    * Device binding routes (`/api/v1/devices/*`). Optional in tests, but a real
    * Worker must mount them or the desktop client can never bind a device.
@@ -889,7 +893,14 @@ export async function composeProductionWorker(
               "Run requested a local environment but this Worker has no Runner gateway"
             );
           }
-          return createRemoteRunnerEnvironment({ gateway: runnerGateway, deviceId });
+          // Project is passed so the adapter can re-verify ownership on every
+          // call: a device id is just a string, and routing on it alone would
+          // let one project's member name another project's device.
+          return createRemoteRunnerEnvironment({
+            gateway: runnerGateway,
+            deviceId,
+            projectId: spec.projectId
+          });
         }
         const factory = runtimeFactories.get(spec.projectId);
         if (!factory) {
@@ -1077,6 +1088,19 @@ export async function composeProductionWorker(
           journal: events,
           broadcaster: eventBroadcaster
         }),
+        /**
+         * Proves the caller owns the device a local Run names.
+         *
+         * The device listing is already scoped to the authenticated user by the
+         * device service, so matching on this triple means a member cannot name
+         * a colleague's device — nor one belonging to a project they are not in.
+         */
+        isDeviceAuthorizedForProject: async ({ deviceId, projectId, userId }) => {
+          const owned = await deviceService.listDevicesForUser(userId);
+          return owned.some(
+            (device) => device.deviceId === deviceId && device.projectId === projectId
+          );
+        },
         runner: runnerGateway,
         // Device binding lets the desktop client exchange a one-time code for
         // a scoped device credential. The service injects the same clock the

@@ -19,6 +19,7 @@ import type {
   RunOperationalMetricsReader
 } from "@lecoding/run-events";
 import type { RunChangesReader, RunResultManager } from "@lecoding/workspace";
+import { localRunnerDeviceId } from "./local-environment.js";
 
 const MAX_JSON_BODY_BYTES = 64 * 1024;
 const APPROVAL_MODES = new Set<ApprovalMode>([
@@ -109,6 +110,20 @@ export interface RunApiHandlerOptions {
   /** Records content-free keep/discard outcomes and failed resolution signals. */
   actions?: RunOperationalActionRecorder;
   eventStream: RunEventSseHandler;
+  /**
+   * Proves a bound device belongs to this caller and this project before a
+   * local Run is admitted.
+   *
+   * Absent means local Runs are refused: an ungated `local:<deviceId>` would
+   * let anyone who can guess a device id execute code on someone else's
+   * machine. Returns a 404 rather than a 403 when it fails, so the endpoint
+   * does not confirm that a device id exists.
+   */
+  isDeviceAuthorizedForProject?(input: {
+    deviceId: string;
+    projectId: string;
+    userId: string;
+  }): boolean | Promise<boolean>;
   /** Observes detached resume failures without exposing them to HTTP clients. */
   onBackgroundError?: (error: unknown) => void;
 }
@@ -275,12 +290,36 @@ export function createRunApiHandler(
               "Full access requires a project administrator"
             );
           }
-          if (input.fileAccessScope !== "workspace_only") {
-            // Server Docker Runs never inherit future PC Local Runner file scopes.
+          /*
+           * The workspace-only rule is about the *server* sandbox, which has no
+           * way to confine a Run to selected host directories. A local Run runs
+           * on the user's own machine, where the desktop sandbox enforces the
+           * tier and refuses one it cannot enforce. Gating both the same way
+           * made `selected_directories` and `host_full` impossible to create by
+           * any normal flow.
+           */
+          const localDeviceId = localRunnerDeviceId(input.environmentId);
+          if (localDeviceId === undefined && input.fileAccessScope !== "workspace_only") {
             return errorResponse(
               400,
               "file_scope_unavailable",
               "Server Runs require workspace-only file access"
+            );
+          }
+          if (
+            localDeviceId !== undefined &&
+            !options.isDeviceAuthorizedForProject?.({
+              deviceId: localDeviceId,
+              projectId,
+              userId: principal.userId
+            })
+          ) {
+            // Without this, any member could name any device id in the project
+            // and have their Run executed on a colleague's machine.
+            return errorResponse(
+              404,
+              "device_not_found",
+              "Runner device was not found"
             );
           }
           const runId = await options.runs.start(

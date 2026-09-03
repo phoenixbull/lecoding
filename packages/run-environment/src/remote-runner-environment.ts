@@ -42,6 +42,14 @@ export interface RemoteRunnerEnvironmentOptions {
   gateway: RunnerSessionSource;
   /** Device that will execute the Run; bound when the Run was created. */
   deviceId: string;
+  /**
+   * Project the Run belongs to.
+   *
+   * Checked against the session's own project on every call. A device id is an
+   * opaque string that another project's member could otherwise name, and
+   * routing on it alone would run their code on someone else's machine.
+   */
+  projectId: string;
 }
 
 /** Raised when the device is not connected, so the Run can be parked offline. */
@@ -52,6 +60,19 @@ export class RunnerOfflineError extends Error {
   }
 }
 
+/**
+ * Raised when the connected device does not belong to the Run's project.
+ *
+ * Distinct from `RunnerOfflineError` because the remedies differ: offline means
+ * wait for a reconnect, mismatched means the Run must not proceed at all.
+ */
+export class RunnerDeviceNotAuthorizedError extends Error {
+  constructor(deviceId: string, projectId: string) {
+    super(`Runner device ${deviceId} is not authorized for project ${projectId}`);
+    this.name = "RunnerDeviceNotAuthorizedError";
+  }
+}
+
 export function createRemoteRunnerEnvironment(
   options: RemoteRunnerEnvironmentOptions
 ): RunEnvironment {
@@ -59,6 +80,12 @@ export function createRemoteRunnerEnvironment(
     const session = options.gateway.sessionFor(options.deviceId);
     if (!session) {
       throw new RunnerOfflineError(options.deviceId);
+    }
+    // Verified per call, not once at construction: a session can be replaced by
+    // a reconnect at any moment, and the replacement carries its own identity.
+    const identity = session.identity();
+    if (identity === undefined || identity.projectId !== options.projectId) {
+      throw new RunnerDeviceNotAuthorizedError(options.deviceId, options.projectId);
     }
     return session;
   }
