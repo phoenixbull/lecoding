@@ -181,24 +181,50 @@ async function handleNodeRequest(
       await handleLoginRequest(incoming, outgoing, url, options);
       return;
     }
+    // Device binding owns its own per-route authentication because the
+    // exchange endpoint deliberately presents no session: the device proves
+    // itself with a one-time code instead. Routing it before the API bearer
+    // gate is what lets a desktop client bind before it holds a credential.
+    if (
+      options.control.devices &&
+      (url.pathname === "/api/v1/devices" || url.pathname.startsWith("/api/v1/devices/"))
+    ) {
+      const deviceRequest = await toWebRequest(incoming, url);
+      await sendWebResponse(outgoing, await options.control.devices.handle(deviceRequest));
+      return;
+    }
     if (!isApiAuthorized(incoming, options.auth)) {
       sendUnauthorized(outgoing);
       return;
     }
     const abort = new AbortController();
     outgoing.once("close", () => abort.abort());
-    const body = await readIncomingBody(incoming);
-    const request = new Request(url, {
-      method: incoming.method ?? "GET",
-      headers: nodeHeadersToWeb(incoming.headers),
-      // Minimal API bodies are JSON text; decoding avoids cross-lib Uint8Array types.
-      ...(body.byteLength > 0 ? { body: new TextDecoder().decode(body) } : {}),
-      signal: abort.signal
-    });
+    const request = await toWebRequest(incoming, url, abort.signal);
     await sendWebResponse(outgoing, await handleApi(request));
     return;
   }
   await serveStatic(outgoing, options.webRoot, url.pathname);
+}
+
+/**
+ * Converts a Node request into a Web `Request`.
+ *
+ * The optional signal lets long-lived handlers (SSE, device binding) observe a
+ * client disconnect instead of writing into a closed socket.
+ */
+async function toWebRequest(
+  incoming: IncomingMessage,
+  url: URL,
+  signal?: AbortSignal
+): Promise<Request> {
+  const body = await readIncomingBody(incoming);
+  return new Request(url, {
+    method: incoming.method ?? "GET",
+    headers: nodeHeadersToWeb(incoming.headers),
+    // Minimal API bodies are JSON text; decoding avoids cross-lib Uint8Array types.
+    ...(body.byteLength > 0 ? { body: new TextDecoder().decode(body) } : {}),
+    ...(signal ? { signal } : {})
+  });
 }
 
 async function handleLoginRequest(

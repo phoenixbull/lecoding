@@ -1,0 +1,52 @@
+# Continuous verification for every push and pull request.
+#
+# The desktop release pipeline already runs `pnpm typecheck` and `pnpm test`
+# before packaging, but it only triggers on tags. Without a PR gate a
+# regression can sit on `master` until the next release tag reveals it, which
+# is exactly the failure mode M0 was meant to remove.
+#
+# Environment gates: the loopback-dependent desktop integration test skips
+# itself with an explicit reason where local listeners are forbidden, so this
+# job measures the same deterministic set everywhere.
+name: ci
+
+on:
+  push:
+    branches:
+      - master
+      - main
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  # Cancel superseded runs for the same branch / PR.
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    name: Typecheck and test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v6
+        with:
+          node-version: "24"
+
+      - name: Install pnpm
+        run: npm install -g pnpm@10
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Typecheck (full repository)
+        run: pnpm typecheck
+
+      - name: Test (full repository)
+        run: pnpm test

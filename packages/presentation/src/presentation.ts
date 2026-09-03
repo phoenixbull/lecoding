@@ -250,6 +250,23 @@ export function canResolveRunResult(status: RunStatus): boolean {
   return status === "succeeded" || status === "failed";
 }
 
+/**
+ * Statuses in which a steer can still reach a live Run.
+ *
+ * This mirrors the engine's own `isLiveSteerableStatus` gate: the server
+ * rejects a steer outside these statuses, so the UI must offer the control
+ * under exactly the same rule instead of guessing. Sharing one predicate keeps
+ * the Web DOM and Desktop React views from drifting apart.
+ */
+export function canSteerRun(status: RunStatus): boolean {
+  return (
+    status === "queued" ||
+    status === "preparing" ||
+    status === "running" ||
+    status === "environment_offline"
+  );
+}
+
 /** Stable event title independent of untrusted event payload content. */
 export function formatEventTitle(type: RunEventType): string {
   return EVENT_LABELS[type];

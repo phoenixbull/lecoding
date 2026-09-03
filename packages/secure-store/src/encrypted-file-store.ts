@@ -1,19 +1,9 @@
 import {
   createCipheriv,
   createDecipheriv,
-  createHash,
   pbkdf2Sync,
-  randomBytes,
-  timingSafeEqual
+  randomBytes
 } from "node:crypto";
-import {
-  existsSync,
-  mkdirSync,
-  readFileSync,
-  renameSync,
-  writeFileSync
-} from "node:fs";
-import { dirname, isAbsolute, resolve } from "node:path";
 import {
   MAX_KEY_BYTES,
   MAX_VALUE_BYTES,
@@ -22,6 +12,7 @@ import {
   validateValue,
   type SecureStore
 } from "./index.js";
+import { normaliseFilePath, readJsonFile, writeJsonFile } from "./atomic-json.js";
 
 /**
  * File-backed encrypted adapter.
@@ -39,6 +30,9 @@ import {
  * Each ciphertext is `iv || ciphertext || authTag` from AES-256-GCM. KDF
  * derivation uses PBKDF2-HMAC-SHA256 with 200k iterations to deter offline
  * brute-force attacks against a stolen secrets file.
+ *
+ * This adapter is an explicit degradation, not the default: when the OS
+ * keychain is reachable the console prefers `safe-storage-store`.
  */
 export interface EncryptedFileSecureStoreOptions {
   filePath: string;
@@ -77,28 +71,29 @@ export function createEncryptedFileSecureStore(
     );
   }
   const filePath = normaliseFilePath(options.filePath);
-  const iterations =
-    options.pbkdf2Iterations ?? DEFAULT_PBKDF2_ITERATIONS;
+  const iterations = options.pbkdf2Iterations ?? DEFAULT_PBKDF2_ITERATIONS;
   if (!Number.isSafeInteger(iterations) || iterations < 1) {
     throw new Error("pbkdf2Iterations must be a positive integer");
   }
-  const parent = dirname(filePath);
-  if (!existsSync(parent)) {
-    mkdirSync(parent, { recursive: true });
-  }
-  const initial = readPayload(filePath);
+  const initial = readJsonFile<FilePayload>(filePath);
   let payload: FilePayload = initial ?? createEmptyPayload({ iterations });
+  if (initial !== undefined && !isValidPayload(initial)) {
+    throw new Error("Encrypted SecureStore file has an unexpected schema");
+  }
+  // An existing file's recorded KDF cost wins over the option: the key was
+  // derived at that cost, and re-deriving at a different one would make every
+  // stored credential permanently unreadable. The option only seeds new files.
+  const effectiveIterations = initial?.kdf.iterations ?? iterations;
+  if (!Number.isSafeInteger(effectiveIterations) || effectiveIterations < 1) {
+    throw new Error("Encrypted SecureStore file records an invalid iteration count");
+  }
   const keyCache: { key: Buffer } = {
-    key: deriveKey(options.passphrase, payload.kdf.salt, iterations)
+    key: deriveKey(options.passphrase, payload.kdf.salt, effectiveIterations)
   };
 
   function persist(next: FilePayload): void {
-    const serialised = JSON.stringify(next);
-    // Atomic write: rename over the original so a crash never leaves a
-    // half-written plaintext-then-encrypted file on disk.
-    const tempPath = `${filePath}.tmp-${randomBytes(4).toString("hex")}`;
-    writeFileSync(tempPath, serialised, { mode: 0o600 });
-    renameSync(tempPath, filePath);
+    writeJsonFile(filePath, next);
+    payload = next;
   }
 
   return {
@@ -134,7 +129,6 @@ export function createEncryptedFileSecureStore(
         items: { ...payload.items, [key]: encrypt(keyCache.key, value) }
       };
       persist(next);
-      payload = next;
     },
     async deleteItem(key) {
       validateKey(key);
@@ -149,7 +143,6 @@ export function createEncryptedFileSecureStore(
         items: nextItems
       };
       persist(next);
-      payload = next;
     },
     async listKeys(namespace) {
       if (namespace !== undefined && namespace.length === 0) {
@@ -164,24 +157,6 @@ export function createEncryptedFileSecureStore(
       return keys.sort();
     }
   };
-}
-
-function normaliseFilePath(input: string): string {
-  if (typeof input !== "string" || input.length === 0) {
-    throw new Error("Encrypted-file SecureStore path is required");
-  }
-  const resolved = resolve(input);
-  // Reject obvious escape attempts that target the parent of the resolved
-  // root; consumers should pass a stable per-user data directory.
-  if (!isAbsolute(resolved)) {
-    throw new Error("Encrypted-file SecureStore path must be absolute");
-  }
-  // Capping the length protects against pathological inputs that some
-  // filesystems truncate silently.
-  if (resolved.length > 4096) {
-    throw new Error("Encrypted-file SecureStore path is too long");
-  }
-  return resolved;
 }
 
 function deriveKey(
@@ -222,36 +197,6 @@ function decrypt(key: Buffer, encoded: string): string {
     decipher.final()
   ]);
   return plaintext.toString("utf8");
-}
-
-function readPayload(filePath: string): FilePayload | null {
-  if (!existsSync(filePath)) {
-    return null;
-  }
-  let text: string;
-  try {
-    text = readFileSync(filePath, "utf8");
-  } catch (error) {
-    throw new Error(
-      `Encrypted SecureStore file is unreadable: ${
-        error instanceof Error ? error.message : String(error)
-      }`
-    );
-  }
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(text);
-  } catch (error) {
-    throw new Error(
-      `Encrypted SecureStore file is corrupt: ${
-        error instanceof Error ? error.message : String(error)
-      }`
-    );
-  }
-  if (!isValidPayload(parsed)) {
-    throw new Error("Encrypted SecureStore file has an unexpected schema");
-  }
-  return parsed;
 }
 
 function createEmptyPayload(input: { iterations: number }): FilePayload {
@@ -298,10 +243,3 @@ function isValidPayload(value: unknown): value is FilePayload {
   }
   return true;
 }
-
-// timingSafeEqual on a constant length is a documentation aid: the
-// comparison is short-circuited by JS array equality anyway, but emitting
-// the helper documents that the secure-store deliberately treats string
-// lengths as public. Suppress the unused warning.
-void timingSafeEqual;
-void createHash;

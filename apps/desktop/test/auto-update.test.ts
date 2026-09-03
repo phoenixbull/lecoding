@@ -61,6 +61,34 @@ describe("compareVersions", () => {
     expect(compareVersions("1.2.3-alpha.2", "1.2.3-alpha.1")).toBeGreaterThan(0);
     expect(compareVersions("1.2.3-beta", "1.2.3-alpha")).toBeGreaterThan(0);
   });
+
+  it("compares dot-separated numeric identifiers numerically, not as text", () => {
+    // A lexicographic comparison would put rc.10 below rc.2, making the
+    // updater refuse a genuinely newer release candidate.
+    expect(compareVersions("1.2.3-rc.10", "1.2.3-rc.2")).toBeGreaterThan(0);
+    expect(compareVersions("1.2.3-rc.2", "1.2.3-rc.10")).toBeLessThan(0);
+  });
+
+  it("compares single alphanumeric identifiers in ASCII order (SemVer 2.0.0 § 11.4.2)", () => {
+    // `rc10` is ONE alphanumeric identifier, not `rc` + `10`, so ASCII order
+    // applies and `rc10` legitimately precedes `rc2`.
+    expect(compareVersions("1.2.3-rc10", "1.2.3-rc2")).toBeLessThan(0);
+  });
+
+  it("ranks a longer pre-release field set above its prefix (SemVer 2.0.0 § 11.4)", () => {
+    expect(compareVersions("1.2.3-alpha.1", "1.2.3-alpha")).toBeGreaterThan(0);
+    expect(compareVersions("1.2.3-alpha", "1.2.3-alpha.1")).toBeLessThan(0);
+  });
+
+  it("ranks numeric identifiers below alphanumeric ones (SemVer 2.0.0 § 11.4.3)", () => {
+    expect(compareVersions("1.2.3-alpha.beta", "1.2.3-alpha.1")).toBeGreaterThan(0);
+    expect(compareVersions("1.2.3-alpha.1", "1.2.3-alpha.beta")).toBeLessThan(0);
+  });
+
+  it("reports identical versions as equal, including their pre-release tags", () => {
+    expect(compareVersions("1.2.3-rc.1", "1.2.3-rc.1")).toBe(0);
+    expect(compareVersions("1.2.3", "1.2.3")).toBe(0);
+  });
 });
 
 describe("isDowngradeAllowed", () => {

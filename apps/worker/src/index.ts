@@ -63,6 +63,11 @@ import {
   type Verifier
 } from "@lecoding/verifier";
 import {
+  createDeviceBindingHttpHandler,
+  createDeviceBindingService
+} from "@lecoding/device-binding";
+import { createPostgresDeviceBindingStore } from "@lecoding/device-binding/postgres";
+import {
   createGitRunChangesReader,
   createGitRunDiffSafetyChecker,
   createGitRunResultManager,
@@ -215,6 +220,11 @@ export interface WorkerControlPlane {
     revokeRequestSession(request: Request): Promise<void>;
   };
   eventStream: RunEventSseHandler;
+  /**
+   * Device binding routes (`/api/v1/devices/*`). Optional in tests, but a real
+   * Worker must mount them or the desktop client can never bind a device.
+   */
+  devices?: import("@lecoding/device-binding").DeviceBindingHttpHandler;
 }
 
 /** Resources owned by one Worker process after dependency composition succeeds. */
@@ -984,6 +994,25 @@ export async function composeProductionWorker(
         eventStream: createRunEventSseHandler({
           journal: events,
           broadcaster: eventBroadcaster
+        }),
+        // Device binding lets the desktop client exchange a one-time code for
+        // a scoped device credential. The service injects the same clock the
+        // rest of the Worker uses so code and device expiry stay verifiable.
+        devices: createDeviceBindingHttpHandler({
+          service: createDeviceBindingService({
+            store: createPostgresDeviceBindingStore(options.database.executor),
+            now: () => new Date(now())
+          }),
+          principal: {
+            async authenticate(request) {
+              const principal = await access.authenticate(request);
+              return principal
+                ? { userId: principal.userId, email: principal.email ?? "" }
+                : undefined;
+            }
+          },
+          projectIds: projects.map((project) => project.projectId),
+          projectName: (projectId) => projectById.get(projectId)?.projectId
         })
       },
       // Preserve adapters that implement close() as a receiver-bound method.

@@ -37,8 +37,11 @@ const inputs: ForgeConfigInputs = {
     releaseTag: process.env["LECODING_RELEASE_VERSION"],
     packageVersion: process.env["npm_package_version"]
   }),
-  rendererEntry: "../renderer/dist/index.html",
-  mainEntry: "./src/main/index.ts",
+  // Both entries are resolved against the packaged app root. The Renderer is
+  // a built asset (Vite emits it under apps/desktop/dist/renderer), not a
+  // TypeScript source, so it must never point at `src/`.
+  rendererEntry: "dist/renderer/index.html",
+  mainEntry: "./src/main/electron.ts",
   preloadEntry: "./src/preload/index.ts",
   signEnv: readSigningEnvironment(),
   repository: process.env["LECODING_GITHUB_REPOSITORY"] ?? "phoenixbull/lecoding"

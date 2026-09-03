@@ -73,10 +73,52 @@ export function compareVersions(a: string, b: string): number {
   if (bv.pre === undefined) {
     return -1;
   }
-  if (av.pre === bv.pre) {
-    return 0;
+  return comparePreRelease(av.pre, bv.pre);
+}
+
+/**
+ * Orders two dot-separated pre-release identifiers per SemVer 2.0.0 § 11.4.
+ *
+ * A plain string comparison is wrong in two ways that matter for updates:
+ * `rc10` would sort below `rc2`, and `alpha.10` below `alpha.9` — both would
+ * make the updater refuse a genuinely newer release candidate.
+ */
+function comparePreRelease(a: string, b: string): number {
+  const aParts = a.split(".");
+  const bParts = b.split(".");
+  const length = Math.max(aParts.length, bParts.length);
+  for (let index = 0; index < length; index += 1) {
+    const aPart = aParts[index];
+    const bPart = bParts[index];
+    // § 11.4.2: a larger set of fields wins when every preceding field ties.
+    if (aPart === undefined) {
+      return -1;
+    }
+    if (bPart === undefined) {
+      return 1;
+    }
+    if (aPart === bPart) {
+      continue;
+    }
+    const aNumeric = isNumericIdentifier(aPart);
+    const bNumeric = isNumericIdentifier(bPart);
+    if (aNumeric && bNumeric) {
+      return Number(aPart) - Number(bPart);
+    }
+    // § 11.4.3: numeric identifiers always rank below alphanumeric ones.
+    if (aNumeric) {
+      return -1;
+    }
+    if (bNumeric) {
+      return 1;
+    }
+    return aPart < bPart ? -1 : 1;
   }
-  return av.pre < bv.pre ? -1 : 1;
+  return 0;
+}
+
+function isNumericIdentifier(value: string): boolean {
+  return /^\d+$/u.test(value);
 }
 
 export interface DowngradeInputs {

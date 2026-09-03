@@ -5,16 +5,23 @@
   "description": "LeCoding desktop app — AI-assisted coding agent",
   "author": "LeCoding Team",
   "type": "module",
-  "main": "dist/main/index.js",
+  "main": "dist/main/electron.js",
   "scripts": {
     "typecheck": "tsc --noEmit",
+    "build:main": "tsc --project tsconfig.build.json",
+    "build:renderer": "vite build --config vite.renderer.config.ts",
+    "build": "pnpm run build:renderer && pnpm run build:main",
     "package": "electron-forge package",
     "make": "electron-forge make"
   },
   "dependencies": {
     "@lecoding/client-sdk": "workspace:*",
     "@lecoding/contracts": "workspace:*",
-    "@lecoding/secure-store": "workspace:*"
+    "@lecoding/presentation": "workspace:*",
+    "@lecoding/run-controller": "workspace:*",
+    "@lecoding/secure-store": "workspace:*",
+    "react": "^19.2.8",
+    "react-dom": "^19.2.8"
   },
   "devDependencies": {
     "@electron-forge/cli": "^7.11.2",
@@ -23,8 +30,20 @@
     "@electron-forge/maker-pkg": "^7.11.2",
     "@electron-forge/maker-squirrel": "^7.11.2",
     "@electron-forge/maker-zip": "^7.11.2",
+    "@lecoding/device-binding": "workspace:*",
+    "@lecoding/run-engine": "workspace:*",
+    "@lecoding/run-events": "workspace:*",
+    "@lecoding/worker": "workspace:*",
+    "@testing-library/dom": "^10.4.1",
+    "@testing-library/react": "^16.3.3",
+    "@testing-library/user-event": "^14.6.7",
     "@types/node": "^22.20.1",
+    "@types/react": "^19.2.18",
+    "@types/react-dom": "^19.2.5",
+    "@vitejs/plugin-react": "^5.2.0",
     "electron": "^44.1.0",
-    "typescript": "^5.9.3"
+    "jsdom": "^26.1.0",
+    "typescript": "^5.9.3",
+    "vite": "^7.3.6"
   }
 }

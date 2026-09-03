@@ -245,32 +245,20 @@ function buildPackagerConfig(
   return packager;
 }
 
-function buildMacosMakers(signEnv: SigningEnvironment): ForgeMaker[] {
-  // Three independent makers on darwin so each output format has its own
-  // artifact path and signing provenance. The `config` block is left
-  // empty; osxSign / osxNotarize on packagerConfig already cover the
-  // signing concerns.
-  //  - zip:   portable .app bundle in a zip (auto-update baseline)
-  //  - dmg:   standard macOS drag-to-install disk image
-  //  - pkg:   system-level installer package (for MDM / enterprise)
+function buildMacosMakers(): ForgeMaker[] {
+  // The consumer release ships exactly two macOS artefacts:
+  //  - zip: portable .app bundle (the auto-update baseline)
+  //  - dmg: standard drag-to-install disk image
   //
-  // Fallback: when no Apple notarization credentials are available
-  // (APPLE_ID / APPLE_TEAM_ID / APPLE_APP_SPECIFIC_PASSWORD all empty),
-  // drop maker-pkg because it always tries to sign the .pkg via
-  // @electron/osx-sign and fails with "No identity found" even when
-  // `osxSign` is disabled at the packager level. zip + dmg remain
-  // usable for manual distribution, just not for MDM / enterprise.
-  const hasAppleTeam = Boolean(
-    signEnv.APPLE_TEAM_ID && signEnv.APPLE_ID && signEnv.APPLE_APP_SPECIFIC_PASSWORD
-  );
-  const makers: ForgeMaker[] = [
+  // `maker-pkg` is deliberately absent even when Apple credentials exist.
+  // M1.4 scoped MSI / PKG out of the default consumer version: an unnotarized
+  // .pkg is a worse first-run experience than a signed .dmg, and every extra
+  // maker is another artefact the architecture and duplicate-name gates have
+  // to police. Enterprise packaging stays a separate, opt-in job.
+  return [
     { name: "@electron-forge/maker-zip", platforms: ["darwin"] },
     { name: "@electron-forge/maker-dmg", platforms: ["darwin"] }
   ];
-  if (hasAppleTeam) {
-    makers.push({ name: "@electron-forge/maker-pkg", platforms: ["darwin"] });
-  }
-  return makers;
 }
 
 function buildWindowsMaker(
@@ -335,6 +323,24 @@ export function buildForgeConfig(inputs: ForgeConfigInputs): ForgeConfig {
         "falling back to a 0.0.0 placeholder."
     );
   }
+  // The Renderer must be a packaged asset inside the app. An absolute path
+  // would break on the build machine's layout and a remote URL would hand the
+  // Renderer to whoever controls the host, so both are refused here.
+  if (rendererEntry.startsWith("http://") || rendererEntry.startsWith("https://")) {
+    throw new Error(
+      `forge-config: rendererEntry "${rendererEntry}" must be a packaged relative path, not a URL`
+    );
+  }
+  if (rendererEntry.startsWith("/") || rendererEntry.includes("..")) {
+    throw new Error(
+      `forge-config: rendererEntry "${rendererEntry}" must stay inside the packaged app`
+    );
+  }
+  if (!rendererEntry.endsWith("index.html")) {
+    throw new Error(
+      `forge-config: rendererEntry "${rendererEntry}" must point at index.html`
+    );
+  }
   const [owner, repo] = repository.split("/");
   if (!owner || !repo) {
     throw new Error(
@@ -349,10 +355,7 @@ export function buildForgeConfig(inputs: ForgeConfigInputs): ForgeConfig {
     mainEntry,
     preloadEntry,
     packagerConfig: buildPackagerConfig(signEnv, appVersion),
-    makers: [
-      ...buildMacosMakers(signEnv),
-      buildWindowsMaker(signEnv, appVersion)
-    ],
+    makers: [...buildMacosMakers(), buildWindowsMaker(signEnv, appVersion)],
     autoUpdate: {
       provider: "github",
       owner,

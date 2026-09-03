@@ -38,7 +38,7 @@ M0 的代码偏差已经补齐，确定性门禁恢复：21/21 workspace 类型�
 - tag 严格归一化：`v1.2.3 → 1.2.3`，`beta-v1.2.3 → 1.2.3-beta.0`；无 tag 的 `0.0.0` 和非法 semver 均拒绝构建。
 - `appVersion` 同时写入 Forge `packagerConfig.appVersion`、`buildVersion`、Squirrel 标题与安装包文件名。
 - CI 把 `matrix.arch` 传给 Forge 的 `--arch`，并在上传前校验版本、平台、架构和必需产物。
-- release job 对缺失资产使用 `fail_on_unmatched_files: true`；M0 当前要求 Windows setup EXE/NUPKG/RELEASES 与 macOS DMG/ZIP，MSI/PKG 是否交付仍留给 M1 产品决策。
+- release job 对缺失资产使用 `fail_on_unmatched_files: true`；M0 当前要求 Windows setup EXE/NUPKG/RELEASES 与 macOS DMG/ZIP。M1 已确认这些就是消费者发布矩阵，MSI/PKG 不进入默认 release。
 
 ## 本次验证
 
@@ -66,6 +66,6 @@ RUN_LIVE_POSTGRES_CONCURRENCY=1 \
 ## M0 后续外部证据
 
 - 在健康的真实 PostgreSQL 上跑通上述多会话测试。
-- 在 GitHub Actions 三个平台执行一次 tag dry-run，保存 Windows x64、macOS arm64、macOS x64 的产物清单。
+- 在 GitHub Actions 执行一次 tag dry-run：Windows x64、`macos-15` arm64、`macos-15-intel` x64。产物清单之外的架构证据已由 M1 自动化覆盖：`scripts/ci-desktop-make.mjs` 调用 `apps/desktop/src/build/architecture.ts`，用纯 Node 解析 Mach-O / PE 头，校验打包 `.app` 以及解压后 ZIP / DMG / NUPKG 内的主二进制和全部 `.node`；不依赖 `lipo`，因为 Windows runner 没有该工具。
 - Docker 隔离和真实模型基线仍属于显式外部环境 gate。
-- 正式签名、公证、安装包 E2E、MSI/PKG 产品决策属于 M1/M3，不纳入 M0 完成声明。
+- 正式签名、公证和安装包 E2E 属于 M1/M3，不纳入 M0 完成声明。M1 已确定消费者发布只包含 Windows Squirrel 与 macOS DMG/ZIP；MSI/PKG 延后到明确的企业部署需求。

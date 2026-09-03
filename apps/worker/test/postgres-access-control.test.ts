@@ -53,8 +53,16 @@ describe("PostgreSQL control-plane access", () => {
     );
 
     expect(session).toEqual({ accessToken: rawToken });
-    expect(principal).toEqual({ userId: "user-alice" });
-    expect(cookiePrincipal).toEqual({ userId: "user-alice" });
+    // The principal now carries the account email so device binding can record
+    // which operator a bound device belongs to.
+    expect(principal).toEqual({
+      userId: "user-alice",
+      email: "alice@example.com"
+    });
+    expect(cookiePrincipal).toEqual({
+      userId: "user-alice",
+      email: "alice@example.com"
+    });
     await expect(access.roleFor("user-alice", "project-1")).resolves.toBe(
       "developer"
     );

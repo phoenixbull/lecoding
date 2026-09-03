@@ -104,6 +104,23 @@ export {
   type EncryptedFileSecureStoreOptions
 } from "./encrypted-file-store.js";
 
+// Re-export the OS-keychain adapter and the backend chooser. Together they
+// make "which backend is protecting the credential right now" an explicit,
+// reportable fact instead of an implementation detail.
+export {
+  createSafeStorageSecureStore,
+  type SafeStorageLike,
+  type SafeStorageSecureStoreOptions
+} from "./safe-storage-store.js";
+export {
+  clearSecureStoreNamespace,
+  selectSecureStore,
+  type SecureStoreBackend,
+  type SecureStoreHealth,
+  type SecureStoreSelection,
+  type SelectSecureStoreOptions
+} from "./select-backend.js";
+
 // Re-export the device-credential helper that wires the contract to the
 // exchange shape produced by the Worker's device-binding API.
 export {

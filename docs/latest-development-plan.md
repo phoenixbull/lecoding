@@ -26,11 +26,13 @@ Phase 5 不进入本计划的固定工期。它必须等待至少数百个带 `v
 - `pnpm typecheck`：19/20 workspace 通过；`@lecoding/anthropic-model` 缺少对 `@lecoding/contracts` 的直接依赖。
 - `pnpm test`：546 通过、28 失败、4 跳过。
 - 失败中有 5 个是当前受限环境禁止 loopback 监听；17 个源于 Git 2.22 不支持测试夹具使用的 `git init --initial-branch`；其余包含设备绑定、指标时钟和 Windows 打包配置的稳定失败。
-- GitHub Actions 已在 Windows x64、macOS arm64、macOS x64 三个 job 中成功执行，并发布 `v0.0.1`；但产物未签名、未公证，包内版本仍是 `0.0.0`，macOS x64 job 实际产生 arm64 产物，且没有 MSI / PKG。
+- GitHub Actions 已在 Windows x64、macOS arm64、macOS x64 三个 job 中成功执行，并发布 `v0.0.1`；但产物未签名、未公证，包内版本仍是 `0.0.0`，macOS x64 job 实际产生 arm64 产物。当时没有 MSI / PKG；M1 复评后已确认二者不属于消费者发布要求。
 
 上述数据是本计划的入口基线。任何阶段完成声明都必须由当次重新运行的证据替代，而不能只引用历史审计数字。
 
-M0 修复后的最新证据见 [m0-completion-summary.md](m0-completion-summary.md)：`pnpm typecheck` 已达 21/21；确定性测试与允许 loopback 的 HTTP 测试已通过。真实 PostgreSQL 多会话测试已经落地，但健康数据库环境的通过证据仍待补齐。
+M0 修复后的证据见 [m0-completion-summary.md](m0-completion-summary.md)：`pnpm typecheck` 20/20；确定性测试与允许 loopback 的 HTTP 测试已通过。真实 PostgreSQL 多会话测试已经落地，但健康数据库环境的通过证据仍待补齐。
+
+M1 完成后的最新基线见 [m1-completion-summary.md](m1-completion-summary.md)：`pnpm typecheck` **23/23**（新增 `@lecoding/presentation` 与 `@lecoding/run-controller` 两个 package；`@lecoding/test-harness` 无 typecheck 任务不计入），`pnpm test` **805 通过 / 9 跳过 / 0 失败**。所有跳过项均为显式环境 gate。
 
 ## 3. 执行原则
 
@@ -44,12 +46,12 @@ M0 修复后的最新证据见 [m0-completion-summary.md](m0-completion-summary.
 
 ## 4. 里程碑总览
 
-| 里程碑 | 目标 | 单人工期 | 依赖 |
-|---|---|---:|---|
-| M0 | 恢复全仓库可信质量门禁 | 3–5 个工作日 | 无 |
-| M1 | 完成 Phase 4A Connected Desktop 用户闭环 | 7–12 个工作日 | M0 |
-| M2 | 完成 Phase 4B Local Runner 闭环 | 10–15 个工作日 | M0、M1 的 UI / 凭据 seam |
-| M3 | 完成正式发布证据和文档收口 | 3–5 个工作日 | M0–M2 |
+| 里程碑 | 目标 | 单人工期 | 依赖 | 状态 |
+|---|---|---:|---|---|
+| M0 | 恢复全仓库可信质量门禁 | 3–5 个工作日 | 无 | 已完成 |
+| M1 | 完成 Phase 4A Connected Desktop 用户闭环 | 7–12 个工作日 | M0 | 已完成（签名/公证与人工黄金 smoke 待外部依赖） |
+| M2 | 完成 Phase 4B Local Runner 闭环 | 10–15 个工作日 | M0、M1 的 UI / 凭据 seam | 未开始 |
+| M3 | 完成正式发布证据和文档收口 | 3–5 个工作日 | M0–M2 | 未开始 |
 
 预计：服务器 / Web 私有 Beta 还需 3–7 个工作日；严格完成 Phase 4A 还需约 2–3 周；严格完成 Phase 4A + 4B 还需约 4–6 周。
 
@@ -85,7 +87,7 @@ M0 修复后的最新证据见 [m0-completion-summary.md](m0-completion-summary.
 - [x] 确认所有包在干净安装后不依赖根目录偶然 hoist 的未声明模块。
 - [x] 在 CI 中运行全仓库 `pnpm typecheck`，而不只检查 desktop 子图。
 
-退出条件：全新 `pnpm install --frozen-lockfile` 后，21/21 workspace 类型检查通过。
+退出条件：全新 `pnpm install --frozen-lockfile` 后，所有含 typecheck 任务的 workspace 均通过（M0 完成时实测 20/20）。
 
 ### M0.3 测试可移植性与确定性
 
@@ -127,57 +129,84 @@ pnpm typecheck
 
 目标：用户可安装桌面客户端，通过设备绑定连接服务器，并完成与 Web 一致的 Run 管理闭环。
 
-### M1.1 React Renderer 与状态模型
+### M1.1 React Renderer 与框架无关状态模型
 
 优先级：P1  
-估时：3–5 天
+估时：3–5 天  
+状态：**已完成**（2026-09-02），详见 [m1-completion-summary.md](m1-completion-summary.md)
 
-- [ ] 建立 Renderer 入口、路由和严格类型化的 `window.lecoding` hooks。
-- [ ] 实现登录 / 设备绑定状态、项目选择和设备撤销页面。
-- [ ] 实现 Run 创建、历史列表、详情恢复和断线状态。
-- [ ] 实现时间线、审批、用户回答、steer、取消、Diff、验证证据和 keep/discard。
-- [ ] Renderer 只能通过 preload 暴露的白名单 IPC；不得直接访问 Node、文件系统或原始网络凭据。
-- [ ] 复用 Web 的 presentation / contract seam，避免维护两套状态语义。
+- [x] 提取共享 `@lecoding/run-controller` 深模块：承载 Run 状态转换与 SSE cursor 续传、去重和重连；不得依赖 React 或 DOM。投影层与 SSE 编排落在同批新建的 `@lecoding/presentation`。
+- [x] 将 `run-stream` 对 `LeCodingClient` 的直接依赖收窄为 `RunEventSource` interface，并提供 Web HTTP/SSE 与 Desktop IPC 两个 adapter。
+- [x] 建立 React + Vite Renderer 入口和路由；React 只作为 View adapter，通过 `useSyncExternalStore` 订阅共享 controller，不在 hooks 中复制业务状态机。
+- [x] Main 持有 Client SDK、设备凭据和 SSE 连接；preload 暴露类型化事件订阅与 unsubscribe，不向 Renderer 暴露 token、原始网络客户端或 `ipcRenderer`。
+- [x] 实现登录 / 设备绑定状态、项目选择和设备撤销页面。
+- [x] 实现 Run 创建、历史列表、详情恢复和断线状态。
+- [x] 实现时间线、审批、用户回答、steer、取消、Diff、验证证据和 keep/discard。
+- [x] Renderer 只能通过 preload 暴露的白名单 IPC；不得直接访问 Node、文件系统或原始网络凭据。
+- [x] Web 手写 DOM 与 Desktop React View 消费同一 `RunConsoleController`、presentation 和 contract seam，避免维护两套状态语义。
 
-退出条件：PRD Phase 4A 的 Run 管理功能与 Web 行为一致，并有组件测试和 IPC 集成测试。
+退出条件：PRD Phase 4A 的 Run 管理功能与 Web 行为一致；框架无关 controller 通过纯 Vitest 行为测试，Web HTTP/SSE 与 Desktop IPC adapter 通过同一 contract suite，React 测试只验证用户可见渲染和命令绑定。
+实测：controller 50 + reconnect 12、presentation 26 + run-stream 8、Renderer 组件 7、IPC gateway 7 全通过。
+新增 PR 门禁 `.github/workflows/ci.yml`，使上述确定性测试在每个 PR 上运行，而不只在打 tag 时运行。
+
+**顺带修复的三个阻塞缺陷**（原计划未列出）：
+
+1. `apps/desktop/src/main/index.ts` 的 `webPreferences` 写的是 `preload: undefined`，preload 从未挂载，`window.lecoding` 根本不存在。
+2. 全仓库没有生产 Electron bootstrap，`package.json` 的 `main` 指向只导出工厂函数的模块，打包后的应用无法启动；新增 `src/main/electron.ts`。
+3. `forge.config.ts` 的 `rendererEntry` 指向不存在的 `apps/renderer/dist/index.html`，已改为 `dist/renderer/index.html` 并由 CI 的 `build:renderer` 产出。
 
 ### M1.2 原生凭据安全存储
 
 优先级：P1  
-估时：1–2 天
+估时：1–2 天  
+状态：**已完成**（确定性测试）；真实 OS 存储 smoke 待目标平台执行
 
-- [ ] 实现 Electron `safeStorage` 或 keytar 的 `SecureStore` adapter。
-- [ ] 明确安全存储不可用、系统锁定、密钥损坏和迁移失败的行为。
-- [ ] 加密文件 backend 只作为显式降级，并向用户显示降级状态。
-- [ ] 登出、设备撤销和凭据过期必须清除本地凭据。
+- [x] 实现 Electron `safeStorage` 的 `SecureStore` adapter（`safeStorage` 是 cipher 不是 store，密文落 0o600 JSON 文件）。
+- [x] 明确安全存储不可用、系统锁定、密钥损坏和迁移失败的行为：一律抛 `SecureStoreUnavailableError`，不静默丢弃凭据。
+- [x] 加密文件 backend 只作为显式降级，并通过 `session.credentialState` 推送、在 UI 常驻显示降级状态。
+- [x] 登出、设备撤销和凭据过期必须清除本地凭据。
 
 退出条件：明文设备 token 不进入日志、配置文件或 Renderer；macOS 与 Windows 均通过真实 OS 存储 smoke。
+实测：secure-store 43 测试全通过（含 safeStorage 11、后端选择 11）；深业务 E2E 断言推送流量中不含 `accessToken`。真实 OS 存储 round-trip 已并入 [desktop-m1-smoke-checklist.md](evidence/desktop-m1-smoke-checklist.md)。
 
 ### M1.3 桌面端到端测试
 
 优先级：P1  
-估时：1–2 天
+估时：1–2 天  
+状态：**已完成**（无 GUI harness + 安装包 smoke 自动化）；人工黄金 smoke 待目标平台执行
 
-- [ ] 启动真实 Worker、PostgreSQL 和安装后的桌面客户端。
-- [ ] 覆盖设备绑定、Run 创建、SSE 恢复、审批、Diff、验证、取消、keep/discard。
-- [ ] 覆盖关闭应用后重新打开和设备被服务器撤销。
-- [ ] 验证不受信任 IPC sender、外部导航和弹窗继续被阻断。
+- [x] 建立无 GUI desktop application harness：`RunConsoleController → Desktop IPC adapter → 真实 Main handlers → Client SDK → 真实 Worker HTTP 服务`（`apps/desktop/test/run-loop.integration.test.ts`）。
+- [x] 在 application harness 覆盖设备绑定、Run 创建、SSE 推送、审批、Diff、结果处置、设备撤销，以及不受信任 IPC sender、外部导航、弹窗阻断。
+- [x] 每个 PR 运行 controller、Renderer/IPC contract 与 Electron 安全策略的确定性测试；不得用脆弱 GUI 自动化承担业务分支回归。（新增 `.github/workflows/ci.yml`，push / PR 触发 `pnpm typecheck` + `pnpm test`）
+- [x] 安装包 smoke 自动化（`installed-app.smoke.test.ts`）：校验打包产物的 Renderer 入口、preload/main 入口、全部原生二进制架构与包内版本；由 `LECODING_INSTALLED_APP_PATH` / `LECODING_INSTALLED_APP_ARCH` 环境 gate 控制。
+- [x] 结果分类显式化：环境 gate 以「跳过 + 原因」呈现，不记为通过；`docs/evidence/` 下的归档模板要求记录 tag、产物 SHA-256、OS/架构、签名结果与步骤。
+- [ ] release candidate 在 Windows 与 macOS 的真实安装包上各执行两条黄金 smoke（[desktop-m1-smoke-checklist.md](evidence/desktop-m1-smoke-checklist.md)）：安装/绑定/完成 Run/查看证据/处置，以及关闭重开/恢复/设备撤销。
 
-退出条件：Windows 与 macOS 至少各有一次真实安装包 E2E 证据。
+退出条件：application harness 对完整桌面业务闭环全绿；Windows 与 macOS 各有一次真实安装包黄金 smoke。GUI 不要求穷举业务分支，但安装、原生安全存储、打包资源和 Electron 运行时安全不得只由 mock 证明。
+实测：深业务 E2E 3/3（受限沙箱显式跳过），安装包 smoke 已用合成产物验证通过/失败两条路径。
 
 ### M1.4 正式安装包链路
 
 优先级：P1  
-估时：2–3 天，外部证书申请时间不计入编码工期
+估时：2–3 天，外部证书申请时间不计入编码工期  
+状态：**已完成**（代码路径与自动校验）；签名 / 公证待外部证书
 
-- [ ] 修复 macOS x64 job 实际生成 arm64 产物的问题。
-- [ ] 明确是否交付 MSI / PKG；若 PRD 保留该要求，缺失时 CI 必须失败。
-- [ ] 配置 Windows 代码签名证书。
-- [ ] 配置 macOS Developer ID 签名和 notarization。
-- [ ] 验证安装包签名、架构、版本、更新 feed 和签名更新拒绝逻辑。
-- [ ] Release job 禁止同名资产互相覆盖。
+- [x] 固化消费者产物矩阵：Windows x64 交付 Squirrel `Setup.exe` + `full.nupkg` + `RELEASES`；macOS arm64/x64 各交付 DMG + ZIP。M1.4 不交付 MSI / PKG。
+- [x] 删除凭据驱动的条件式 `maker-pkg`；凭据决定构建能否执行，不能静默改变同一 tag 的产物集合。
+- [x] macOS arm64 固定运行于 `macos-15`，x64 固定运行于 `macos-15-intel`；禁止发布构建使用浮动 `macos-latest`。
+- [x] 构建前校验 Node `process.arch` 匹配 matrix（并在 macOS 探测 Rosetta 转译）；继续向 Forge 显式传递 `--platform` 和 `--arch`。
+- [x] 打包后校验中间 `.app`、解压后的 ZIP / DMG / NUPKG 内主二进制及全部 `.node` 原生模块，禁止只根据文件名判定架构。
+  - 实现方式：纯 Node 解析 Mach-O / PE / ELF 头（`apps/desktop/src/build/architecture.ts`），不依赖 `lipo`——Windows runner 没有 `lipo`，且外部工具会让校验无法在本地复现。
+  - 判定按**架构集合**而非单一值：universal（fat）二进制只要包含目标架构即视为可发布；「文件名说 x64、实际只有 arm64 slice」必须被拒绝。
+- [x] Release job 使用包含 version/platform/arch 的唯一资产名，禁止同名资产互相覆盖，并对每个平台必需产物 fail-closed。
+- [x] 签名证据步骤：macOS 跑 `codesign --verify --deep --strict` + `spctl --assess`，Windows 跑 `Get-AuthenticodeSignature`，结果写入 `signing-evidence.txt`；`LECODING_REQUIRE_SIGNED_ARTIFACTS=true`（tag 推送默认）下未签名即失败。release-gate job 汇总三方证据，任一架构未签名则整条 release 只能作为 pre-release 发布。
+- [x] 企业部署 profile 延后到出现明确 MDM/组织分发需求后再立项；届时使用独立 workflow 评估 WiX MSI 与 macOS PKG，不混入消费者自动更新 feed。
+- [ ] 配置 Windows 代码签名证书。（外部依赖）
+- [ ] 配置 macOS Developer ID 签名和 notarization。（外部依赖）
+- [ ] 验证签名更新拒绝逻辑的真实升级路径。（需真实签名产物，排入 M3 运维演练）
 
-退出条件：Windows x64、macOS arm64、macOS x64 产物可区分、已签名；macOS 已公证；自动更新只接受可信签名。
+退出条件：同一 tag 产生已签名的 Windows Squirrel 三件套与 macOS 双架构 DMG/ZIP；macOS 已公证；runner、Node、容器内二进制和原生模块架构均与 matrix 一致；自动更新只接受可信签名。
+实测：architecture 25、release-assets 10、forge-config 31、release-workflow 6 全通过；`release-gate` job 已就位。签名与公证仍需目标平台证据。
 
 ## 7. M2：完成 Phase 4B Local Runner
 
@@ -277,12 +306,12 @@ pnpm typecheck
 以下条件全部满足后，才能把 Phase 4A 标记为完成：
 
 - [ ] `pnpm test` 全部通过；只有明确的真实外部环境 gate 可以跳过。
-- [ ] `pnpm typecheck` 21/21 workspace 通过。
+- [ ] `pnpm typecheck` 全 workspace 通过（计数口径见下）。
 - [ ] 设备绑定安全与并发测试通过。
-- [ ] Windows x64、macOS arm64、macOS x64 安装包来自同一 tag，版本一致。
+- [ ] Windows Squirrel 三件套与 macOS arm64/x64 DMG/ZIP 来自同一 tag，版本和内部架构一致；MSI/PKG 不属于消费者发布门禁。
 - [ ] 正式产物已签名，macOS 已 notarize。
 - [ ] Renderer 完成 Web 等价 Run 管理闭环。
-- [ ] 安装包 E2E 覆盖设备绑定、Run、审批、Diff、验证、取消和结果处置。
+- [ ] application harness 覆盖完整业务闭环；Windows/macOS 安装包黄金 smoke 覆盖安装、绑定、Run、重启恢复和设备撤销。
 - [ ] 自动更新拒绝错误签名或错误版本的包。
 
 以下条件全部满足后，才能把 Phase 4B 标记为完成：
@@ -295,18 +324,31 @@ pnpm typecheck
 
 ## 10. 推荐提交顺序
 
+M0（已完成）：
+
 1. `fix(device-binding): make code issuance collision-safe and atomic`
 2. `fix(ci): restore full workspace typecheck and test gates`
 3. `test(local-runner): support the declared minimum Git version`
 4. `fix(metrics): inject the observation clock consistently`
 5. `fix(desktop): align package version architecture and artifacts`
-6. `feat(desktop): ship the renderer run-management loop`
-7. `feat(desktop): persist credentials in native secure storage`
-8. `test(desktop): add installed-app end-to-end coverage`
-9. `feat(local-runner): add authenticated resumable WSS transport`
-10. `feat(local-runner): enforce three-tier host file access`
-11. `test(local-runner): prove crash recovery and result disposition`
-12. `docs: close phase four with target-platform evidence`
+
+M1（已完成）：
+
+6. `refactor(web): extract the shared presentation and Run console controller`
+7. `fix(desktop): mount the preload and add the production Electron bootstrap`
+8. `feat(desktop): ship the renderer run-management loop`
+9. `feat(desktop): persist credentials in native secure storage`
+10. `test(desktop): add the no-GUI application harness and installed-app smoke`
+11. `fix(worker): mount the device-binding routes on the Worker HTTP server`
+12. `fix(ci): build macOS arm64/x64 natively and verify real binary architectures`
+13. `docs: close phase 4A code paths and record the M1 verification baseline`
+
+M2 / M3（未开始）：
+
+14. `feat(local-runner): add authenticated resumable WSS transport`
+15. `feat(local-runner): enforce three-tier host file access`
+16. `test(local-runner): prove crash recovery and result disposition`
+17. `docs: close phase four with target-platform evidence`
 
 ## 11. 第一周执行建议
 
@@ -320,4 +362,4 @@ pnpm typecheck
 | Day 4 | 桌面版本 / 架构 / 产物修复，强化 CI | 三平台 dry-run 产物清单正确 |
 | Day 5 | 全仓库回归、loopback 复验、更新基线文档 | `pnpm test`、`pnpm typecheck` 满足门禁 |
 
-M0 通过后再重新评估 M1 的 UI 范围和签名证书可用性；如果证书尚未就绪，Renderer 与安装包 E2E 可继续推进，但正式发布门禁不得降级。
+M1 已确认采用“共享框架无关 controller + Desktop React View adapter”，而不是复制 Web 手写 DOM 状态机。消费者发布只交付 Windows Squirrel 与 macOS DMG/ZIP；证书尚未就绪时 Renderer 与 application harness 可继续推进，但真实安装包、签名、公证和目标架构门禁不得降级。

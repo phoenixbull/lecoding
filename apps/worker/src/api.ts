@@ -35,6 +35,12 @@ const FILE_ACCESS_SCOPES = new Set<FileAccessScope>([
 /** Authenticated control-plane identity; provider credentials never cross this seam. */
 export interface RunApiPrincipal {
   userId: string;
+  /**
+   * Present once the session resolves a registered user. Device binding needs
+   * it so a bound device record carries the operator's account identity; it is
+   * never used for authorization.
+   */
+  email?: string;
 }
 
 /** Project role ordered from read-only visibility to administrative authority. */

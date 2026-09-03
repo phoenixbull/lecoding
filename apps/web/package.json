@@ -10,7 +10,9 @@
   },
   "dependencies": {
     "@lecoding/client-sdk": "workspace:*",
-    "@lecoding/contracts": "workspace:*"
+    "@lecoding/contracts": "workspace:*",
+    "@lecoding/presentation": "workspace:*",
+    "@lecoding/run-controller": "workspace:*"
   },
   "devDependencies": {
     "vite": "^7.3.6"

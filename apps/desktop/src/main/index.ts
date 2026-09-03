@@ -7,6 +7,11 @@
  * every Renderer request to it; it also tags every IPC handler with the
  * active Renderer so other webContents cannot reach the bridge.
  *
+ * The main process is the only side that ever holds a credential. It also owns
+ * the durable Run event stream on the Renderer's behalf: the Renderer's CSP
+ * forbids outbound traffic, so `RunStreamBroker` relays events through the
+ * whitelisted `runs.event` push channel.
+ *
  * The module is factory-shaped (`createDesktopMain`) so tests can inject a
  * fake `ElectronHost` and exercise the policy without spinning up a display.
  */
@@ -16,17 +21,23 @@ import {
   ipcRequestSchema,
   isKnownChannel,
   validateIpcRequest,
+  type CredentialStatePush,
   type IpcErrorCode,
   type IpcRequest,
-  type IpcResponse
+  type IpcResponse,
+  type PushChannel
 } from "../shared/ipc-contract.js";
 import type {
   ClientSdk,
   ClientSdkFactory,
+  CredentialStoreHandle,
+  DeviceExchangeInput,
+  ElectronBrowserWindowInstance,
   ElectronHost,
   IpcHandler,
   IpcSenderContext
 } from "./host.js";
+import { createRunStreamBroker, type RunStreamBroker } from "./stream-broker.js";
 
 export interface DesktopMainOptions {
   host: ElectronHost;
@@ -38,10 +49,19 @@ export interface DesktopMainOptions {
    */
   rendererEntry: string;
   /**
+   * Absolute path to the compiled preload script. Without it the Renderer
+   * would have no `window.lecoding` bridge at all.
+   */
+  preloadEntry?: string;
+  /**
    * Optional override for the trusted webContents id. Tests pass the id of
    * their fake window so sender validation passes.
    */
   trustedSenderId?: string;
+  /** Credential storage handle; enables `session.status` and local clearing. */
+  credentialStore?: CredentialStoreHandle;
+  /** Injectable reconnect delay keeps stream behaviour deterministic in tests. */
+  waitBeforeReconnect?: (signal: AbortSignal) => Promise<void>;
 }
 
 export interface DesktopMain {
@@ -50,6 +70,8 @@ export interface DesktopMain {
   handlers(): ReadonlyMap<string, IpcHandler>;
   /** Test-only accessor for the held SDK instance. */
   sdk(): ClientSdk;
+  /** Test-only accessor for push activity. */
+  pushed(): ReadonlyArray<{ channel: string; payload: unknown }>;
 }
 
 /** Strict CSP forbids any resource from outside the packaged app. */
@@ -58,11 +80,42 @@ const CSP_HEADER =
   "font-src 'self'; connect-src 'self'; frame-src 'none'; object-src 'none'; " +
   "base-uri 'none'; form-action 'none'; frame-ancestors 'none'";
 
+/**
+ * Maps an SDK failure onto the coarse codes the Renderer is allowed to see.
+ *
+ * Device-binding failures are surfaced distinctly so the Renderer can return
+ * the user to the binding screen (revoked / expired credential) instead of
+ * showing a generic error and retrying forever against a dead device.
+ */
+function errorCodeFor(error: unknown): IpcErrorCode {
+  const status = (error as { status?: unknown } | null)?.status;
+  if (status === 401) {
+    return "unauthorized";
+  }
+  if (status === 403) {
+    return "forbidden";
+  }
+  const code = (error as { code?: unknown } | null)?.code;
+  if (code === "device_revoked" || code === "device_expired") {
+    return "device_revoked";
+  }
+  if (code === "code_consumed") {
+    return "code_consumed";
+  }
+  if (code === "code_expired") {
+    return "code_expired";
+  }
+  return "upstream_error";
+}
+
 export function createDesktopMain(options: DesktopMainOptions): DesktopMain {
-  const { host, createClientSdk, rendererEntry, trustedSenderId } = options;
+  const { host, createClientSdk, rendererEntry } = options;
   const handlerMap = new Map<string, IpcHandler>();
+  const pushedEvents: Array<{ channel: string; payload: unknown }> = [];
   let sdk: ClientSdk | undefined;
-  let activeSenderId: string | undefined = trustedSenderId;
+  let window: ElectronBrowserWindowInstance | undefined;
+  let broker: RunStreamBroker | undefined;
+  let activeSenderId: string | undefined = options.trustedSenderId;
   let bootstrapConfig: { baseUrl: string; authToken?: string } | undefined;
 
   function requireSdk(): ClientSdk {
@@ -123,65 +176,156 @@ export function createDesktopMain(options: DesktopMainOptions): DesktopMain {
     }
     const sdkInstance = requireSdk();
     try {
-      const r = request as {
-        channel: import("../shared/ipc-contract.js").IpcChannel;
-        payload: unknown;
-      };
+      const r = request as { channel: IpcChannel; payload: unknown };
       switch (r.channel) {
+        case "session.status": {
+          const credential = await options.credentialStore?.status();
+          return ok({
+            bootstrapped: bootstrapConfig !== undefined,
+            ...(bootstrapConfig ? { baseUrl: bootstrapConfig.baseUrl } : {}),
+            ...(credential ? { credential } : {})
+          });
+        }
         case "session.logout": {
           await sdkInstance.logout();
+          // Local credentials die with the session; leaving them behind would
+          // let the next launch re-authenticate as a revoked device.
+          await options.credentialStore?.clear();
+          broker?.dispose();
           bootstrapConfig = undefined;
           return ok({ loggedOut: true });
         }
+        case "config.load": {
+          return ok(await sdkInstance.getControlPlaneConfig());
+        }
         case "devices.createCode": {
-          const payload = r.payload as { projectId: import("@lecoding/contracts").ProjectId };
+          const payload = r.payload as { projectId: ProjectId };
           return ok(await sdkInstance.createDeviceCode(payload.projectId));
         }
         case "devices.exchange": {
-          return ok(await sdkInstance.exchangeDeviceCode(r.payload));
+          // The bridge already validated the payload shape, so the only work
+          // left here is narrowing it to the typed exchange input.
+          return ok(
+            await sdkInstance.exchangeDeviceCode(r.payload as DeviceExchangeInput)
+          );
         }
         case "devices.list": {
-          const payload = r.payload as { projectId: import("@lecoding/contracts").ProjectId };
-          return ok(await sdkInstance.listDevices(payload.projectId));
+          // The server scopes the listing to the authenticated user, so a
+          // projectId is a client-side filter rather than an identity check —
+          // the device manager only ever shows one project at a time.
+          const payload = r.payload as { projectId?: ProjectId };
+          const listing = await sdkInstance.listDevices();
+          if (payload.projectId === undefined) {
+            return ok(listing);
+          }
+          return ok({
+            devices: listing.devices.filter(
+              (device) => device.projectId === payload.projectId
+            )
+          });
         }
         case "devices.revoke": {
-          const payload = r.payload as {
-            deviceId: string;
-            projectId: import("@lecoding/contracts").ProjectId;
-          };
+          const payload = r.payload as { deviceId: string };
           await sdkInstance.revokeDevice(payload.deviceId);
+          // Revocation is server-side; dropping the local copy keeps a
+          // re-launched client from presenting a dead device.
+          await options.credentialStore?.clear();
+          broker?.dispose();
           return ok({ revoked: true });
         }
         case "runs.create": {
-          const payload = r.payload as {
-            projectId: import("@lecoding/contracts").ProjectId;
-            input: import("@lecoding/contracts").CreateRunInput;
-          };
+          const payload = r.payload as { projectId: ProjectId; input: CreateRunInput };
           return ok(await sdkInstance.createRun(payload.projectId, payload.input));
         }
-        case "runs.cancel": {
-          const payload = r.payload as { runId: import("@lecoding/contracts").RunId };
-          await sdkInstance.cancelRun(payload.runId);
-          return ok({ cancelled: true });
-        }
         case "runs.list": {
-          const payload = r.payload as {
-            projectId: import("@lecoding/contracts").ProjectId;
-            limit?: number;
-          };
+          const payload = r.payload as { projectId: ProjectId; limit?: number };
           return ok(await sdkInstance.listRuns(payload.projectId, payload.limit));
         }
         case "runs.inspect": {
-          const payload = r.payload as { runId: import("@lecoding/contracts").RunId };
+          const payload = r.payload as { runId: RunId };
           return ok(await sdkInstance.inspectRun(payload.runId));
         }
+        case "runs.cancel": {
+          const payload = r.payload as { runId: RunId };
+          await sdkInstance.cancelRun(payload.runId);
+          return ok({ cancelled: true });
+        }
         case "runs.resolve": {
-          const payload = r.payload as {
-            runId: import("@lecoding/contracts").RunId;
-            outcome: "keep" | "discard";
-          };
+          const payload = r.payload as { runId: RunId; outcome: "keep" | "discard" };
           await sdkInstance.resolveRunResult(payload.runId, payload.outcome);
           return ok({ resolved: true });
+        }
+        case "runs.changes": {
+          const payload = r.payload as { runId: RunId };
+          return ok(await sdkInstance.getRunChanges(payload.runId));
+        }
+        case "runs.artifact": {
+          const payload = r.payload as { runId: RunId; artifactId: string };
+          return ok(await sdkInstance.getRunArtifact(payload.runId, payload.artifactId));
+        }
+        case "runs.approve": {
+          const payload = r.payload as {
+            runId: RunId;
+            approvalId: string;
+            scope: ApprovalScope;
+          };
+          await sdkInstance.approveRun(payload.runId, payload.approvalId, payload.scope);
+          return ok({ approved: true });
+        }
+        case "runs.reject": {
+          const payload = r.payload as {
+            runId: RunId;
+            approvalId: string;
+            scope: ApprovalScope;
+          };
+          await sdkInstance.rejectRun(payload.runId, payload.approvalId, payload.scope);
+          return ok({ rejected: true });
+        }
+        case "runs.editApprove": {
+          const payload = r.payload as {
+            runId: RunId;
+            approvalId: string;
+            replacement: EditedApprovalCapability;
+          };
+          await sdkInstance.editAndApproveRun(
+            payload.runId,
+            payload.approvalId,
+            payload.replacement
+          );
+          return ok({ approved: true });
+        }
+        case "runs.answer": {
+          const payload = r.payload as {
+            runId: RunId;
+            requestId: string;
+            value: string;
+          };
+          await sdkInstance.answerRun(payload.runId, payload.requestId, payload.value);
+          return ok({ answered: true });
+        }
+        case "runs.steer": {
+          const payload = r.payload as { runId: RunId; message: string };
+          await sdkInstance.steerRun(payload.runId, payload.message);
+          return ok({ steered: true });
+        }
+        case "runs.subscribe": {
+          const payload = r.payload as { runId: RunId };
+          broker?.subscribe(payload.runId);
+          return ok({ subscribed: true });
+        }
+        case "runs.unsubscribe": {
+          const payload = r.payload as { runId: RunId };
+          broker?.unsubscribe(payload.runId);
+          return ok({ unsubscribed: true });
+        }
+        case "policy.list": {
+          const payload = r.payload as { projectId: ProjectId };
+          return ok(await sdkInstance.listProjectPolicyRules(payload.projectId));
+        }
+        case "policy.revoke": {
+          const payload = r.payload as { projectId: ProjectId; ruleId: string };
+          await sdkInstance.revokeProjectPolicyRule(payload.projectId, payload.ruleId);
+          return ok({ revoked: true });
         }
         default:
           return err("unknown_channel", `Channel ${r.channel} is not registered`);
@@ -190,7 +334,7 @@ export function createDesktopMain(options: DesktopMainOptions): DesktopMain {
       // Strip stacks so the Renderer only sees the message — a leaked stack
       // would reveal internal types and file paths.
       const message = error instanceof Error ? error.message : "unknown error";
-      return err("upstream_error", message);
+      return err(errorCodeFor(error), message);
     }
   }
 
@@ -213,7 +357,7 @@ export function createDesktopMain(options: DesktopMainOptions): DesktopMain {
       }
 
       // 3. Open the Renderer window with the security baseline.
-      const window = new host.BrowserWindow({
+      const created = new host.BrowserWindow({
         webPreferences: {
           nodeIntegration: false,
           contextIsolation: true,
@@ -221,43 +365,74 @@ export function createDesktopMain(options: DesktopMainOptions): DesktopMain {
           // Disable remote module + spellchecker + webview tag entirely.
           enableRemoteModule: false,
           webviewTag: false,
-          // Renderer cannot navigate to a different origin.
-          // Allow list of files is restricted to the packaged Renderer entry.
-          preload: undefined
+          // The preload bridge is the Renderer's only capability surface.
+          // Leaving it undefined would silently ship a window with no
+          // `window.lecoding`, so production must always pass a real path.
+          ...(options.preloadEntry ? { preload: options.preloadEntry } : {})
         }
       });
-      console.error("[start] BrowserWindow constructed, id=", window.webContents.id);
-      activeSenderId = String(window.webContents.id);
+      window = created;
+      activeSenderId = String(created.webContents.id);
 
       // 4. Deny all window.open attempts (new windows, navigations).
-      window.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
+      created.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
 
       // 5. Forbid webContents-triggered navigations outside the Renderer.
-      window.webContents.on("will-navigate", (event: unknown, url: unknown) => {
+      created.webContents.on("will-navigate", (event: unknown, url: unknown) => {
         if (typeof url === "string" && !url.startsWith("file://")) {
           (event as { preventDefault: () => void }).preventDefault?.();
         }
       });
 
-      // 6. Load the packaged Renderer. Never load a URL.
-      console.error("[start] calling loadFile");
-      await window.loadFile(rendererEntry);
-      console.error("[start] loadFile resolved");
+      // 6. Relay the durable Run event stream. The Renderer cannot reach the
+      //    Worker itself, so the broker holds the subscription and pushes.
+      broker = createRunStreamBroker({
+        getWindow: () => window,
+        getSdk: requireSdk,
+        ...(options.waitBeforeReconnect
+          ? { waitBeforeReconnect: options.waitBeforeReconnect }
+          : {})
+      });
 
-      // 7. Honour macOS convention: keep app open until user quits.
+      // Record pushes so tests can assert on what the Renderer would receive.
+      const originalSend = created.webContents.send.bind(created.webContents);
+      created.webContents.send = ((channel: PushChannel, payload: unknown) => {
+        pushedEvents.push({ channel, payload });
+        originalSend(channel, payload);
+      }) as typeof created.webContents.send;
+
+      // 7. Load the packaged Renderer. Never load a URL.
+      await created.loadFile(rendererEntry);
+
+      // 8. Stop every stream before the window disappears so a closed window
+      //    cannot keep an authenticated SSE connection alive.
+      created.on("closed", () => {
+        broker?.dispose();
+        window = undefined;
+        activeSenderId = options.trustedSenderId;
+      });
+
+      // 9. Honour macOS convention: keep app open until user quits.
       host.app.on("window-all-closed", () => {
         host.app.quit();
       });
-
-      console.error("[start] about to return");
-      // Track bootstrap so subsequent requests share the same SDK instance.
-      void bootstrapConfig;
     },
     handlers(): ReadonlyMap<string, IpcHandler> {
       return handlerMap;
     },
     sdk(): ClientSdk {
       return requireSdk();
+    },
+    pushed(): ReadonlyArray<{ channel: string; payload: unknown }> {
+      return pushedEvents;
     }
   };
 }
+
+type IpcChannel = import("../shared/ipc-contract.js").IpcChannel;
+type ProjectId = import("@lecoding/contracts").ProjectId;
+type RunId = import("@lecoding/contracts").RunId;
+type CreateRunInput = import("@lecoding/contracts").CreateRunInput;
+type ApprovalScope = import("@lecoding/contracts").ApprovalScope;
+type EditedApprovalCapability =
+  import("@lecoding/contracts").EditedApprovalCapability;

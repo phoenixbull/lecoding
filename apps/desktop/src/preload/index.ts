@@ -6,12 +6,16 @@
  * process; raw `ipcRenderer`, `require`, and `process` are deliberately
  * kept out of the exposed surface.
  *
- * Each channel maps to one strongly-typed method on `window.lecoding`. The
- * method:
+ * Each request channel maps to one strongly-typed method on
+ * `window.lecoding`. The method:
  *   1. Validates the payload against the shared schema
  *   2. Forwards to `ipcRenderer.invoke(channel, validatedPayload)`
  *   3. Unwraps the response and rejects with a typed `BridgeError` when
  *      the main process returns an error code
+ *
+ * Push channels are exposed as three named subscribe functions that return an
+ * unsubscribe closure. A generic `ipcRenderer.on` is never exposed, so a
+ * compromised Renderer cannot subscribe to arbitrary internal traffic.
  *
  * Tests inject a `PreloadHost` that mirrors the Electron preload API.
  */
@@ -19,25 +23,45 @@
 import {
   IPC_CHANNELS,
   ipcRequestSchema,
+  PUSH_CHANNELS,
+  type CredentialStatePush,
   type IpcChannel,
   type IpcErrorCode,
   type IpcRequest,
-  type IpcResponse
+  type IpcResponse,
+  type PushChannel,
+  type RunEventPush,
+  type StreamStatePush
 } from "../shared/ipc-contract.js";
 
+/** The slice of Electron's `contextBridge` the bridge needs. */
 export interface PreloadContextBridge {
   exposeInMainWorld(name: string, api: unknown): void;
 }
 
+/** Receives one pushed payload; the preload casts it to the typed shape. */
+export type PushListener = (payload: unknown) => void;
+
+/**
+ * The slice of `ipcRenderer` the bridge needs.
+ *
+ * `on` / `removeListener` are deliberately kept internal to this module: the
+ * exposed surface only offers one named subscribe function per push channel,
+ * so a compromised Renderer cannot listen on arbitrary internal traffic.
+ */
 export interface PreloadIpcRenderer {
   invoke(channel: string, payload: unknown): Promise<IpcResponse>;
+  on(channel: string, listener: PushListener): void;
+  removeListener(channel: string, listener: PushListener): void;
 }
 
+/** Everything the preload touches from the Electron preload sandbox. */
 export interface PreloadHost {
   contextBridge: PreloadContextBridge;
   ipcRenderer: PreloadIpcRenderer;
 }
 
+/** Installs the frozen `window.lecoding` surface exactly once. */
 export interface PreloadBridge {
   install(): void;
 }
@@ -51,6 +75,23 @@ export class BridgeError extends Error {
     this.name = "BridgeError";
   }
 }
+
+/** Named push subscriptions exposed to the Renderer instead of `ipcRenderer.on`. */
+export interface PushSubscriptions {
+  onRunEvent(listener: (push: RunEventPush) => void): () => void;
+  onStreamState(listener: (push: StreamStatePush) => void): () => void;
+  onCredentialState(listener: (push: CredentialStatePush) => void): () => void;
+}
+
+/** Maps each push channel to the subscribe method name exposed on the bridge. */
+const PUSH_SUBSCRIPTIONS: Record<
+  PushChannel,
+  keyof PushSubscriptions
+> = {
+  "runs.event": "onRunEvent",
+  "runs.streamState": "onStreamState",
+  "session.credentialState": "onCredentialState"
+};
 
 export function createPreloadBridge(options: { host: PreloadHost }): PreloadBridge {
   const { host } = options;
@@ -92,10 +133,33 @@ export function createPreloadBridge(options: { host: PreloadHost }): PreloadBrid
     return api;
   }
 
+  /**
+   * Wraps one push channel in a subscribe function.
+   *
+   * The returned closure removes exactly the listener that was registered, so
+   * unmounting a Renderer view cannot detach another view's subscription.
+   */
+  function buildPushApi(): PushSubscriptions {
+    const api: Record<string, (listener: (push: never) => void) => () => void> = {};
+    for (const channel of PUSH_CHANNELS) {
+      const method = PUSH_SUBSCRIPTIONS[channel];
+      api[method] = (listener: (push: never) => void) => {
+        const wrapped: PushListener = (payload: unknown) => {
+          listener(payload as never);
+        };
+        host.ipcRenderer.on(channel, wrapped);
+        return () => {
+          host.ipcRenderer.removeListener(channel, wrapped);
+        };
+      };
+    }
+    return api as unknown as PushSubscriptions;
+  }
+
   return {
     install(): void {
       // Single global namespace; never expose the raw ipcRenderer.
-      const api = buildApi();
+      const api = { ...buildApi(), ...buildPushApi() };
       host.contextBridge.exposeInMainWorld("lecoding", Object.freeze(api));
     }
   };

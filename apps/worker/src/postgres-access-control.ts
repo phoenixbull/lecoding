@@ -86,16 +86,22 @@ export async function createPostgresRunApiAccessControl(
       if (!token) {
         return undefined;
       }
-      const result = await executor.query<{ user_id: string }>(
-        `SELECT user_id
-           FROM auth_sessions
-          WHERE token_hash = $1
-            AND revoked_at IS NULL
-            AND expires_at > $2::timestamptz`,
+      // Joining users yields the account email device binding records; the
+      // session row alone only identifies the user.
+      const result = await executor.query<{ user_id: string; email: string | null }>(
+        `SELECT s.user_id, u.email
+           FROM auth_sessions s
+           JOIN users u ON u.id = s.user_id
+          WHERE s.token_hash = $1
+            AND s.revoked_at IS NULL
+            AND s.expires_at > $2::timestamptz`,
         [hashToken(token), requireTimestamp(now(), "current time")]
       );
-      const userId = result.rows[0]?.user_id;
-      return userId ? { userId } : undefined;
+      const row = result.rows[0];
+      if (!row) {
+        return undefined;
+      }
+      return row.email ? { userId: row.user_id, email: row.email } : { userId: row.user_id };
     },
 
     async roleFor(userId, projectId): Promise<RunApiProjectRole | undefined> {

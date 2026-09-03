@@ -1,6 +1,6 @@
 # Phase 4 Completion Audit
 
-Updated: 2026-08-31
+Updated: 2026-09-02
 
 This audit records what was closed during Phase 4-A bridge work plus
 the Wave 1 and initial Wave 2 forward work that followed. Phase 4-A is
@@ -16,45 +16,47 @@ the next depends on it.
 | Local worktree/sandbox with keep/discard, cancellation, and recovery | Proven | Wave 1 | [`packages/local-runner`](file:///Users/letv_lzb/Documents/LeCodex/packages/local-runner/src/index.ts) — `createLocalRunEnvironment` implements `RunEnvironment` (prepare / perform / inspect / dispose). `git worktree add --detach` isolation, `child_process.spawn` with `BoundedOutputCapture`, `AbortSignal` (SIGTERM) + `execTimeoutMs` (SIGKILL). Bare-name executable restriction (rejects absolute paths and `/`). 7 tests pass. |
 | OS keychain integration for the Local Runner | Proven (abstraction + file backend) | Wave 2 | [`packages/secure-store`](file:///Users/letv_lzb/Documents/LeCodex/packages/secure-store/src/index.ts) — `SecureStore` interface (getItem / setItem / deleteItem / listKeys), `SecureStoreUnavailableError`, `createInMemorySecureStore()`. [`encrypted-file-store.ts`](file:///Users/letv_lzb/Documents/LeCodex/packages/secure-store/src/encrypted-file-store.ts) — AES-256-GCM + PBKDF2-HMAC-SHA256 (200k iterations, 16-byte salt), 12-byte IV + 16-byte auth tag, atomic writes (tmp + rename). [`device-credential-store.ts`](file:///Users/letv_lzb/Documents/LeCodex/packages/secure-store/src/device-credential-store.ts) — namespace-prefixed persistence with deviceId mismatch guard and full field validation. Client SDK accepts `secureStore` option; exchange persists, revoke clears, `deviceCredential()` reads from store first. 32 tests (21 + 11) pass. |
 | `DesktopLocalEnvironment` adapter passing the `ServerDockerEnvironment` interface contract | Proven | Wave 2 | [`packages/desktop-runner`](file:///Users/letv_lzb/Documents/LeCodex/packages/desktop-runner/src/index.ts) — `createDesktopRunEnvironment` wraps the Local environment with desktop-only affordances: `ApprovalGate` before `prepare` (host_full demands explicit danger acknowledgement), `KeepOrDiscardGate` before `dispose` (gate's decision wins over caller-supplied outcome so user choices survive transport), `HostAccessLog` (`recordHostAccess` / `readHostAccessLog`) classifies writes inside vs outside the registered worktree root, and `StateObserver` emits the strict lifecycle `awaiting_approval → prepared → awaiting_keep/discard → terminal`. The adapter satisfies the same `RunEnvironment` interface contract that ServerDockerEnvironment and LocalRunEnvironment satisfy, so RunEngine stays adapter-agnostic. 16 tests pass. |
-| Electron + React shell (Windows + macOS) reusing Client SDK and core UI | Skeleton proven | Wave 3 | [`apps/desktop`](file:///Users/letv_lzb/Documents/LeCodex/apps/desktop/src/main/index.ts) — factory-shaped main process (`createDesktopMain`) with the security baseline mandated by PRD § 10.1: `nodeIntegration=false`, `contextIsolation=true`, `sandbox=true`, strict CSP (`default-src 'self'`, no `unsafe-eval`, no remote sources, `frame-src 'none'`, `object-src 'none'`), `setWindowOpenHandler({action:"deny"})` to block popups, `will-navigate` guard rejecting non-`file://` URLs. One `ClientSdk` instance per session, IPC handler per documented channel that validates the sender (rejects untrusted webContents) and strips stack traces so internals never leak to the Renderer. [`preload/index.ts`](file:///Users/letv_lzb/Documents/LeCodex/apps/desktop/src/preload/index.ts) — `contextBridge.exposeInMainWorld("lecoding", ...)` with one method per channel; raw `ipcRenderer` / `require` / `process` deliberately absent. [`shared/ipc-contract.ts`](file:///Users/letv_lzb/Documents/LeCodex/apps/desktop/src/shared/ipc-contract.ts) — closed `IPC_CHANNELS` set with per-channel payload validators; the Renderer can only reach documented channels. The factory shape (`ElectronHost` + `ClientSdkFactory`) lets tests exercise the policy without spinning up a display server. 24 tests (7 contract + 10 main + 7 preload) pass. |
-| Code signing and auto-update pipelines | Proven | Wave 3 | [`apps/desktop/forge.config.ts`](file:///Users/letv_lzb/Documents/LeCodex/apps/desktop/forge.config.ts) reads the CI signing environment and feeds [`apps/desktop/src/build/forge-config.ts`](file:///Users/letv_lzb/Documents/LeCodex/apps/desktop/src/build/forge-config.ts) — a pure builder that emits Windows (`squirrel` / `msi`) + macOS (`zip` / `dmg` / `tar.xz`) target matrices, bakes `osx-sign` + `notarize` blocks only when CSC_LINK / APPLE_* credentials are present, unpacks native-binding roots from the asar (`better-sqlite3`, `keytar`, `fsevents`, `@lecoding/local-runner/native/**`), and points electron-updater at the GitHub releases feed with `verifyManifestSignature: true` + `verifyArtifactSignatures: true` so unsigned payloads are rejected on the client side. [`apps/desktop/src/build/sign.ts`](file:///Users/letv_lzb/Documents/LeCodex/apps/desktop/src/build/sign.ts) — strict base64 .p12 decoder, two-step `codesign → notarytool` macOS notarization plan (codesign must precede notarytool or it fails silently), Windows `signtool sign /fd sha256 /tr http://timestamp.digicert.com` invocation. [`apps/desktop/src/build/auto-update.ts`](file:///Users/letv_lzb/Documents/LeCodex/apps/desktop/src/build/auto-update.ts) — SemVer comparison with deterministic pre-release ordering so dev builds can roll forward and beta builds can opt into downgrade. [`apps/desktop/build/entitlements.mac.plist`](file:///Users/letv_lzb/Documents/LeCodex/apps/desktop/build/entitlements.mac.plist) — hardened-runtime entitlements with `disable-library-validation: false` and `com.apple.security.cs.allow-system-environment-variables: false`. [`.github/workflows/desktop-release.yml`](file:///Users/letv_lzb/Documents/LeCodex/.github/workflows/desktop-release.yml) — tag-triggered (`v*` / `beta-v*`) pipeline that builds Windows + macOS in parallel, injects signing secrets, runs `typecheck` + `test`, uploads the signed installers to a GitHub release that `electron-updater` consumes directly. 32 tests (15 forge + 11 sign + 6 auto-update) pass. |
-| Native `safeStorage` / keytar backend for `SecureStore` | Not started | Wave 3 | The `SecureStore` interface is ready; the Electron-native backend depends on the Wave 3 shell finishing. |
+| Framework-neutral Run console shared by Web and Desktop | Proven | Wave 3 | [`packages/run-controller`](file:///Users/letv_lzb/Documents/LeCodex/packages/run-controller/src/controller.ts) — `createRunConsoleController` owns the Run state semantics lifted out of the former 1080-line `apps/web/src/main.ts` and publishes immutable `RunConsoleState` snapshots; it depends only on `RunGateway` and `RunEventSource`, so Web HTTP/SSE and Desktop IPC are interchangeable transports. [`packages/presentation`](file:///Users/letv_lzb/Documents/LeCodex/packages/presentation/src/index.ts) carries the zero-DOM projection layer plus SSE orchestration (cursor resume, `sequence` de-duplication, reconnect, terminal hand-off). React subscribes through one `useSyncExternalStore` adapter and owns no Run semantics. 95 tests (50 controller + 12 reconnect + 25 presentation + 8 run-stream) pass. |
+| Electron shell security seam (Windows + macOS) | Proven (code path); installed-app smoke pending | Wave 3 | [`apps/desktop/src/main/electron.ts`](file:///Users/letv_lzb/Documents/LeCodex/apps/desktop/src/main/electron.ts) — the production bootstrap that did not previously exist, so the packaged app could not start. `main/index.ts` now mounts the real preload (it was `preload: undefined`), registers 24 typed IPC channels, and holds SSE in [`stream-broker.ts`](file:///Users/letv_lzb/Documents/LeCodex/apps/desktop/src/main/stream-broker.ts) because the Renderer CSP is `connect-src 'self'` and credentials must never reach it. `ipc-contract.ts` adds `PUSH_CHANNELS`; preload exposes only `onRunEvent` / `onStreamState` / `onCredentialState`, never `ipcRenderer.on` itself. Renderer runs `nodeIntegration=false`, `contextIsolation=true`, `sandbox=true` with blocked popups and external navigation. 177 desktop tests pass; deep business E2E covers binding through keep/discard over a real Worker HTTP server. |
+| Packaging configuration and release guardrails | Proven (code path); signed/notarized artifacts pending | Wave 3 | arm64 builds on `macos-15` and x64 on `macos-15-intel`, correcting the defect where an x64 job on an arm64 runner produced an arm64 binary under an x64 name. [`architecture.ts`](file:///Users/letv_lzb/Documents/LeCodex/apps/desktop/src/build/architecture.ts) parses Mach-O / PE / ELF headers in pure Node (no `lipo`, which Windows runners lack) and checks the runner, the packaged app, and every extracted ZIP / DMG / NUPKG including all `.node` addons; universal binaries pass only when they contain the target architecture. [`release-assets.ts`](file:///Users/letv_lzb/Documents/LeCodex/apps/desktop/src/build/release-assets.ts) rejects duplicate file names, missing versions, and wrong-architecture macOS artifacts. `maker-pkg` is removed — consumer releases ship Windows Squirrel plus macOS ZIP and DMG. Signing evidence (`codesign --verify` + `spctl --assess`, or `Get-AuthenticodeSignature`) is recorded per job and gates a stable release. Code signing, notarization, installed-package smoke and signed-update rejection remain unproven on target platforms and therefore cannot be marked complete. |
+| Native `safeStorage` backend for `SecureStore` | Proven | Wave 3 | [`safe-storage-store.ts`](file:///Users/letv_lzb/Documents/LeCodex/packages/secure-store/src/safe-storage-store.ts) wraps Electron `safeStorage` as a cipher with the ciphertext persisted to a 0o600 JSON file; unavailability, OS lock, key corruption and migration failure throw `SecureStoreUnavailableError` rather than silently dropping credentials. [`select-backend.ts`](file:///Users/letv_lzb/Documents/LeCodex/packages/secure-store/src/select-backend.ts) resolves `safeStorage → encrypted file → throw` (never a silent in-memory fallback) and reports degradation through `session.credentialState`, which the Renderer shows as a persistent banner. 51 secure-store tests pass. |
 
 ## Final verification gate
 
-- `pnpm typecheck`: **20/20** workspace tasks passed.
-- `pnpm test`: **566 passed + 2 skipped** across 90 files. The seven
-  known failures remain parked under the user-approved Phase 0
-  environment exception (docker daemon + Postgres frozen-time drift +
-  device-binding wall-clock expiry). None are introduced by Wave 1 /
-  Wave 2 / Wave 2-desktop / Wave 3 shell / Wave 3 packaging work.
-- Focused suites all green:
-  - `packages/secure-store/test/secure-store.test.ts`: 21/21.
-  - `packages/secure-store/test/device-credential-store.test.ts`: 11/11.
-  - `packages/client-sdk/test/client.test.ts`: 23/23.
-  - `packages/device-binding/test/service.test.ts` + `http.test.ts`: 23/23 (minus 3 wall-clock cases).
-  - `packages/local-runner/test/environment.test.ts`: 7/7.
-  - `packages/desktop-runner/test/desktop-runner.test.ts`: 16/16.
-  - `apps/desktop/test/ipc-contract.test.ts`: 7/7.
-  - `apps/desktop/test/main.test.ts`: 10/10.
-  - `apps/desktop/test/preload.test.ts`: 7/7.
-  - `apps/desktop/test/forge-config.test.ts`: 15/15.
-  - `apps/desktop/test/sign.test.ts`: 11/11.
-  - `apps/desktop/test/auto-update.test.ts`: 6/6.
-  - `packages/policy/test/policy.test.ts`: includes network.askDomains cases.
+The previous counts are superseded by
+[`m1-completion-summary.md`](m1-completion-summary.md): `pnpm typecheck` passes
+**23/23** workspace tasks; `pnpm test` passes **805 tests with 9 skips and 0
+failures** across 105 files. Every skip is an explicit environment gate rather
+than a parked failure. Real PostgreSQL concurrency, Docker, model provider,
+installed-package smoke, signed installer, notarization and update evidence
+remain separately classified environment gates. Passing pure configuration
+tests is not sufficient to promote those items to “Proven”.
 
 ## Limitations carried forward
 
-- The `SecureStore` package ships with an `EncryptedFileSecureStore`
-  backend (AES-256-GCM + PBKDF2 passphrase) rather than a native
-  keychain. The `SecureStore` interface is designed so an Electron
-  `safeStorage` / keytar adapter can drop in without changes to
-  consumers. The native backend is the last Wave 3 scope item.
-- The Electron + React shell skeleton (`apps/desktop`) ships the main /
-  preload / IPC contract layers; the React Renderer is the next concrete
-  piece (typing the channels as TS hooks and wiring the surface to UI
-  components).
+- The native `safeStorage` backend is proven by deterministic tests against a
+  `SafeStorageLike` port, but a real OS keychain round-trip on Windows and
+  macOS is still part of the installed-app smoke checklist.
+- M1.3 separates deterministic no-GUI business coverage from shallow
+  installed-app smoke. Windows and macOS each still need one real
+  installation, binding, golden Run, restart recovery and device-revocation
+  pass recorded under `docs/evidence/`; exhaustive business branches stay
+  deterministic below the GUI.
+- M1.4 consumer releases exclude MSI and PKG. macOS architectures now build on
+  native hosted runners and are verified by parsing real Mach-O / PE headers
+  inside the shipped archives, not only by filename checks. Enterprise
+  deployment formats require a later explicit product decision and a separate
+  workflow.
+- Signing and notarization depend on certificates held outside the repository.
+  Until they are configured, tag-triggered builds fail closed under
+  `LECODING_REQUIRE_SIGNED_ARTIFACTS` and release candidates ship only as
+  pre-releases.
+- The `DesktopLocalEnvironment` adapter emits lifecycle events, and the desktop
+  Renderer now renders approvals and keep/discard through the shared
+  controller. Phase 4B (M2) still owns the Local Runner transport, three-tier
+  host file access, and crash recovery.
 - The `DesktopLocalEnvironment` adapter emits lifecycle events but the
   concrete Electron-side UI handlers (`ApprovalGate`, `KeepOrDiscardGate`)
-  live in the Wave 3 React shell. The adapter itself is the contract
-  surface; the UI binds to it.
+  have not yet been implemented in the React View. The adapter remains the
+  contract surface; the future UI binds to it without moving those semantics
+  into hooks.

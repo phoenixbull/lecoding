@@ -8,15 +8,33 @@
  */
 
 import type {
+  ApprovalScope,
+  ControlPlaneConfig,
   CreateRunInput,
   CreateRunResult,
+  EditedApprovalCapability,
   ProjectId,
+  ProjectPolicyRuleResult,
+  RunChanges,
+  RunEventV1,
   RunHistoryResult,
   RunId,
   RunView
 } from "@lecoding/contracts";
 import type { LeCodingClient } from "@lecoding/client-sdk";
-import type { IpcRequest, IpcResponse } from "../shared/ipc-contract.js";
+import type {
+  DeviceCodeResult,
+  DeviceExchangeInput,
+  DeviceListing
+} from "@lecoding/run-controller";
+import type {
+  CredentialStatePush,
+  IpcRequest,
+  IpcResponse,
+  PushChannel,
+  RunEventPush,
+  StreamStatePush
+} from "../shared/ipc-contract.js";
 
 export interface ElectronApp {
   on(event: "window-all-closed", listener: () => void): void;
@@ -35,6 +53,14 @@ export interface ElectronWebContentsLike {
   setWindowOpenHandler(
     handler: (details: { url: string }) => { action: "allow" | "deny" }
   ): void;
+  /**
+   * Pushes a main-process notification to this Renderer.
+   *
+   * This is the only direction the Renderer can receive Run events: its CSP
+   * forbids outbound connections and it never holds the device credential, so
+   * the main process must relay the durable SSE stream.
+   */
+  send(channel: PushChannel, payload: RunEventPush | StreamStatePush | unknown): void;
   session: {
     webRequest: {
       onHeadersReceived(
@@ -95,16 +121,38 @@ export interface ElectronHost {
 export interface ClientSdk {
   getGitHubLoginUrl(): string;
   logout(): Promise<void>;
-  getControlPlaneConfig(): Promise<unknown>;
+  getControlPlaneConfig(): Promise<ControlPlaneConfig>;
   createRun(projectId: ProjectId, input: CreateRunInput): Promise<CreateRunResult>;
   cancelRun(runId: RunId): Promise<void>;
   listRuns(projectId: ProjectId, limit?: number): Promise<RunHistoryResult>;
   inspectRun(runId: RunId): Promise<RunView>;
   resolveRunResult(runId: RunId, outcome: "keep" | "discard"): Promise<void>;
-  createDeviceCode(projectId: ProjectId): Promise<unknown>;
-  exchangeDeviceCode(input: unknown): Promise<unknown>;
-  listDevices(projectId: ProjectId): Promise<unknown>;
+  getRunChanges(runId: RunId): Promise<RunChanges>;
+  getRunArtifact(runId: RunId, artifactId: string): Promise<string>;
+  approveRun(runId: RunId, approvalId: string, scope: ApprovalScope): Promise<void>;
+  rejectRun(runId: RunId, approvalId: string, scope: ApprovalScope): Promise<void>;
+  editAndApproveRun(
+    runId: RunId,
+    approvalId: string,
+    replacement: EditedApprovalCapability
+  ): Promise<void>;
+  answerRun(runId: RunId, requestId: string, value: string): Promise<void>;
+  steerRun(runId: RunId, message: string): Promise<void>;
+  listProjectPolicyRules(projectId: ProjectId): Promise<ProjectPolicyRuleResult>;
+  revokeProjectPolicyRule(projectId: ProjectId, ruleId: string): Promise<void>;
+  createDeviceCode(projectId: ProjectId): Promise<DeviceCodeResult>;
+  exchangeDeviceCode(input: DeviceExchangeInput): Promise<unknown>;
+  /** Scoped by the server to the authenticated device; no project needed. */
+  listDevices(): Promise<DeviceListing>;
   revokeDevice(deviceId: string): Promise<void>;
+  /**
+   * Opens the durable Run event stream. The broker owns retry and cursor
+   * bookkeeping; the SDK only supplies one subscription attempt.
+   */
+  subscribeRunEvents(
+    runId: RunId,
+    options: { lastEventId?: string; signal: AbortSignal }
+  ): AsyncIterable<RunEventV1>;
 }
 
 /** Factory keeps SDK construction out of main itself; main only orchestrates. */
@@ -113,4 +161,27 @@ export type ClientSdkFactory = (config: {
   authToken?: string;
 }) => ClientSdk | Promise<ClientSdk>;
 
+/**
+ * Credential-storage handle owned by the main process.
+ *
+ * The Renderer never receives the credential itself — only the health of the
+ * backend holding it — so a degraded fallback stays visible to the user
+ * without putting a device token anywhere near Renderer memory.
+ */
+export interface CredentialStoreHandle {
+  /** Current backend health, or undefined when no store is wired yet. */
+  status(): Promise<CredentialStatePush | undefined>;
+  /** Drops every persisted credential; used on logout and device revocation. */
+  clear(): Promise<void>;
+  /** Drops a credential that passed its expiry. Idempotent. */
+  purgeExpired(now?: Date): Promise<void>;
+}
+
 export type LeCodingClientLike = LeCodingClient;
+
+export type {
+  DeviceCodeResult,
+  DeviceExchangeInput,
+  DeviceListing,
+  DeviceSummary
+} from "@lecoding/run-controller";

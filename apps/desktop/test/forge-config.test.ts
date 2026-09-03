@@ -99,7 +99,7 @@ describe("buildForgeConfig", () => {
     const config = buildForgeConfig({
       appName: "LeCoding",
       appVersion: "1.2.3",
-      rendererEntry: "../renderer/dist/index.html",
+      rendererEntry: "dist/renderer/index.html",
       mainEntry: "./src/main/index.ts",
       preloadEntry: "./src/preload/index.ts",
       signEnv: SIGN_ENV,
@@ -114,7 +114,7 @@ describe("buildForgeConfig", () => {
     const config = buildForgeConfig({
       appName: "LeCoding",
       appVersion: "0.1.0",
-      rendererEntry: "../renderer/dist/index.html",
+      rendererEntry: "dist/renderer/index.html",
       mainEntry: "./src/main/index.ts",
       preloadEntry: "./src/preload/index.ts",
       signEnv: SIGN_ENV,
@@ -128,52 +128,48 @@ describe("buildForgeConfig", () => {
     }
   });
 
-  it("includes maker-pkg when full Apple credentials are present", () => {
-    const config = buildForgeConfig({
+  it("ships exactly zip and dmg on macOS, with or without Apple credentials", () => {
+    // M1.4 scoped MSI / PKG out of the default consumer version. A PKG is only
+    // worth shipping when it is signed and notarized for enterprise rollout,
+    // and every extra maker is another artefact the architecture and
+    // duplicate-name gates must police.
+    const withCredentials = buildForgeConfig({
       appName: "LeCoding",
       appVersion: "0.1.0",
-      rendererEntry: "../renderer/dist/index.html",
-      mainEntry: "./src/main/index.ts",
+      rendererEntry: "dist/renderer/index.html",
+      mainEntry: "./src/main/electron.ts",
       preloadEntry: "./src/preload/index.ts",
       signEnv: SIGN_ENV,
       repository: "phoenixbull/lecoding"
     });
-    const macosNames = config.makers
-      .filter((m) => m.name.startsWith("@electron-forge/maker-") && !m.name.includes("squirrel"))
-      .map((m) => m.name);
-    expect(macosNames).toContain("@electron-forge/maker-zip");
-    expect(macosNames).toContain("@electron-forge/maker-dmg");
-    expect(macosNames).toContain("@electron-forge/maker-pkg");
-  });
-
-  it("drops maker-pkg when Apple credentials are missing (CI fallback)", () => {
-    // Build with an empty signing env. zip + dmg still produce
-    // usable installers for manual distribution, but maker-pkg is
-    // removed because @electron/osx-sign fails with "No identity
-    // found" whenever any Apple credential is missing.
-    const config = buildForgeConfig({
+    const withoutCredentials = buildForgeConfig({
       appName: "LeCoding",
       appVersion: "0.1.0",
-      rendererEntry: "../renderer/dist/index.html",
-      mainEntry: "./src/main/index.ts",
+      rendererEntry: "dist/renderer/index.html",
+      mainEntry: "./src/main/electron.ts",
       preloadEntry: "./src/preload/index.ts",
       signEnv: {},
       repository: "phoenixbull/lecoding"
     });
-    const macosNames = config.makers
-      .filter((m) => m.name.startsWith("@electron-forge/maker-") && !m.name.includes("squirrel"))
-      .map((m) => m.name);
-    expect(macosNames).toEqual(
-      expect.arrayContaining(["@electron-forge/maker-zip", "@electron-forge/maker-dmg"])
-    );
-    expect(macosNames).not.toContain("@electron-forge/maker-pkg");
+    for (const config of [withCredentials, withoutCredentials]) {
+      const macosNames = config.makers
+        .filter(
+          (m) =>
+            m.name.startsWith("@electron-forge/maker-") && !m.name.includes("squirrel")
+        )
+        .map((m) => m.name);
+      expect(macosNames).toEqual([
+        "@electron-forge/maker-zip",
+        "@electron-forge/maker-dmg"
+      ]);
+    }
   });
 
   it("produces a single Squirrel maker on win32 (which itself ships .exe + .msi)", () => {
     const config = buildForgeConfig({
       appName: "LeCoding",
       appVersion: "0.1.0",
-      rendererEntry: "../renderer/dist/index.html",
+      rendererEntry: "dist/renderer/index.html",
       mainEntry: "./src/main/index.ts",
       preloadEntry: "./src/preload/index.ts",
       signEnv: SIGN_ENV,
@@ -190,7 +186,7 @@ describe("buildForgeConfig", () => {
     const config = buildForgeConfig({
       appName: "LeCoding",
       appVersion: "0.1.0",
-      rendererEntry: "../renderer/dist/index.html",
+      rendererEntry: "dist/renderer/index.html",
       mainEntry: "./src/main/index.ts",
       preloadEntry: "./src/preload/index.ts",
       signEnv: SIGN_ENV,
@@ -207,7 +203,7 @@ describe("buildForgeConfig", () => {
     const config = buildForgeConfig({
       appName: "LeCoding",
       appVersion: "0.1.0",
-      rendererEntry: "../renderer/dist/index.html",
+      rendererEntry: "dist/renderer/index.html",
       mainEntry: "./src/main/index.ts",
       preloadEntry: "./src/preload/index.ts",
       signEnv: SIGN_ENV,
@@ -230,7 +226,7 @@ describe("buildForgeConfig", () => {
     const config = buildForgeConfig({
       appName: "LeCoding",
       appVersion: "0.1.0",
-      rendererEntry: "../renderer/dist/index.html",
+      rendererEntry: "dist/renderer/index.html",
       mainEntry: "./src/main/index.ts",
       preloadEntry: "./src/preload/index.ts",
       signEnv: {},
@@ -244,7 +240,7 @@ describe("buildForgeConfig", () => {
     const config = buildForgeConfig({
       appName: "LeCoding",
       appVersion: "0.1.0",
-      rendererEntry: "../renderer/dist/index.html",
+      rendererEntry: "dist/renderer/index.html",
       mainEntry: "./src/main/index.ts",
       preloadEntry: "./src/preload/index.ts",
       signEnv: SIGN_ENV,
@@ -270,7 +266,7 @@ describe("buildForgeConfig", () => {
     const config = buildForgeConfig({
       appName: "LeCoding",
       appVersion: "0.1.0",
-      rendererEntry: "../renderer/dist/index.html",
+      rendererEntry: "dist/renderer/index.html",
       mainEntry: "./src/main/index.ts",
       preloadEntry: "./src/preload/index.ts",
       signEnv: {},
@@ -291,7 +287,7 @@ describe("buildForgeConfig", () => {
     const config = buildForgeConfig({
       appName: "LeCoding",
       appVersion: "0.1.0",
-      rendererEntry: "../renderer/dist/index.html",
+      rendererEntry: "dist/renderer/index.html",
       mainEntry: "./src/main/index.ts",
       preloadEntry: "./src/preload/index.ts",
       signEnv: {},
@@ -308,8 +304,8 @@ describe("buildForgeConfig", () => {
     const config = buildForgeConfig({
       appName: "LeCoding",
       appVersion: "0.1.0",
-      rendererEntry: "../renderer/dist/index.html",
-      mainEntry: "./src/main/index.ts",
+      rendererEntry: "dist/renderer/index.html",
+      mainEntry: "./src/main/electron.ts",
       preloadEntry: "./src/preload/index.ts",
       signEnv: {},
       repository: "phoenixbull/lecoding"
@@ -319,11 +315,57 @@ describe("buildForgeConfig", () => {
     expect(config.rendererEntry).not.toMatch(/^https?:/);
   });
 
+  it("refuses a Renderer entry that is a remote URL", () => {
+    // A remote entry would hand the Renderer (and every credential it can
+    // reach through the bridge) to whoever controls the host.
+    expect(() =>
+      buildForgeConfig({
+        appName: "LeCoding",
+        appVersion: "0.1.0",
+        rendererEntry: "https://cdn.example.com/renderer/index.html",
+        mainEntry: "./src/main/electron.ts",
+        preloadEntry: "./src/preload/index.ts",
+        signEnv: {},
+        repository: "phoenixbull/lecoding"
+      })
+    ).toThrow(/must be a packaged relative path/);
+  });
+
+  it("refuses a Renderer entry that escapes the packaged app", () => {
+    // `../renderer/dist/index.html` used to point at a directory that was
+    // never built, so the packaged app loaded an empty window.
+    expect(() =>
+      buildForgeConfig({
+        appName: "LeCoding",
+        appVersion: "0.1.0",
+        rendererEntry: "../renderer/dist/index.html",
+        mainEntry: "./src/main/electron.ts",
+        preloadEntry: "./src/preload/index.ts",
+        signEnv: {},
+        repository: "phoenixbull/lecoding"
+      })
+    ).toThrow(/must stay inside the packaged app/);
+  });
+
+  it("refuses a Renderer entry that is not an HTML document", () => {
+    expect(() =>
+      buildForgeConfig({
+        appName: "LeCoding",
+        appVersion: "0.1.0",
+        rendererEntry: "dist/renderer/main.js",
+        mainEntry: "./src/main/electron.ts",
+        preloadEntry: "./src/preload/index.ts",
+        signEnv: {},
+        repository: "phoenixbull/lecoding"
+      })
+    ).toThrow(/must point at index\.html/);
+  });
+
   it("configures electron-updater with the GitHub releases feed and signature gating", () => {
     const config = buildForgeConfig({
       appName: "LeCoding",
       appVersion: "0.1.0",
-      rendererEntry: "../renderer/dist/index.html",
+      rendererEntry: "dist/renderer/index.html",
       mainEntry: "./src/main/index.ts",
       preloadEntry: "./src/preload/index.ts",
       signEnv: {},
@@ -342,7 +384,7 @@ describe("buildForgeConfig", () => {
     const config = buildForgeConfig({
       appName: "LeCoding",
       appVersion: "0.1.0",
-      rendererEntry: "../renderer/dist/index.html",
+      rendererEntry: "dist/renderer/index.html",
       mainEntry: "./src/main/index.ts",
       preloadEntry: "./src/preload/index.ts",
       signEnv: SIGN_ENV,
@@ -360,7 +402,7 @@ describe("buildForgeConfig", () => {
     const config = buildForgeConfig({
       appName: "LeCoding",
       appVersion: "0.1.0",
-      rendererEntry: "../renderer/dist/index.html",
+      rendererEntry: "dist/renderer/index.html",
       mainEntry: "./src/main/index.ts",
       preloadEntry: "./src/preload/index.ts",
       signEnv: SIGN_ENV,
@@ -386,7 +428,7 @@ describe("buildForgeConfig", () => {
     const config = buildForgeConfig({
       appName: "LeCoding",
       appVersion: "0.2.0-rc.1",
-      rendererEntry: "../renderer/dist/index.html",
+      rendererEntry: "dist/renderer/index.html",
       mainEntry: "./src/main/index.ts",
       preloadEntry: "./src/preload/index.ts",
       signEnv: SIGN_ENV,
@@ -408,7 +450,7 @@ describe("buildForgeConfig", () => {
       buildForgeConfig({
         appName: "LeCoding",
         appVersion: "0.0.0",
-        rendererEntry: "../renderer/dist/index.html",
+        rendererEntry: "dist/renderer/index.html",
         mainEntry: "./src/main/index.ts",
         preloadEntry: "./src/preload/index.ts",
         signEnv: SIGN_ENV,

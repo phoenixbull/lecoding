@@ -5,7 +5,9 @@ export default defineConfig({
     // Application composition roots use the same contract-test harness as packages.
     include: [
       "packages/*/test/**/*.test.ts",
-      "apps/**/test/**/*.test.ts"
+      "apps/**/test/**/*.test.ts",
+      // Component tests for the desktop Renderer are written as .tsx.
+      "apps/**/test/**/*.test.tsx"
     ],
     // Match the production sandbox's two-CPU budget and avoid PGlite worker starvation.
     maxWorkers: 2,

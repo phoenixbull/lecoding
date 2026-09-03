@@ -9,8 +9,13 @@
 #
 # Windows builds natively on `windows-latest` so the Squirrel installer
 # (electron-winstaller) can produce its setup and update-feed assets without Mono /
-# Wine cross-compilation. macOS builds on `macos-latest` with the full
-# codesign + notarization flow (hardened runtime + notarytool).
+# Wine cross-compilation.
+#
+# M1.4: every macOS job builds on a runner whose CPU matches the target.
+# `macos-latest` is arm64-only, which is exactly why the historical x64 job
+# shipped an arm64 binary under an x64 name. arm64 uses `macos-15` and x64 uses
+# `macos-15-intel`, and `scripts/ci-desktop-make.mjs` refuses to run when the
+# runner, the packaged app, or any extracted archive disagrees.
 #
 # Secrets required (configure in repo Settings → Secrets → Actions):
 #   - CSC_LINK                : base64-encoded .p12 (Windows code-signing cert)
@@ -27,9 +32,21 @@ on:
       - "v*"
       - "beta-v*"
   workflow_dispatch:
+    inputs:
+      require_signed_artifacts:
+        description: "Fail the build when artifacts are unsigned"
+        required: false
+        default: "false"
 
 permissions:
   contents: write
+
+env:
+  # A tag push is a real release and must be signed; a manual dispatch is an
+  # experiment and may publish an unsigned pre-release.
+  LECODING_REQUIRE_SIGNED_ARTIFACTS: >-
+    ${{ github.event_name == 'push' && 'true' ||
+        inputs.require_signed_artifacts }}
 
 jobs:
   build:
@@ -40,11 +57,11 @@ jobs:
       matrix:
         include:
           - name: macOS (darwin/arm64)
-            os: macos-latest
+            os: macos-15
             platform: darwin
             arch: arm64
           - name: macOS (darwin/x64)
-            os: macos-latest
+            os: macos-15-intel
             platform: darwin
             arch: x64
           - name: Windows (win32/x64)
@@ -72,6 +89,17 @@ jobs:
       - name: Test (full repository, including loopback integration)
         run: pnpm test
 
+      - name: Report runner architecture
+        # Recorded so a mislabelled artifact can be traced back to the runner
+        # that produced it.
+        run: |
+          node -p "'node=' + process.arch + ' platform=' + process.platform"
+          if [ "$(uname)" = "Darwin" ]; then
+            sysctl -n sysctl.proc_translated || echo "proc_translated=unavailable"
+            uname -m
+          fi
+        shell: bash
+
       - name: Build & make installer (${{ matrix.platform }}/${{ matrix.arch }})
         env:
           CSC_LINK: ${{ secrets.CSC_LINK }}
@@ -85,6 +113,7 @@ jobs:
           # `release` job). Reading it from the trigger tag keeps the
           # package, the update feed, and the file name in lock-step.
           LECODING_RELEASE_VERSION: ${{ github.ref_name }}
+          LECODING_REQUIRE_SIGNED_ARTIFACTS: ${{ env.LECODING_REQUIRE_SIGNED_ARTIFACTS }}
         run: |
           node scripts/ci-desktop-make.mjs ${{ matrix.platform }} ${{ matrix.arch }}
         shell: bash
@@ -97,9 +126,58 @@ jobs:
             apps/desktop/out/make/**/*
           if-no-files-found: error
 
+  release-gate:
+    name: Release gate
+    needs: build
+    runs-on: ubuntu-latest
+    outputs:
+      signed: ${{ steps.gate.outputs.signed }}
+    steps:
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Reject duplicate artifact names
+        # GitHub release assets are addressed by file name, so two jobs
+        # uploading the same name silently overwrite each other and the
+        # release loses an architecture without any error.
+        run: |
+          set -euo pipefail
+          duplicates=$(find artifacts -type f -printf '%f\n' | sort | uniq -d)
+          if [ -n "$duplicates" ]; then
+            echo "FATAL: duplicate artifact names would overwrite each other:"
+            echo "$duplicates"
+            exit 1
+          fi
+          echo "No duplicate artifact names."
+
+      - name: Collect signing evidence
+        id: gate
+        run: |
+          set -euo pipefail
+          evidence=$(find artifacts -name 'signing-evidence-*.txt' -type f | sort)
+          if [ -z "$evidence" ]; then
+            echo "FATAL: no signing evidence was produced by any build job."
+            exit 1
+          fi
+          for file in $evidence; do
+            echo "--- $file"
+            cat "$file"
+          done
+          # Every architecture must be signed before a stable release ships.
+          # grep -L lists files without a `signed=true` line.
+          if echo "$evidence" | tr ' ' '\n' | xargs grep -L '^signed=true$' | grep -q .; then
+            echo "signed=false" >> "$GITHUB_OUTPUT"
+            echo "At least one artifact is unsigned; publishing as a pre-release."
+          else
+            echo "signed=true" >> "$GITHUB_OUTPUT"
+            echo "Every artifact is signed."
+          fi
+
   release:
     name: Publish GitHub release
-    needs: build
+    needs: release-gate
     runs-on: ubuntu-latest
     steps:
       - name: Download artifacts
@@ -120,7 +198,12 @@ jobs:
             artifacts/**/*.zip
             artifacts/**/RELEASES
           generate_release_notes: true
-          prerelease: ${{ startsWith(github.ref, 'refs/tags/beta-v') }}
+          # An unsigned build must never reach a stable channel; the gate
+          # decides this from real signature evidence rather than from a
+          # human remembering to tick a box.
+          prerelease: >-
+            ${{ needs.release-gate.outputs.signed != 'true' ||
+                startsWith(github.ref, 'refs/tags/beta-v') }}
           fail_on_unmatched_files: true
         env:
           GITHUB_TOKEN: ${{ secrets.GH_TOKEN }}
