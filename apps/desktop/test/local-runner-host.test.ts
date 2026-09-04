@@ -128,6 +128,25 @@ describe("createLocalRunnerHost", () => {
     expect(host.interrupted()).toEqual([]);
   });
 
+  it("records a prepared handle durably and reports it as a live Run", async () => {
+    const { host, journal } = harness();
+    await host.recover();
+
+    await host.recordPrepared({
+      runId: "run-1",
+      handleId: "run-1::/work/run-1",
+      worktreePath: "/work/run-1"
+    });
+
+    const entries = await journal.read();
+    expect(entries[0]?.kind).toBe("handle.prepared");
+    // Reportable immediately, without re-reading the journal: the host is the
+    // authority a resolve consults for the worktree path.
+    expect(host.runs()).toEqual([
+      { runId: "run-1", handleId: "run-1::/work/run-1", worktreePath: "/work/run-1", resolved: false }
+    ]);
+  });
+
   it("resolves a Run and records the decision durably", async () => {
     const { host, journal, resolutions } = harness();
     await host.recover();

@@ -192,6 +192,14 @@ export function createLocalRunnerHandlers(
     async prepare(payload, _signal, context) {
       const runId = requireRunId(payload);
       const spec = parseSpec(payload, runId);
+      /*
+       * The command is journalled before the worktree exists.
+       *
+       * Recording it afterwards would mean a crash between the two left a
+       * worktree on disk with no record of the command that made it — so a
+       * restart would neither clean it up nor know it was there.
+       */
+      await options.host.beginCommand({ runId, commandId: context.commandId });
       const environment = await buildEnvironment({
         runId,
         scope: spec.fileAccessScope
@@ -202,7 +210,13 @@ export function createLocalRunnerHandlers(
         scope: spec.fileAccessScope,
         environment
       });
-      await options.host.beginCommand({ runId, commandId: context.commandId });
+      // The handle is durable before the server hears about it, so a crash
+      // after this point still recovers a worktree the server can resolve.
+      await options.host.recordPrepared({
+        runId,
+        handleId: handle.id,
+        worktreePath: options.worktreePathFor(runId)
+      });
       await options.host.settleCommand({
         runId,
         commandId: context.commandId,
@@ -273,17 +287,14 @@ export function createLocalRunnerHandlers(
         commandId: context.commandId
       });
       // Idempotency and the keep/discard decision belong to the host, which
-      // owns the durable record of what the user already chose.
+      // owns the durable record of what the user already chose — and which
+      // performs the Git resolution and worktree cleanup itself.
+      //
+      // Calling `environment.dispose` here as well would resolve the same Run
+      // in Git twice, and the second attempt fails once the worktree is gone.
+      // The host's decision is authoritative, so nothing further is needed.
       const resolved = await options.host.resolve({ runId: record.runId, outcome });
-      /*
-       * Apply the *effective* outcome, not this request's.
-       *
-       * `resolved.effectiveOutcome` is the first decision when one existed. A
-       * replayed discard after a keep must leave the worktree kept: handing the
-       * request's outcome to `dispose` here would re-run the Git resolution the
-       * other way and destroy changes the user chose to keep.
-       */
-      await record.environment.dispose(handle, resolved.effectiveOutcome);
+      prepared.delete(handle.id);
       await options.host.settleCommand({
         runId: record.runId,
         commandId: context.commandId,

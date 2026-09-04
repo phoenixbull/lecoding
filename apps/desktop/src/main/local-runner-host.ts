@@ -91,6 +91,18 @@ export interface LocalRunnerHost {
   cancel(runId: string): { cancelled: boolean; reason?: string };
   /** Marks a command started, making an interruption observable. */
   beginCommand(input: { runId: string; commandId: number }): Promise<void>;
+  /**
+   * Records a prepared handle durably, before the server learns of it.
+   *
+   * Caller obligation: call this once the worktree exists and before the
+   * `prepare` result is returned. A handle recorded later would be lost by a
+   * crash in between, stranding a worktree nobody can resolve.
+   */
+  recordPrepared(input: {
+    runId: string;
+    handleId: string;
+    worktreePath: string;
+  }): Promise<void>;
   /** Marks a command settled, making its result replayable from cache. */
   settleCommand(input: {
     runId: string;
@@ -229,6 +241,24 @@ export function createLocalRunnerHost(
         runId,
         commandId,
         recordedAt: options.now()
+      });
+    },
+
+    async recordPrepared({ runId, handleId, worktreePath }) {
+      await journal.append({
+        kind: "handle.prepared",
+        runId,
+        handleId,
+        worktreePath,
+        recordedAt: options.now()
+      });
+      // Registered in memory too, so `runs()` reports it and a later resolve
+      // can find the worktree without re-reading the journal.
+      runsById.set(runId, {
+        runId,
+        handleId,
+        worktreePath,
+        resolved: false
       });
     },
 
