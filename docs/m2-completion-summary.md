@@ -64,17 +64,15 @@ macOS 的 Seatbelt 可用性在启动时探针；探针失败拒绝产出执行�
 | 命令 | 期望 | 实测 |
 |---|---|---|
 | `pnpm typecheck` | 全部 workspace 通过 | **25/25 通过**（新增 `runner-protocol`、`host-sandbox`） |
-| `pnpm test` | 全量门禁 | M2.2 提交前实测 **1056 通过 / 9 跳过 / 0 失败**；M2.3/M2.4 以聚焦套件验证（见下） |
-| `pnpm vitest run packages/host-sandbox/test` | 沙箱矩阵 | **75 通过** |
-| `pnpm vitest run packages/local-runner/test` | 围栏 + 恢复 | **43 通过**（含 9 条沙箱强制、18 条恢复） |
-| `pnpm vitest run apps/desktop/test/local-runner-host.test.ts` | 恢复编排 | **10 通过** |
-| 契约套件（local + desktop） | 三适配器同套件 | **25 通过** |
-| `pnpm vitest run apps/worker/test apps/desktop/test` | WSS 改动回归 | **333 通过 / 0 失败** |
-| Renderer 边界 + 策略基线 + 隔离组件 | M2.4 基线 | **21 通过** |
+| `pnpm test` | 全量门禁 | **129 文件通过 / 5 跳过；1170 通过 / 16 跳过 / 0 失败；EXIT=0，87.55s**（2026-09-04） |
+| `pnpm vitest run packages/host-sandbox/test` | 沙箱矩阵 | **86 通过**（含 grant-store 7） |
+| `pnpm vitest run packages/local-runner/test` | 围栏 + 恢复 | **全部通过** |
+| `pnpm vitest run apps/desktop/test/local-runner-chain.test.ts` | 四层贯通链 | **6 通过**（RemoteRunnerEnvironment → HostSession → RunnerSession → LocalRunnerHandlers → 真实沙箱） |
+| 契约套件（local + desktop） | 三适配器同套件 | **25 通过**；Docker 套件受 `LECODING_DOCKER_CONTRACT=1` 显式 gate |
 
-**门禁执行口径说明**：M2.3 与 M2.4 的收口验证以聚焦套件为准，原因是本轮执行环境的全量 `pnpm test` 运行反复超过命令超时窗口（此前 M2.2 阶段已完整跑通一次 1056 通过 / 0 失败）。**交接前必须在可等待全量运行的环境里重新执行 `pnpm test` 与 `pnpm typecheck`**，并把结果回填本节，替代聚焦套件数字。
+**全量测试曾长期不退出的根因与修复**：`docker-contract-suite.test.ts` 的 Docker 探针 `spawnSync("docker", ["info"])` 没有超时上限。Docker Desktop 已安装但 daemon 未运行的机器上，该调用在测试收集阶段无限阻塞，导致全量运行永不结束、只能被终止（退出码 130）——既有 `docker-environment.test.ts` 早已为此使用 5 秒上限，新套件漏抄了这一防御。修复后另发现本机 Docker daemon「时好时坏」，探针无法区分健康与即将挂起，故该套件改为 `LECODING_DOCKER_CONTRACT=1` 显式开启（与安装产物 smoke 同一模式），在 Docker 可靠的环境（CI）中运行。
 
-9 个跳过全部是既有显式环境 gate（安装产物 smoke、Docker daemon、live Anthropic、真实 PostgreSQL 并发），本轮未新增跳过类别；Docker 契约套件沿用同一 daemon gate。
+16 个跳过全部是显式环境 gate：安装产物 smoke(4)、live Anthropic(2)、真实 PostgreSQL 并发(1)、Docker 契约套件(7)、docker-environment(2)。
 
 ## 4. 各工作包变更摘要
 
@@ -176,10 +174,9 @@ macOS 的 Seatbelt 可用性在启动时探针；探针失败拒绝产出执行�
 ```bash
 pnpm install --frozen-lockfile
 pnpm typecheck                                       # 期望 25/25
-pnpm test                                            # 交接前必须全量复跑并回填
-pnpm vitest run packages/host-sandbox/test           # 期望 75 通过
-pnpm vitest run packages/local-runner/test           # 期望 43 通过
-pnpm vitest run apps/desktop/test/local-runner-host.test.ts  # 期望 10 通过
-pnpm vitest run packages/local-runner/test/contract-suite.test.ts \
-        packages/desktop-runner/test/contract-suite.test.ts  # 期望 25 通过
+pnpm test                                            # 期望 1170 通过 / 16 跳过 / 0 失败, EXIT=0
+pnpm vitest run packages/host-sandbox/test           # 期望 86 通过
+pnpm vitest run apps/desktop/test/local-runner-chain.test.ts  # 期望 6 通过（四层贯通链）
+# Docker 契约套件（Docker 可靠的环境如 CI）：
+LECODING_DOCKER_CONTRACT=1 pnpm vitest run packages/run-environment/test/docker-contract-suite.test.ts
 ```
