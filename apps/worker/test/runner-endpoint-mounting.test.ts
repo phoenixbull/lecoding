@@ -5,7 +5,13 @@ import type { RunnerSocket } from "@lecoding/runner-protocol";
 import { attachRunnerWsServer, RUNNER_WS_PATH } from "../src/runner-ws-server.js";
 
 /**
- * The production entry point actually mounts the Runner endpoint.
+ * The Runner adapter is reachable through a real listener.
+ *
+ * Scope note: this suite calls `attachRunnerWsServer` directly, so it proves
+ * the adapter and its upgrade handling — not the composition in `main.ts` that
+ * decides whether it is mounted at all. The composition is covered by
+ * `worker-runtime.test.ts`, which asserts `configureServer` is supplied.
+ * Together they cover the mount and the wiring; either alone leaves a gap.
  *
  * The WSS endpoint is attached to the raw `node:http` server's `upgrade`
  * event, which the Web-standard API handler cannot express. That makes it the

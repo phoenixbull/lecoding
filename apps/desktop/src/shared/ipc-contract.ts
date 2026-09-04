@@ -3,12 +3,17 @@
  *
  * The Main process and the preload bridge share this module so that
  * channel names and request/response shapes are pinned at compile time.
- * Adding a new capability requires all FOUR edits — missing any one of them
- * produces a channel that compiles but silently does nothing at runtime:
+ * Adding a new capability requires these edits, and the compiler now catches
+ * the ones that used to fail silently:
  *   1. Append the channel name to IPC_CHANNELS
- *   2. Define the request payload shape in IpcRequestByChannel
- *   3. Register a validator in ipcRequestSchema
- *   4. Add a `case` to the dispatch switch in main/index.ts
+ *   2. Define the request payload shape in IpcRequestByChannel   — enforced
+ *   3. Register a validator in the IPC_VALIDATORS record          — enforced
+ *   4. Add a `case` to the dispatch switch in main/index.ts       — enforced
+ *
+ * (2) and (3) are exhaustive records, and (4) ends in a `never` check, so a
+ * channel missing any of them is a type error. `session.bootstrap` is the one
+ * deliberate exclusion from the switch, because it must run before the SDK
+ * exists; see `DispatchChannel` in main/index.ts.
  *
  * The Renderer can only reach the documented channels. The contract layer
  * rejects unknown channel names at the preload boundary so a compromised

@@ -24,6 +24,15 @@ export {
 } from "./file-access-grant.js";
 
 export {
+  createGrantStore,
+  createMemoryGrantFileSystem,
+  deleteGrantFile,
+  type GrantFileSystem,
+  type GrantStore,
+  type GrantStoreOptions
+} from "./grant-store.js";
+
+export {
   createPathFence,
   isCaseInsensitiveByDefault,
   looksLikePath,

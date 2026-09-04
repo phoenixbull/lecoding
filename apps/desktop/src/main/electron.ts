@@ -26,7 +26,7 @@ import {
   shell
 } from "electron";
 import { createClient } from "@lecoding/client-sdk";
-import { selectHostSandbox, type FileAccessGrant } from "@lecoding/host-sandbox";
+import { createGrantStore, selectHostSandbox } from "@lecoding/host-sandbox";
 import { createRunJournal } from "@lecoding/local-runner";
 import { createGitRunResultManager } from "@lecoding/workspace";
 import { createLocalRunnerHost, type LocalRunnerHost } from "./local-runner-host.js";
@@ -222,13 +222,17 @@ async function bootstrap(): Promise<void> {
    */
   const recovered = await runnerHost.recover();
 
-  /** Grants the user has issued, keyed by Run; the desktop is the issuer. */
-  const grants = new Map<string, FileAccessGrant>();
+  /** Grants the user has issued, durable across relaunches and revocable. */
+  const grantStore = createGrantStore({
+    filePath: join(runnerRoot, "grants.json")
+  });
   const runnerHandlers = createLocalRunnerHandlers({
     sandbox,
     host: runnerHost,
     resolveGrant: async ({ runId, scope, worktreePath }) => {
-      const existing = grants.get(runId);
+      // A grant already issued for this Run is reused, so a reconnect does not
+      // prompt again for consent the user already gave.
+      const existing = await grantStore.forRun(runId);
       if (existing) {
         return existing;
       }
@@ -242,7 +246,7 @@ async function bootstrap(): Promise<void> {
       if (!outcome.granted) {
         return undefined;
       }
-      grants.set(runId, outcome.grant);
+      await grantStore.put(outcome.grant);
       return outcome.grant;
     },
     sourceRepo: sourceRepoPath,

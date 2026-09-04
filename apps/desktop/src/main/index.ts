@@ -43,17 +43,22 @@ import type {
 import type { RunnerBrokerState } from "./runner-broker.js";
 import { createRunStreamBroker, type RunStreamBroker } from "./stream-broker.js";
 
+/** Upper bound on a folder name sent to the Renderer. */
+const MAX_LABEL_CHARS = 80;
+
 /**
  * Last path segment, for display across the IPC boundary.
  *
  * Deliberately lossy: the Renderer gets a folder name it can show the user,
- * never the absolute location. Handles both separators because the same
- * Renderer bundle runs on Windows and macOS.
+ * never the absolute location, and never more than `MAX_LABEL_CHARS` of it.
+ * Handles both separators because the same Renderer bundle runs on Windows and
+ * macOS.
  */
 function basenameOf(path: string): string {
   const normalized = path.replace(/[\\/]+$/u, "");
   const index = Math.max(normalized.lastIndexOf("/"), normalized.lastIndexOf("\\"));
-  return index >= 0 ? normalized.slice(index + 1) : normalized;
+  const base = index >= 0 ? normalized.slice(index + 1) : normalized;
+  return base.length > MAX_LABEL_CHARS ? `${base.slice(0, MAX_LABEL_CHARS)}…` : base;
 }
 
 /**

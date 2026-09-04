@@ -28,6 +28,7 @@ import type {
 } from "@lecoding/contracts";
 import {
   SandboxViolationError,
+  terminateProcessTree,
   type FileAccessGrant,
   type HostSandbox,
   type PathViolation
@@ -107,6 +108,15 @@ interface SpawnOptions {
 export interface ChildProcessLike {
   stdout: NodeJS.ReadableStream | null;
   stderr: NodeJS.ReadableStream | null;
+  /**
+   * Process id, when the underlying spawn exposed one.
+   *
+   * Present in production and absent in some test stubs. When it is available
+   * the runner terminates the whole tree rather than only the direct child,
+   * which is the difference between a cancelled Run releasing its worktree and
+   * leaving an orphaned grandchild holding it.
+   */
+  pid?: number;
   on(event: "exit", listener: (code: number | null, signal: NodeJS.Signals | null) => void): this;
   on(event: "error", listener: (error: Error) => void): this;
   kill(signal?: NodeJS.Signals): boolean;
@@ -331,14 +341,32 @@ async function runCommand(input: {
 
   let timedOut = false;
   let aborted = false;
+
+  /**
+   * Stops the command and everything it spawned.
+   *
+   * `child.kill()` reaches exactly one process. On Windows that leaves
+   * grandchildren running and holding the worktree, which then survives cleanup
+   * and is reported as a residual the user has to delete by hand — so the tree
+   * is terminated when the process id is known, and the single-process kill is
+   * the fallback rather than the mechanism.
+   */
+  const stopTree = (signal: NodeJS.Signals): void => {
+    if (typeof child.pid === "number" && child.pid > 0) {
+      void terminateProcessTree(child.pid);
+      return;
+    }
+    child.kill(signal);
+  };
+
   const timer = setTimeout(() => {
     timedOut = true;
-    child.kill("SIGKILL");
+    stopTree("SIGKILL");
   }, input.execTimeoutMs);
 
   const abortHandler = () => {
     aborted = true;
-    child.kill("SIGTERM");
+    stopTree("SIGTERM");
   };
   if (input.signal) {
     if (input.signal.aborted) {
