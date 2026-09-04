@@ -130,6 +130,15 @@ export interface DesktopMainOptions {
   trustedSenderId?: string;
   /** Credential storage handle; enables `session.status` and local clearing. */
   credentialStore?: CredentialStoreHandle;
+  /**
+   * Drops every issued file-access grant.
+   *
+   * Caller obligation: wire this to the same events that clear the credential
+   * (logout, device revocation). A grant that survives its session means a
+   * folder the user authorized for one Run stays authorized for the next one
+   * without being asked again.
+   */
+  clearGrants?: () => Promise<void>;
   /** Injectable reconnect delay keeps stream behaviour deterministic in tests. */
   waitBeforeReconnect?: (signal: AbortSignal) => Promise<void>;
   /**
@@ -304,6 +313,9 @@ export function createDesktopMain(options: DesktopMainOptions): DesktopMain {
           // Local credentials die with the session; leaving them behind would
           // let the next launch re-authenticate as a revoked device.
           await options.credentialStore?.clear();
+          // Grants die with the session: a folder authorized for one Run must
+          // not stay authorized for whatever runs next.
+          await options.clearGrants?.();
           broker?.dispose();
           bootstrapConfig = undefined;
           return ok({ loggedOut: true });
@@ -344,6 +356,9 @@ export function createDesktopMain(options: DesktopMainOptions): DesktopMain {
           // Revocation is server-side; dropping the local copy keeps a
           // re-launched client from presenting a dead device.
           await options.credentialStore?.clear();
+          // Grants die with the session: a folder authorized for one Run must
+          // not stay authorized for whatever runs next.
+          await options.clearGrants?.();
           broker?.dispose();
           return ok({ revoked: true });
         }
@@ -493,6 +508,9 @@ export function createDesktopMain(options: DesktopMainOptions): DesktopMain {
         // while an invalid credential remains durable.
         try {
           await options.credentialStore?.clear();
+          // Grants die with the session: a folder authorized for one Run must
+          // not stay authorized for whatever runs next.
+          await options.clearGrants?.();
           broker?.dispose();
         } catch {
           return err("upstream_error", "Failed to clear the invalid credential");

@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import type { RunnerCommandOutcome } from "../src/envelope.js";
 import type { JsonValue } from "@lecoding/contracts";
 import {
   createHostSession,

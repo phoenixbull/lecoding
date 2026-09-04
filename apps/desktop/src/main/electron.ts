@@ -170,10 +170,13 @@ async function bootstrap(): Promise<void> {
    * process creation. All three are wired here — the production entry point —
    * so that local execution is real rather than only reachable from tests.
    */
+  // One clock for every durable record the desktop writes, so a grant, a
+  // journal entry and an audit row can be compared on a single timeline.
+  const now = () => new Date().toISOString();
   const sandbox = selectHostSandbox();
   const grantService = createFileAccessGrantService({
     host: createElectronHost(),
-    now: () => new Date().toISOString()
+    now
   });
   const userData = app.getPath("userData");
   const runnerRoot = join(userData, "local-runner");
@@ -187,9 +190,9 @@ async function bootstrap(): Promise<void> {
   const runnerHost = createLocalRunnerHost({
     journal: createRunJournal({
       filePath: join(runnerRoot, "run-journal.jsonl"),
-      now: () => new Date().toISOString()
+      now
     }),
-    now: () => new Date().toISOString(),
+    now,
     resolveRunOutcome: async (runId, outcome) => {
       await gitResults.resolve(runId, outcome);
     },
@@ -250,7 +253,7 @@ async function bootstrap(): Promise<void> {
     worktreeRoot,
     worktreePathFor: (runId) => join(worktreeRoot, runId),
     auditLogPath: join(runnerRoot, "host-access.jsonl"),
-    now: () => new Date().toISOString()
+    now
   });
   const broker = createRunnerBroker({
     connect: () => createRunnerWebSocket(runnerWebSocketUrl(baseUrl())),
@@ -317,6 +320,7 @@ async function bootstrap(): Promise<void> {
     rendererEntry: rendererEntry(),
     preloadEntry: preloadEntry(),
     credentialStore,
+    clearGrants: () => grantStore.clear(),
     sandbox: () => sandbox.capabilities(),
     runnerState: () => broker.state()
   });

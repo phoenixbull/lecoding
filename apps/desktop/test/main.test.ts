@@ -242,6 +242,24 @@ describe("createDesktopMain", () => {
     return main;
   }
 
+
+  it('clears the issued grants when the user logs out', async () => {
+    // A grant survives its Run; if logout did not drop it, a folder authorized
+    // for one Run would stay authorized for whatever runs next.
+    const cleared: string[] = [];
+    const main = await boot({ clearGrants: async () => { cleared.push('grants'); } });
+    // The logout handler requires a bootstrapped SDK, so prime it first.
+    await main.handlers().get('session.bootstrap')!(
+      { channel: 'session.bootstrap', payload: { baseUrl: 'http://x' } },
+      SENDER
+    );
+    await main.handlers().get('session.logout')!(
+      { channel: 'session.logout', payload: {} },
+      SENDER
+    );
+    expect(cleared).toEqual(['grants']);
+  });
+
   it("boots the BrowserWindow with the security baseline (PRD § 10.1)", async () => {
     await boot();
     expect(host.windows.length).toBe(1);
