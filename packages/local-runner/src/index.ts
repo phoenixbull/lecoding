@@ -413,6 +413,5 @@ export {
   type JournalFileSystem,
   type RecoveredRunState,
   type RunJournal,
-  type RunJournalEntry,
   type RunJournalOptions
 } from "./run-journal.js";

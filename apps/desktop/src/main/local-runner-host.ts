@@ -76,6 +76,15 @@ export interface LocalRunnerHost {
     resolved: boolean;
     alreadyResolved: boolean;
     cleaned: boolean;
+    /**
+     * The decision that actually stands.
+     *
+     * This is the *first* decision when one already existed, so a caller that
+     * still has to touch the worktree applies what the user chose rather than
+     * what the latest request asked for. Returning only `alreadyResolved` would
+     * let a replayed discard flip an earlier keep.
+     */
+    effectiveOutcome: "keep" | "discard";
     residual?: ResidualPath;
   }>;
   /** Cancels a Run regardless of what it is doing. */
@@ -149,7 +158,14 @@ export function createLocalRunnerHost(
       if (existing !== undefined) {
         // Idempotency is the safety property: a duplicate resolve arriving over
         // a reconnected socket must not be able to reverse the user's choice.
-        return { resolved: true, alreadyResolved: true, cleaned: false };
+        // `effectiveOutcome` is the original, so a caller still holding a
+        // worktree applies the user's first answer, not this request's.
+        return {
+          resolved: true,
+          alreadyResolved: true,
+          cleaned: false,
+          effectiveOutcome: existing
+        };
       }
       const record = runsById.get(runId);
 
@@ -179,13 +195,19 @@ export function createLocalRunnerHost(
       }
 
       if (!record) {
-        return { resolved: true, alreadyResolved: false, cleaned: true };
+        return {
+          resolved: true,
+          alreadyResolved: false,
+          cleaned: true,
+          effectiveOutcome: outcome
+        };
       }
       const cleaned = await this.cleanup({ runId, path: record.worktreePath });
       return {
         resolved: true,
         alreadyResolved: false,
         cleaned: cleaned.cleaned,
+        effectiveOutcome: outcome,
         ...(cleaned.residual ? { residual: cleaned.residual } : {})
       };
     },

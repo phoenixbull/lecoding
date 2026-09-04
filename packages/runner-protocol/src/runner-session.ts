@@ -44,10 +44,19 @@ import type {
   RunnerSocketUnsubscribe
 } from "./runner-socket.js";
 
-/** One environment operation. `signal` fires when the server sends `env.abort`. */
+/**
+ * One environment operation.
+ *
+ * `signal` fires when the server sends `env.abort`; `context.commandId` is the
+ * transport-allocated id of this specific invocation, which a journalling
+ * handler needs to record the effect before it happens. It is supplied here
+ * rather than inside `payload` so it cannot be forged or forgotten by a caller
+ * building payloads.
+ */
 export type RunnerEnvironmentHandler = (
   payload: JsonValue,
-  signal: AbortSignal
+  signal: AbortSignal,
+  context: { commandId: number }
 ) => Promise<JsonValue>;
 
 /** Mirrors `RunEnvironment`; `dispose` receives the keep/discard outcome. */
@@ -265,7 +274,18 @@ export function createRunnerSession(options: RunnerSessionOptions): RunnerSessio
     const controller = new AbortController();
     inFlight.set(id, controller);
     try {
-      return { ok: true, value: await handler(payload, controller.signal) };
+      /*
+       * The command id travels as context, not inside the payload.
+       *
+       * It belongs to the transport, not to the operation: the server allocates
+       * it and the dedupe table consumes it, so asking a handler to read it out
+       * of a payload meant every caller had to invent a place to put it. A
+       * handler that needs it for journalling gets it here, authoritatively.
+       */
+      return {
+        ok: true,
+        value: await handler(payload, controller.signal, { commandId: id })
+      };
     } catch (error) {
       if (controller.signal.aborted) {
         return {

@@ -106,8 +106,26 @@ export function createLocalRunnerHandlers(
     return grant;
   }
 
+  /**
+   * What `prepare` established, keyed by the handle the server holds.
+   *
+   * Everything a later operation needs — the Run it belongs to, the scope the
+   * user authorized, the environment built under that grant — is recorded here
+   * at prepare time and looked up afterwards. Later operations carry only the
+   * handle id, so they cannot name a different Run or a wider scope than the
+   * grant covered, and there is no default to fall back to.
+   */
+  const prepared = new Map<
+    string,
+    {
+      runId: string;
+      scope: FileAccessScope;
+      environment: Awaited<ReturnType<typeof buildEnvironment>>;
+    }
+  >();
+
   /** One environment per Run, because a grant is per Run. */
-  async function environmentFor(input: {
+  async function buildEnvironment(input: {
     runId: string;
     scope: FileAccessScope;
   }) {
@@ -127,46 +145,67 @@ export function createLocalRunnerHandlers(
     });
   }
 
+  /** The prepared state for a handle, or a refusal if prepare never happened. */
+  function requirePrepared(handleId: string, op: string) {
+    const record = prepared.get(handleId);
+    if (!record) {
+      // Refuse rather than rebuild: rebuilding would issue a fresh grant for a
+      // handle the user may never have authorized.
+      throw new Error(`${op} references a handle that was never prepared here`);
+    }
+    return record;
+  }
+
   return {
-    async prepare(payload, _signal) {
+    async prepare(payload, _signal, context) {
       const runId = requireRunId(payload);
       const spec = parseSpec(payload, runId);
-      const environment = await environmentFor({ runId, scope: scopeFor(payload) });
-      const handle = await environment.prepare(spec);
-      await options.host.beginCommand({
+      const environment = await buildEnvironment({
         runId,
-        commandId: requireCommandId(payload)
+        scope: spec.fileAccessScope
       });
+      const handle = await environment.prepare(spec);
+      prepared.set(handle.id, {
+        runId,
+        scope: spec.fileAccessScope,
+        environment
+      });
+      await options.host.beginCommand({ runId, commandId: context.commandId });
       await options.host.settleCommand({
         runId,
-        commandId: requireCommandId(payload),
+        commandId: context.commandId,
         outcome: { ok: true, value: { handleId: handle.id } as JsonValue }
       });
       return { handleId: handle.id };
     },
 
-    async perform(payload, signal) {
-      const runId = requireRunId(payload);
-      const commandId = requireCommandId(payload);
-      const environment = await environmentFor({ runId, scope: scopeFor(payload) });
+    async perform(payload, signal, context) {
       const handle = requireHandle(payload);
+      const record = requirePrepared(handle.id, "env.perform");
       const command = requireCommand(payload);
-      await options.host.beginCommand({ runId, commandId });
+      await options.host.beginCommand({
+        runId: record.runId,
+        commandId: context.commandId
+      });
       try {
-        const result = await environment.perform(
+        const result = await record.environment.perform(
           handle,
           { type: "execute", command },
           signal
         );
         const outcome = { ok: true, value: result as unknown as JsonValue } as const;
-        await options.host.settleCommand({ runId, commandId, outcome });
+        await options.host.settleCommand({
+          runId: record.runId,
+          commandId: context.commandId,
+          outcome
+        });
         return result as unknown as JsonValue;
       } catch (error) {
         // Settling the failure is what makes the command replayable-from-cache
         // rather than re-runnable, so a reconnect cannot repeat its effects.
         await options.host.settleCommand({
-          runId,
-          commandId,
+          runId: record.runId,
+          commandId: context.commandId,
           outcome: {
             ok: false,
             code: "internal",
@@ -177,37 +216,48 @@ export function createLocalRunnerHandlers(
       }
     },
 
-    async inspect(payload) {
-      const runId = requireRunId(payload);
-      const commandId = requireCommandId(payload);
-      const environment = await environmentFor({ runId, scope: scopeFor(payload) });
+    async inspect(payload, _signal, context) {
       const handle = requireHandle(payload);
-      await options.host.beginCommand({ runId, commandId });
-      const report = await environment.inspect(handle);
+      const record = requirePrepared(handle.id, "env.inspect");
+      await options.host.beginCommand({
+        runId: record.runId,
+        commandId: context.commandId
+      });
+      const report = await record.environment.inspect(handle);
       await options.host.settleCommand({
-        runId,
-        commandId,
+        runId: record.runId,
+        commandId: context.commandId,
         outcome: { ok: true, value: report as unknown as JsonValue }
       });
       return report as unknown as JsonValue;
     },
 
-    async dispose(payload) {
-      const runId = requireRunId(payload);
-      const commandId = requireCommandId(payload);
-      const environment = await environmentFor({ runId, scope: scopeFor(payload) });
+    async dispose(payload, _signal, context) {
       const handle = requireHandle(payload);
+      const record = requirePrepared(handle.id, "env.dispose");
       const outcome = requireOutcome(payload);
-      await options.host.beginCommand({ runId, commandId });
+      await options.host.beginCommand({
+        runId: record.runId,
+        commandId: context.commandId
+      });
       // Idempotency and the keep/discard decision belong to the host, which
       // owns the durable record of what the user already chose.
-      const resolved = await options.host.resolve({ runId, outcome });
-      await environment.dispose(handle, resolved.resolved ? outcome : "discard");
+      const resolved = await options.host.resolve({ runId: record.runId, outcome });
+      /*
+       * Apply the *effective* outcome, not this request's.
+       *
+       * `resolved.effectiveOutcome` is the first decision when one existed. A
+       * replayed discard after a keep must leave the worktree kept: handing the
+       * request's outcome to `dispose` here would re-run the Git resolution the
+       * other way and destroy changes the user chose to keep.
+       */
+      await record.environment.dispose(handle, resolved.effectiveOutcome);
       await options.host.settleCommand({
-        runId,
-        commandId,
+        runId: record.runId,
+        commandId: context.commandId,
         outcome: { ok: true, value: resolved as unknown as JsonValue }
       });
+      prepared.delete(handle.id);
       return resolved as unknown as JsonValue;
     }
   };
@@ -229,15 +279,6 @@ function requireRunId(payload: JsonValue | undefined): string {
     throw new Error("Local Runner command is missing its runId");
   }
   return runId;
-}
-
-function requireCommandId(payload: JsonValue | undefined): number {
-  const record = asRecord(payload, "env");
-  const commandId = record["commandId"];
-  if (typeof commandId !== "number" || !Number.isSafeInteger(commandId)) {
-    throw new Error("Local Runner command is missing its commandId");
-  }
-  return commandId;
 }
 
 function parseSpec(payload: JsonValue | undefined, runId: string) {
@@ -275,28 +316,6 @@ function requireCommand(payload: JsonValue | undefined): string[] {
     throw new Error("env.perform received an invalid command");
   }
   return command as string[];
-}
-
-/**
- * The scope a Run asked for when it was created.
- *
- * Commands after `prepare` do not carry the scope, so it is remembered from the
- * grant that `prepare` established — the scope is a property of the Run, not of
- * any individual command.
- */
-function scopeFor(payload: JsonValue | undefined): FileAccessScope {
-  const record = asRecord(payload, "env");
-  const scope = record["fileAccessScope"];
-  if (
-    scope === "workspace_only" ||
-    scope === "selected_directories" ||
-    scope === "host_full"
-  ) {
-    return scope;
-  }
-  // Absent on perform/inspect/dispose: default to the narrowest scope. The
-  // grant issued at prepare is what actually governs, and it was recorded then.
-  return "workspace_only";
 }
 
 function requireOutcome(payload: JsonValue | undefined): "keep" | "discard" {

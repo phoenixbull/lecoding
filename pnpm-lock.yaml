@@ -90,6 +90,9 @@ importers:
       '@lecoding/run-engine':
         specifier: workspace:*
         version: link:../../packages/run-engine
+      '@lecoding/run-environment':
+        specifier: workspace:*
+        version: link:../../packages/run-environment
       '@lecoding/run-events':
         specifier: workspace:*
         version: link:../../packages/run-events

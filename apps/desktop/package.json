@@ -38,6 +38,7 @@
     "@lecoding/device-binding": "workspace:*",
     "@lecoding/policy": "workspace:*",
     "@lecoding/run-engine": "workspace:*",
+    "@lecoding/run-environment": "workspace:*",
     "@lecoding/run-events": "workspace:*",
     "@lecoding/worker": "workspace:*",
     "@testing-library/dom": "^10.4.1",
