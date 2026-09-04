@@ -39,11 +39,33 @@ import {
 } from "@lecoding/runner-protocol";
 
 export interface RunnerGatewayOptions {
+  /**
+   * The one authority on whether a device token is real, unexpired and
+   * un-revoked.
+   *
+   * Caller obligation: this must be the *same* instance the HTTP device routes
+   * use. Handing the gateway a second service would let two code paths disagree
+   * about which devices exist, and revocation would stop being observable on
+   * this one.
+   */
   devices: DeviceBindingService;
   /** Projects this Worker serves; a device from another project is rejected. */
   projectIds: readonly string[];
+  /**
+   * How often credentials are re-validated and silent peers dropped.
+   *
+   * This is also the ceiling on how long a revocation written by another
+   * Worker takes to reach a session this process holds, so lowering it makes
+   * revocation prompt and raising it makes revocation sluggish.
+   */
   heartbeatIntervalMs?: number;
-  /** Receives heartbeat-timer failures without taking down the request path. */
+  /**
+   * Receives heartbeat-timer failures.
+   *
+   * Caller obligation: must not throw, and must not touch the request path. A
+   * rejection here means one tick could not revalidate one device; the next
+   * tick retries, so the correct handling is to record and continue.
+   */
   onBackgroundError?: (error: unknown) => void;
 }
 

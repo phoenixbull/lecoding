@@ -70,7 +70,13 @@ export interface PathViolation {
 }
 
 export interface PathFenceRequest {
-  /** Absolute, canonical roots the command may touch. */
+  /**
+   * Absolute, canonical roots the command may touch.
+   *
+   * Caller obligation: pass canonical roots. A non-canonical root would make
+   * every comparison fail on hosts where `/var` is a symlink, turning a
+   * legitimate command into a refusal.
+   */
   allowedRoots: readonly string[];
   /** Working directory the command will run in. */
   cwd: string;
@@ -82,7 +88,13 @@ export interface PathFenceVerdict {
   /** True when every path-like argument and the cwd are inside the grant. */
   allowed: boolean;
   violations: PathViolation[];
-  /** Every path-like token that was examined, for audit records. */
+  /**
+   * Every path-like token that was examined, for audit records.
+   *
+   * Includes tokens that were allowed, so an audit entry can show the command
+   * was inspected rather than skipped — an empty examination list for a
+   * command with obvious paths would signal the fence did not run.
+   */
   examined: Array<{ token: string; canonicalPath: string }>;
 }
 

@@ -168,7 +168,14 @@ export function grantRoots(grant: FileAccessGrant): string[] {
   }
 }
 
-/** True when the sandbox should fence commands for this grant. */
+/**
+ * True when the sandbox should fence commands for this grant.
+ *
+ * Caller obligation: when this returns false, do not call the fence with an
+ * empty root list. An empty list means "unrestricted", and a fence asked to
+ * judge against no roots would refuse everything, silently turning an
+ * authorized `host_full` Run into a Run that cannot run anything.
+ */
 export function isFenced(grant: FileAccessGrant): boolean {
   return grant.scope !== "host_full";
 }

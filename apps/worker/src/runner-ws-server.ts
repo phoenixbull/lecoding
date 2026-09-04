@@ -20,8 +20,21 @@ import type { RunnerSocket, RunnerSocketClose } from "@lecoding/runner-protocol"
 export const RUNNER_WS_PATH = "/api/v1/runner";
 
 export interface AttachRunnerWsServerOptions {
+  /**
+   * The already-listening HTTP server.
+   *
+   * Caller obligation: pass the *raw* `node:http` server, not a framework
+   * wrapper. The adapter attaches to its `upgrade` event and only claims the
+   * exact Runner path; every other upgrade is left for other handlers.
+   */
   server: Server;
-  /** Receives each upgraded connection. */
+  /**
+   * Receives each upgraded connection, already wrapped by the send queue.
+   *
+   * Caller obligation: ownership of the socket transfers here. The adapter
+   * will not close it, so the callback must arrange for it to be driven (the
+   * gateway's `accept` does) or the connection leaks until the peer gives up.
+   */
   onConnection(socket: RunnerSocket): void;
   /**
    * Rejects a request before the WebSocket handshake completes.
@@ -34,9 +47,23 @@ export interface AttachRunnerWsServerOptions {
 }
 
 export interface RunnerWsServer {
+  /**
+   * Removes the upgrade listener and closes every live connection.
+   *
+   * Idempotent: a second call resolves immediately, so shutdown paths that
+   * also stop the HTTP server cannot deadlock on a double close.
+   */
   close(): Promise<void>;
 }
 
+/**
+ * Mounts the Runner endpoint on an existing HTTP server.
+ *
+ * Caller obligation: the returned handle must be closed, or the `upgrade`
+ * listener keeps the server's event loop reference alive and a graceful
+ * shutdown will hang. Only one attachment per server is supported — a second
+ * one would receive nothing, because the first claims the path.
+ */
 export function attachRunnerWsServer(
   options: AttachRunnerWsServerOptions
 ): RunnerWsServer {

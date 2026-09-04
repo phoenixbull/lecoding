@@ -38,16 +38,33 @@ export interface EventWindowOptions {
   /**
    * Frames retained for replay. Must be large enough to cover the gap between
    * server acknowledgements. Default 256.
+   *
+   * Caller obligation: size this against how long the server can go without
+   * acknowledging, not against the Run's total output. Overflow is recorded
+   * rather than hidden, so an undersized window surfaces as a failed recovery
+   * instead of a silent gap — but it still fails the Run, so it is worth
+   * sizing generously.
    */
   maxFrames?: number;
 }
 
 export interface EventWindow {
-  /** Assigns the next cursor, stores the frame, and returns it. */
+  /**
+   * Assigns the next cursor, stores the frame, and returns it.
+   *
+   * The returned frame is the one to put on the wire: buffering an earlier
+   * copy and sending it later would desynchronize the cursor the peer acks.
+   */
   record(input: EventWindowInput): UpwardFrame;
   /** Stored frames with a cursor strictly greater than `after`, in order. */
   after(after: number): UpwardFrame[];
-  /** Forgets frames at or below `cursor` because the peer acknowledged them. */
+  /**
+   * Forgets frames at or below `cursor` because the peer acknowledged them.
+   *
+   * Caller obligation: only pass a cursor the peer actually acknowledged.
+   * Trimming past unacknowledged frames would drop them from replay while the
+   * peer still expects them.
+   */
   trim(cursor: number): void;
   /** Highest cursor ever assigned; 0 before the first record. */
   latest(): number;

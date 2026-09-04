@@ -24,9 +24,13 @@ export type CommandStatus = "unknown" | "running" | "settled";
 export interface CommandDedupeOptions {
   /**
    * How many completed commands to remember. Bounded because a long Run
-   * produces thousands of commands; the server only ever resends from
-   * `replayFromCommandId`, so anything older than this window is unreachable.
-   * Default 512.
+   * produces thousands of commands; the server only ever allocates ids above
+   * `nextCommandId`, so anything older than this window is unreachable and
+   * remembering it would only grow the process for no benefit. Default 512.
+   *
+   * Caller obligation: size this against the highest burst the server can send
+   * inside one reconnect, not against the Run's total command count. Evicting
+   * an id the server can still resend would let that command execute twice.
    */
   maxTrackedCommands?: number;
 }

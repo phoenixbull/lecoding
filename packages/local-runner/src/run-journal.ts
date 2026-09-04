@@ -53,16 +53,47 @@ export interface JournalFileSystem {
 }
 
 export interface RunJournalOptions {
+  /** Absolute path of the JSONL file. Created mode 0600 with parent directories. */
   filePath: string;
-  /** Injected clock so recovery tests are deterministic. */
+  /**
+   * Injected clock so recovery tests are deterministic.
+   *
+   * Caller obligation: return a stable ISO timestamp derived from a monotonic
+   * source. Ordering is inferred from file order, not from this value, so a
+   * clock that jumps cannot corrupt recovery — but a fixed clock makes tests
+   * able to assert on recovery output at all.
+   */
   now(): string;
+  /** Injected filesystem; production uses the real one and tests use memory. */
   fs?: JournalFileSystem;
 }
 
 export interface RunJournal {
+  /**
+   * Appends one entry and waits for it to reach the file.
+   *
+   * Caller obligation: append *before* performing the effect the entry
+   * describes, and append the matching `settled` entry after. Recording the
+   * completion first would make a crash look like a finished command.
+   */
   append(entry: RunJournalEntry): Promise<void>;
+  /**
+   * Reads every intact entry, skipping a truncated or unparseable line.
+   *
+   * Caller obligation: treat the result as untrusted. It may have been edited
+   * on disk, and a grant-shaped entry removed from it must not widen what the
+   * sandbox permits.
+   */
   read(): Promise<RunJournalEntry[]>;
-  /** Drops resolved handles and settled commands, keeping the file bounded. */
+  /**
+   * Drops every record of Runs that are both resolved and inactive,
+   * keeping the file bounded.
+   *
+   * Caller obligation: pass the run ids that are *currently* live. A prepared
+   * Run is deliberately kept while it is merely idle, because its server
+   * session may not have reconnected yet and dropping it would strand the
+   * worktree.
+   */
   compact(activeRunIds: readonly string[]): Promise<{ kept: number; removed: number }>;
 }
 
@@ -94,6 +125,13 @@ export interface RecoveredRunState {
   highestCommandId: number;
 }
 
+/**
+ * Opens (or creates) the journal at `options.filePath`.
+ *
+ * The returned handle is safe to share: appends are serialized by the single
+ * event loop, and `compact` publishes through a rename so a crash mid-way
+ * cannot truncate the file.
+ */
 export function createRunJournal(options: RunJournalOptions): RunJournal {
   const fs = options.fs ?? createNodeJournalFileSystem();
 

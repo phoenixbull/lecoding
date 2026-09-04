@@ -37,9 +37,18 @@ export interface HostAccessAuditEntry {
 }
 
 export interface AccessAuditLogOptions {
-  /** Absolute path of the JSONL file. */
+  /**
+   * Absolute path of the JSONL file. Created mode 0600 with parent directories,
+   * because the paths recorded here reveal the user's directory layout.
+   */
   filePath: string;
-  /** Injected clock so recorded timestamps are deterministic in tests. */
+  /**
+   * Injected clock so recorded timestamps are deterministic in tests.
+   *
+   * Caller obligation: return a stable ISO timestamp. The log is ordered by
+   * file position rather than by this value, so a clock that jumps cannot
+   * reorder history.
+   */
   now(): string;
   /** Injected filesystem so tests never write to disk. */
   fs?: AuditFileSystem;
@@ -53,14 +62,31 @@ export interface AuditFileSystem {
 }
 
 export interface AccessAuditLog {
-  /** Appends one record. There is no update or delete by design. */
+  /**
+   * Appends one record. There is no update or delete by design: a log that can
+   * be rewritten is not evidence.
+   *
+   * Caller obligation: record the attempt even when the access was refused. A
+   * reviewer needs to see what was *tried*, not only what succeeded.
+   */
   append(entry: Omit<HostAccessAuditEntry, "recordedAt">): Promise<HostAccessAuditEntry>;
-  /** Reads every record, skipping any line that is not a valid entry. */
+  /**
+   * Reads every record, skipping any line that is not a valid entry.
+   *
+   * Caller obligation: never forward the result to the Renderer unfiltered. It
+   * contains absolute host paths; expose a bounded projection instead.
+   */
   read(): Promise<HostAccessAuditEntry[]>;
   /** Only the out-of-scope records, which are the ones a reviewer must see. */
   readOutOfScope(): Promise<HostAccessAuditEntry[]>;
 }
 
+/**
+ * Opens (or creates) the append-only audit log.
+ *
+ * Shares the caller's clock, so a timestamp in the log is comparable with one
+ * in the Run journal rather than being on a second, unrelatable timeline.
+ */
 export function createAccessAuditLog(options: AccessAuditLogOptions): AccessAuditLog {
   const fs = options.fs ?? createNodeAuditFileSystem();
 

@@ -102,9 +102,23 @@ export class SandboxViolationError extends Error {
 }
 
 export interface SandboxBaseOptions {
+  /** Canonicalizer used for every path judgement. */
   fence: PathFence;
+  /** Reported verbatim in the capability report; label the real host. */
   platform: NodeJS.Platform;
+  /**
+   * What this host truly enforces, per tier.
+   *
+   * Caller obligation: report the weaker truth. Claiming `kernel` for a host
+   * that only inspects arguments makes the UI advertise a guarantee the OS is
+   * not providing, which is strictly worse than admitting the gap.
+   */
   tiers: Record<FileAccessScope, EnforcementLevel>;
+  /**
+   * Shown to the user verbatim, so it must name what is *missing* as well as
+   * what is present. "Refuses out-of-scope commands" alone leaves the reader
+   * assuming kernel enforcement.
+   */
   detail: string;
 }
 
@@ -186,6 +200,13 @@ export type SandboxWrapper = (
 ) => Promise<{ executable: string; args: string[] }>;
 
 export interface PlatformSandboxOptions extends Omit<SandboxBaseOptions, never> {
+  /**
+   * Optional command rewriter for platforms that confine below this process.
+   *
+   * Caller obligation: throw rather than return an unwrapped command when the
+   * confinement mechanism is unavailable. Returning the original command would
+   * produce a plan that looks safe while running completely unconfined.
+   */
   wrap?: SandboxWrapper;
 }
 
