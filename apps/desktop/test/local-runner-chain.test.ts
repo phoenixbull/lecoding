@@ -132,7 +132,7 @@ function createChain(): Chain {
   });
 
   const grantsIssued: string[] = [];
-  const handlers = createLocalRunnerHandlers({
+  const runnerHandlers = createLocalRunnerHandlers({
     sandbox,
     host: runnerHost,
     // Grants are issued for the scope the Run actually asked for, as Main does
@@ -178,7 +178,7 @@ function createChain(): Chain {
       kernelEnforced: false,
       platform: process.platform === "win32" ? "win32" : "darwin"
     },
-    handlers,
+    handlers: runnerHandlers.handlers,
     lastReceivedCommandId: 0
   });
   runner.connect(pair.b);

@@ -41,6 +41,14 @@ import type { ClientSdk, ElectronHost } from "./host.js";
 /** Set once the Local Runner is assembled; needed by the cancellation path. */
 let activeHost: LocalRunnerHost | undefined;
 
+/**
+ * Forwards a local cancellation to the server, bound once the SDK exists.
+ *
+ * Late-bound rather than captured so the Local Runner host can be constructed
+ * before the client SDK, which is created inside `createDesktopMain`.
+ */
+let notifyServerCancel: (runId: string) => void = () => undefined;
+
 /** Packaged Renderer entry; resolved at runtime because asar changes the root. */
 function rendererEntry(): string {
   return join(app.getAppPath(), "dist", "renderer", "index.html");
@@ -188,18 +196,35 @@ async function bootstrap(): Promise<void> {
       await gitResults.resolve(runId, outcome);
     },
     cancelRun: (runId) => {
-      // Re-entered through the host so a Run waiting on approval is cancelled
-      // by the same path as one mid-command.
-      activeHost?.cancel(runId);
+      /*
+       * Notifies the server, deliberately not this host.
+       *
+       * Calling `activeHost.cancel()` from here would recurse: the host's
+       * `cancel` invokes this callback, which would invoke it again. Cancellation
+       * reaches the desktop through the server instead — the engine aborts the
+       * Run's handle, the WSS `env.abort` arrives, and the local
+       * AbortController fires — which is also what makes cancelling a Run that
+       * is waiting on approval behave the same as one mid-command.
+       */
+      notifyServerCancel(runId);
     }
   });
-  // Recovery runs before the session opens, so a Run left prepared by a
-  // previous launch is still resolvable instead of stranded.
-  await runnerHost.recover();
+  /*
+   * Recovery runs before the session opens, so a Run left prepared by a
+   * previous launch is still resolvable instead of stranded — and its result
+   * is used, not discarded.
+   *
+   * `lastReceivedCommandId` seeds the protocol's resume hint, so the server
+   * redelivers from where this device actually left off instead of replaying a
+   * whole Run. The interrupted and settled commands were already consumed by
+   * `recover()` seeding the host's dedupe state, which is what makes an
+   * interrupted command answer `command_interrupted` rather than re-run.
+   */
+  const recovered = await runnerHost.recover();
 
   /** Grants the user has issued, keyed by Run; the desktop is the issuer. */
   const grants = new Map<string, FileAccessGrant>();
-  const handlers = createLocalRunnerHandlers({
+  const runnerHandlers = createLocalRunnerHandlers({
     sandbox,
     host: runnerHost,
     resolveGrant: async ({ runId, scope, worktreePath }) => {
@@ -245,7 +270,10 @@ async function bootstrap(): Promise<void> {
           ? process.platform
           : "linux"
     },
-    handlers
+    handlers: runnerHandlers.handlers,
+    // Seeded from recovery so a relaunched client resumes rather than replaying
+    // everything the server ever sent it.
+    lastReceivedCommandId: () => recovered.highestCommandId
   });
 
   const main = createDesktopMain({
@@ -265,6 +293,24 @@ async function bootstrap(): Promise<void> {
     runnerState: () => broker.state()
   });
   await main.start();
+
+  /*
+   * Wired once the SDK exists, so a local cancellation can reach the engine.
+   * Bound late because the SDK is constructed inside `createDesktopMain`.
+   */
+  notifyServerCancel = (runId) => {
+    void main
+      .sdk()
+      .cancelRun(runId as Parameters<ClientSdk["cancelRun"]>[0])
+      .catch(() => undefined);
+  };
+
+  /*
+   * The Runner session opens only after the window is up: a connection made
+   * earlier would have a live transport with nothing driving it, and a Run
+   * dispatched in that window would hang until the peer gave up.
+   */
+  await broker.start();
 }
 
 /** Base URL the desktop client is configured against. */
@@ -293,6 +339,12 @@ function localSourceRepo(): string {
   return configured;
 }
 
-void app.whenReady().then(bootstrap);
-
+/**
+ * Registered exactly once.
+ *
+ * A second registration ran `bootstrap` twice: two IPC handler sets, two
+ * windows and two copies of the local-execution stack, each holding its own
+ * journal and its own grants — with the Runner session connected by neither,
+ * because neither had been started.
+ */
 void app.whenReady().then(bootstrap);

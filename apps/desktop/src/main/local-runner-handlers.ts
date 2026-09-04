@@ -68,9 +68,20 @@ export interface LocalRunnerHandlerOptions {
   limits?: LocalRunEnvironmentOptions["limits"];
 }
 
+/**
+ * Builds the environment handlers plus the audit health of this Runner.
+ *
+ * Returned as one object rather than as bare handlers so the audit status has
+ * a home without widening `RunnerEnvironmentHandlers`, which is a protocol
+ * interface and must stay exactly the four operations the wire defines.
+ */
 export function createLocalRunnerHandlers(
   options: LocalRunnerHandlerOptions
-): RunnerEnvironmentHandlers {
+): {
+  handlers: RunnerEnvironmentHandlers;
+  /** Audit writes that failed, and the last error. */
+  auditStatus(): { failures: number; lastError: unknown };
+} {
   const audit = createAccessAuditLog({
     filePath: options.auditLogPath,
     now: options.now
@@ -177,7 +188,7 @@ export function createLocalRunnerHandlers(
     return record;
   }
 
-  return {
+  const handlers: RunnerEnvironmentHandlers = {
     async prepare(payload, _signal, context) {
       const runId = requireRunId(payload);
       const spec = parseSpec(payload, runId);
@@ -280,15 +291,12 @@ export function createLocalRunnerHandlers(
       });
       prepared.delete(handle.id);
       return resolved as unknown as JsonValue;
-    },
+    }
+  };
 
-    /**
-     * Audit writes that failed, and the last error.
-     *
-     * Deliberately not a push channel: the Renderer has no use for it, and an
-     * operator reading the audit file already knows the count is short.
-     */
-    auditStatus(): { failures: number; lastError: unknown } {
+  return {
+    handlers,
+    auditStatus() {
       return { failures: auditFailures, lastError: auditFailure };
     }
   };
