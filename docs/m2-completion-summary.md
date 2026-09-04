@@ -143,8 +143,7 @@ macOS 的 Seatbelt 可用性在启动时探针；探针失败拒绝产出执行�
 **P2**
 
 11. `git diff --check` 报告的 `local-runner/index.ts` 末尾多余空行已修。
-
-**仍未处理**：导出 API 文档补齐（P1）、IPC 注册表 shotgun-surgery 收敛（P2）。二者均为可维护性而非正确性问题，已记入 §5.2。
+12. **IPC 通道四处手工同步已收敛为「两处手写 + 两处编译器强制」。** 校验器 switch 改为全量的 `Record<IpcChannel, ChannelValidator>`，缺校验器是编译错误而非运行时返回 `null`；dispatch switch 的 `default` 改为 `never` 检查，缺 case 是编译错误而非静默落入。已通过临时添加通道验证：编译器报出全部四处（含本文件之外的 renderer gateway）。
 
 ## 5. 遗留风险与交接事项
 
@@ -164,6 +163,9 @@ macOS 的 Seatbelt 可用性在启动时探针；探针失败拒绝产出执行�
 - **PolicyEngine 的 scope escalation capability 未实现**（计划 M2.2 最后一项保持未勾选）。固定 deny 与升级审批已验证生效，但 `CapabilityRequest.fileAccessScope` 仍未参与决策，存在「看似参与、实则无效」的虚假承诺。应在独立切片中要么实现、要么删除该字段。
 - **项目声明的 test/typecheck/lint/build 最低集合校验未实现**（M2.4 第二项未勾选）。现有 `packages/verifier` 承担服务端验证；本地侧尚未消费同一份声明。
 - **组织策略禁用 `host_full`** 未实现；`host_full` 当前只由用户 OS 确认把关。
+- **Windows 内核级 FS 限制**未实现（见 §2.4）；`argv_fence` 是已声明的 best-effort 边界，UI 会展示与 macOS 的差异。
+
+评审的其余条目（导出 API 文档、IPC 注册表 shotgun-surgery）已在本轮处理，见 §4.5。
 
 ### 5.3 门禁口径
 
