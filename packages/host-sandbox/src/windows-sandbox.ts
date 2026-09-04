@@ -39,6 +39,13 @@ export interface WindowsSandboxOptions {
   platform?: NodeJS.Platform;
 }
 
+/**
+ * Builds the Windows adapter.
+ *
+ * Caller obligation: this is best-effort for filesystem access. Read the
+ * capability report rather than assuming, and do not present its tiers as
+ * equivalent to the macOS Seatbelt adapter.
+ */
 export function createWindowsSandbox(options: WindowsSandboxOptions = {}): HostSandbox {
   const fence =
     options.fence ?? createPathFence({ caseInsensitive: true, platform: "win32" });

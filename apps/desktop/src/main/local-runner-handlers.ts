@@ -300,7 +300,6 @@ export function createLocalRunnerHandlers(
         commandId: context.commandId,
         outcome: { ok: true, value: resolved as unknown as JsonValue }
       });
-      prepared.delete(handle.id);
       return resolved as unknown as JsonValue;
     }
   };

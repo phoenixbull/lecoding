@@ -120,6 +120,12 @@ macOS 的 Seatbelt 可用性在启动时探针；探针失败拒绝产出执行�
 
 ## 4.5 评审修复（第二轮）
 
+**第三轮评审后的更正**：本节最初声称所列各项全部闭环。复核发现两项并未闭环，已补齐：
+
+- **POSIX 进程树终止此前无效** —— `spawn` 未传 `detached: true`，`kill(-pid)` 必然失败，回退单进程 kill 却仍返回 `terminated: true`，掩盖了降级。spawn 现按平台传 `detached`（Windows 忽略该选项，走 `taskkill /T`），回退路径如实返回 `terminated: false` 并说明原因。
+- **恢复的 settled/interrupted 命令此前未接入协议层去重** —— 它们只进了 host 的去重表，`RunnerSession` 的去重表仍是空白，重启后重发的命令 id 仍会执行。现经 `RunnerSession.seedCommands` 接入（interrupted 以 `command_interrupted` 失败结算），broker 与 `electron.ts` 已接线。
+- 另修正两处注释过度声明（electron.ts 恢复注释、Standards P2 文档清单），并删除从未读取的 `activeHost` 与重复的 `prepared.delete`。
+
 首轮完成后经 code-review 发现 16 项问题，其中 6 项 P0。以下为已修复项，均按「先写失败测试再改实现」处理。
 
 **P0**

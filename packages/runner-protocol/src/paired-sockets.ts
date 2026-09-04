@@ -61,6 +61,13 @@ interface EndpointListeners {
   close: Set<(info: RunnerSocketClose) => void>;
 }
 
+/**
+ * Builds the two ends of an in-memory transport.
+ *
+ * Used in place of a real socket so protocol behaviour — reconnection, dedupe,
+ * replay — is testable without a network. Delivery order is preserved and
+ * `autoDeliver: false` lets a test hold frames back to simulate a stalled peer.
+ */
 export function createPairedRunnerSockets(
   options: PairedRunnerSocketOptions = {}
 ): RunnerSocketPair {

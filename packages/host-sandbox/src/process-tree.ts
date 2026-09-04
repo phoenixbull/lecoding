@@ -69,23 +69,38 @@ function taskkillTree(pid: number): Promise<TerminateResult> {
   });
 }
 
-/** POSIX: signal the child's own process group, which it leads when detached. */
+/**
+ * POSIX: signal the child's own process group, which it leads when detached.
+ *
+ * The fallback result is deliberately *not* `terminated: true`. Signalling
+ * only the direct child leaves grandchildren running and holding the worktree,
+ * and reporting that as success would hide the exact degradation this module
+ * exists to surface.
+ */
 function signalProcessGroup(pid: number): Promise<TerminateResult> {
   try {
     // A negative pid targets the process group; -0 would mean "this group", so
     // a non-positive pid is rejected before it can signal the wrong target.
     process.kill(-pid, "SIGKILL");
     return Promise.resolve({ terminated: true });
-  } catch (error) {
+  } catch (groupError) {
     // Fall back to the single process: better to stop the direct child than
-    // to leave the whole tree running because the group signal failed.
+    // to leave the whole tree running — but say so.
     try {
       process.kill(pid, "SIGKILL");
-      return Promise.resolve({ terminated: true });
+      return Promise.resolve({
+        terminated: false,
+        reason:
+          "Process group unavailable (the child was not spawned detached); " +
+          "only the direct child was signalled, so spawned processes may survive."
+      });
     } catch {
       return Promise.resolve({
         terminated: false,
-        reason: error instanceof Error ? error.message : "could not signal the process"
+        reason:
+          groupError instanceof Error
+            ? groupError.message
+            : "could not signal the process"
       });
     }
   }

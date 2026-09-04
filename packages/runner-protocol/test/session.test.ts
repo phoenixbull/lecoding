@@ -62,6 +62,7 @@ function createHarness(
     lastReceivedCommandId?: number;
     maxFrames?: number;
     maxTrackedCommands?: number;
+    seed?: Array<{ id: number; outcome: RunnerCommandOutcome }>;
   } = {}
 ): Harness {
   const pair = createPairedRunnerSockets();
@@ -104,6 +105,11 @@ function createHarness(
         return overrides.handlers?.dispose?.(payload, signal) ?? { disposed: true };
       }
     },
+    ...(overrides.seed
+      ? { seedCommands: (entries: Array<{ id: number; outcome: RunnerCommandOutcome }>) => {
+          entries.push(...overrides.seed!);
+        } }
+      : {}),
     onWelcome: (info) =>
       welcomes.push({
         replayFromCursor: info.replayFromCursor,
@@ -572,6 +578,28 @@ describe("runner session lifecycle", () => {
     await expect(host.call("env.inspect", { handleId: "h" })).rejects.toThrow(
       /not authenticated/
     );
+  });
+
+  it('answers a seeded command id from the journal without executing it', async () => {
+    // Simulates a restarted Runner: the journal says command 7 settled, so a
+    // redelivered id 7 must be answered from the seed and never re-run.
+    const h = createHarness({
+      seed: [{ id: 7, outcome: { ok: true, value: { exitCode: 0 } } }]
+    });
+    await settle();
+
+    const commandFrame = JSON.stringify({
+      v: 1,
+      kind: 'command',
+      id: 7,
+      op: 'env.perform',
+      payload: { handleId: 'h', command: ['pnpm', 'test'] }
+    });
+    h.pair.a.send(commandFrame);
+    await settle();
+
+    expect(h.calls).toEqual([]);
+    void h;
   });
 
   it("ignores duplicate welcome frames", async () => {

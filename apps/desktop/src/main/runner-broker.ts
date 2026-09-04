@@ -18,6 +18,7 @@
  * replay window survive a dropped socket. That is what makes resume real.
  */
 
+import type { RunnerCommandOutcome } from "@lecoding/runner-protocol";
 import {
   createBackoff,
   createRunnerSession,
@@ -62,6 +63,18 @@ export interface RunnerBrokerOptions {
    * relaunched client resumes rather than replaying a whole Run.
    */
   lastReceivedCommandId?(): number;
+  /**
+   * Supplies command outcomes restored from the durable journal, so the
+   * session's dedupe table starts knowing what this device already did.
+   *
+   * Caller obligation: call this once, from recovery, before the first
+   * `connect`. Interrupted commands must arrive as `command_interrupted`
+   * failures — their effect cannot be known, so re-running them risks
+   * repeating a side effect whose result was never observed.
+   */
+  recoveredCommands?(
+    entries: Array<{ id: number; outcome: RunnerCommandOutcome }>
+  ): void;
   onStateChange?(state: RunnerBrokerState): void;
   onWelcome?(info: RunnerWelcomeInfo): void;
   backoff?: Backoff;
@@ -152,6 +165,9 @@ export function createRunnerBroker(options: RunnerBrokerOptions): RunnerBroker {
         handlers: options.handlers,
         ...(options.lastReceivedCommandId
           ? { lastReceivedCommandId: options.lastReceivedCommandId() }
+          : {}),
+        ...(options.recoveredCommands
+          ? { seedCommands: (entries) => options.recoveredCommands!(entries) }
           : {}),
         onWelcome(info) {
           // A successful exchange resets the backoff, so a brief network blip

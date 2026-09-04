@@ -127,6 +127,14 @@ const DEFAULT_OUTPUT_BYTES = 8 * 1024 * 1024;
 const MIN_OUTPUT_BYTES = 16_384;
 const RUN_ID_PATTERN = /^[a-zA-Z0-9_-]+$/;
 
+/**
+ * Builds a Local Run environment: an isolated Git worktree plus command
+ * execution inside it, with the file-access tier enforced at process creation.
+ *
+ * Caller obligation: supply a `sandbox` and a `grant` for real local execution.
+ * Without a sandbox nothing is enforced, which is only acceptable for tests and
+ * for server-owned worktrees that another boundary already confines.
+ */
 export function createLocalRunEnvironment(
   options: LocalRunEnvironmentOptions
 ): RunEnvironment {
@@ -414,7 +422,14 @@ function defaultSpawn(
   const child = spawn(command, args, {
     cwd: options.cwd,
     env: options.env,
-    stdio: options.stdio
+    stdio: options.stdio,
+    /*
+     * On POSIX the child must lead its own process group, or `kill(-pid)`
+     * targets the wrong group and tree termination degrades to a
+     * single-process kill. Windows ignores this option; its tree termination
+     * goes through `taskkill /T` instead, which needs no group.
+     */
+    detached: process.platform !== "win32"
   }) as ChildProcess;
   return child as unknown as ChildProcessLike;
 }

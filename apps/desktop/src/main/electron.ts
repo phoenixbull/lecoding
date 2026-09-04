@@ -26,10 +26,11 @@ import {
   shell
 } from "electron";
 import { createClient } from "@lecoding/client-sdk";
+import type { RunnerCommandOutcome } from "@lecoding/runner-protocol";
 import { createGrantStore, selectHostSandbox } from "@lecoding/host-sandbox";
 import { createRunJournal } from "@lecoding/local-runner";
 import { createGitRunResultManager } from "@lecoding/workspace";
-import { createLocalRunnerHost, type LocalRunnerHost } from "./local-runner-host.js";
+import { createLocalRunnerHost } from "./local-runner-host.js";
 import { createDesktopMain } from "./index.js";
 import { createFileAccessGrantService } from "./file-access-grant-service.js";
 import { createLocalRunnerHandlers } from "./local-runner-handlers.js";
@@ -37,9 +38,6 @@ import { createRunnerBroker } from "./runner-broker.js";
 import { createRunnerWebSocket, runnerWebSocketUrl } from "./runner-ws-client.js";
 import { createDesktopCredentialStore } from "./secure-store-factory.js";
 import type { ClientSdk, ElectronHost } from "./host.js";
-
-/** Set once the Local Runner is assembled; needed by the cancellation path. */
-let activeHost: LocalRunnerHost | undefined;
 
 /**
  * Forwards a local cancellation to the server, bound once the SDK exists.
@@ -214,11 +212,10 @@ async function bootstrap(): Promise<void> {
    * previous launch is still resolvable instead of stranded — and its result
    * is used, not discarded.
    *
-   * `lastReceivedCommandId` seeds the protocol's resume hint, so the server
-   * redelivers from where this device actually left off instead of replaying a
-   * whole Run. The interrupted and settled commands were already consumed by
-   * `recover()` seeding the host's dedupe state, which is what makes an
-   * interrupted command answer `command_interrupted` rather than re-run.
+   * `lastReceivedCommandId` seeds the protocol's resume hint, and the
+   * recovered command outcomes feed the session's dedupe table (see
+   * `recoveredCommands` below) — together those are what make an interrupted
+   * command answer `command_interrupted` instead of running again.
    */
   const recovered = await runnerHost.recover();
 
@@ -255,8 +252,6 @@ async function bootstrap(): Promise<void> {
     auditLogPath: join(runnerRoot, "host-access.jsonl"),
     now: () => new Date().toISOString()
   });
-  activeHost = runnerHost;
-
   const broker = createRunnerBroker({
     connect: () => createRunnerWebSocket(runnerWebSocketUrl(baseUrl())),
     credential: async () => credentialStore.deviceAccessToken?.(),
@@ -277,7 +272,36 @@ async function bootstrap(): Promise<void> {
     handlers: runnerHandlers.handlers,
     // Seeded from recovery so a relaunched client resumes rather than replaying
     // everything the server ever sent it.
-    lastReceivedCommandId: () => recovered.highestCommandId
+    lastReceivedCommandId: () => recovered.highestCommandId,
+    /*
+     * Feeds the durable command record into the session's dedupe table.
+     *
+     * Without this the at-most-once guarantee did not survive a restart: the
+     * journal knew what this device had done, but the protocol layer started
+     * blank, so a redelivered id would have executed again. Interrupted
+     * commands arrive as failures because their effect cannot be known.
+     */
+    recoveredCommands: (entries) => {
+      const seeded: Array<{ id: number; outcome: RunnerCommandOutcome }> = [
+        ...recovered.settledCommands.map((command) => ({
+          id: command.commandId,
+          outcome: command.outcome
+        })),
+        ...recovered.interruptedCommandIds.map(
+          (commandId): { id: number; outcome: RunnerCommandOutcome } => ({
+            id: commandId,
+            outcome: {
+              ok: false,
+              code: "command_interrupted",
+              message:
+                "The local runner stopped before this command finished. Its " +
+                "effect cannot be known, so it was not run again."
+            }
+          })
+        )
+      ];
+      entries.push(...seeded);
+    }
   });
 
   const main = createDesktopMain({

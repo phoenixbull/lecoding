@@ -95,6 +95,19 @@ export interface RunnerSessionOptions {
   maxTrackedCommands?: number;
   /** Replay window capacity; see `createEventWindow`. */
   maxFrames?: number;
+  /**
+   * Seeds the dedupe table from durable state before the session opens.
+   *
+   * This is how a *restarted* Runner keeps its at-most-once guarantee: the
+   * journal knows which command ids settled and which were interrupted, and
+   * replaying them here means a redelivered id is answered from that record
+   * instead of executed again. An interrupted command is seeded as a failure,
+   * because its effect cannot be known.
+   *
+   * Caller obligation: seed before the first `connect`. Entries already
+   * tracked are left alone, so seeding twice is harmless.
+   */
+  seedCommands?(entries: Array<{ id: number; outcome: RunnerCommandOutcome }>): void;
 }
 
 export interface RunnerSession {
@@ -105,6 +118,16 @@ export interface RunnerSession {
    * and accepted command ids all carry over.
    */
   connect(socket: RunnerSocket): void;
+  /**
+   * Primes the dedupe table from durable state.
+   *
+   * See the option of the same name for why this exists: a restarted Runner
+   * must answer a redelivered command id from what it already did, not run it
+   * again. Idempotent — an id already tracked is left alone.
+   */
+  seedCommands(
+    entries: Array<{ id: number; outcome: RunnerCommandOutcome }>
+  ): void;
   /** True while a transport is bound. */
   connected(): boolean;
   /** Records a progress event and sends it upward. Safe before `welcome`. */
@@ -130,6 +153,23 @@ export function createRunnerSession(options: RunnerSessionOptions): RunnerSessio
       ? { maxTrackedCommands: options.maxTrackedCommands }
       : {}
   );
+
+  /*
+   * Recovery is consumed here, at construction, before any socket exists.
+   *
+   * The callback receives an array it fills in — the same inverted shape the
+   * broker uses — because the session owns the dedupe table and the caller owns
+   * the journal. Skipping this call is how a restarted Runner ended up with a
+   * blank dedupe table and re-executed a command its own journal said had
+   * already run.
+   */
+  if (options.seedCommands) {
+    const seed: Array<{ id: number; outcome: RunnerCommandOutcome }> = [];
+    options.seedCommands(seed);
+    for (const { id, outcome } of seed) {
+      dedupe.seed(id, outcome);
+    }
+  }
   const window: EventWindow = createEventWindow(
     options.maxFrames !== undefined ? { maxFrames: options.maxFrames } : {}
   );
@@ -376,6 +416,14 @@ export function createRunnerSession(options: RunnerSessionOptions): RunnerSessio
   }
 
   return {
+    seedCommands(entries) {
+      for (const { id, outcome } of entries) {
+        // `seed` is a no-op for an id already tracked, so seeding after a
+        // reconnect cannot clobber a fresher result recorded this session.
+        dedupe.seed(id, outcome);
+      }
+    },
+
     connect(nextSocket) {
       if (terminated) {
         return;

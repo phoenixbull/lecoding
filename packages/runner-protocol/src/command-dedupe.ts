@@ -19,6 +19,7 @@
 
 import type { RunnerCommandOutcome } from "./envelope.js";
 
+/** Where a command id sits in the at-most-once lifecycle. */
 export type CommandStatus = "unknown" | "running" | "settled";
 
 export interface CommandDedupeOptions {
