@@ -454,71 +454,53 @@ export function isKnownChannel(channel: string): channel is IpcChannel {
 }
 
 /**
- * Schema lookup keyed by channel name. Each validator returns the
- * normalised payload or throws a `validation_failed` Error. The function
- * returns `null` for unknown channels so callers can branch explicitly.
+ * Every channel with its payload validator, in one place.
+ *
+ * Typed as a total `Record` rather than a `switch`: adding a name to
+ * `IPC_CHANNELS` without a validator is now a *compile* error instead of a
+ * runtime `null`, which is how a channel used to end up registered but
+ * silently unvalidated.
  */
-export function ipcRequestSchema(channel: IpcChannel): ChannelValidator | null {
-  switch (channel) {
-    case "session.bootstrap":
-      return validateSessionBootstrap;
-    case "session.openGitHubLogin":
-      return validateSessionOpenGitHubLogin;
-    case "session.status":
-      return validateSessionStatus;
-    case "session.logout":
-      return validateSessionLogout;
-    case "config.load":
-      return validateConfigLoad;
-    case "devices.createCode":
-      return validateDevicesCreateCode;
-    case "devices.exchange":
-      return validateDevicesExchange;
-    case "devices.list":
-      return validateDevicesList;
-    case "devices.revoke":
-      return validateDevicesRevoke;
-    case "runs.create":
-      return validateRunsCreate;
-    case "runs.list":
-      return validateRunsList;
-    case "runs.inspect":
-      return validateRunsInspect;
-    case "runs.cancel":
-      return validateRunsCancel;
-    case "runs.resolve":
-      return validateRunsResolve;
-    case "runs.changes":
-      return validateRunsChanges;
-    case "runs.artifact":
-      return validateRunsArtifact;
-    case "runs.approve":
-      return validateRunsApprove;
-    case "runs.reject":
-      return validateRunsReject;
-    case "runs.editApprove":
-      return validateRunsEditApprove;
-    case "runs.answer":
-      return validateRunsAnswer;
-    case "runs.steer":
-      return validateRunsSteer;
-    case "runs.subscribe":
-      return validateRunsSubscribe;
-    case "runs.unsubscribe":
-      return validateRunsUnsubscribe;
-    case "policy.list":
-      return validatePolicyList;
-    case "policy.revoke":
-      return validatePolicyRevoke;
-    case "host.selectDirectories":
-      return validateHostSelectDirectories;
-    case "host.confirmHostFull":
-      return validateHostConfirmHostFull;
-    case "runner.status":
-      return validateRunnerStatus;
-    default:
-      return null;
-  }
+const IPC_VALIDATORS: Record<IpcChannel, ChannelValidator> = {
+  "session.bootstrap": validateSessionBootstrap,
+  "session.openGitHubLogin": validateSessionOpenGitHubLogin,
+  "session.status": validateSessionStatus,
+  "session.logout": validateSessionLogout,
+  "config.load": validateConfigLoad,
+  "devices.createCode": validateDevicesCreateCode,
+  "devices.exchange": validateDevicesExchange,
+  "devices.list": validateDevicesList,
+  "devices.revoke": validateDevicesRevoke,
+  "runs.create": validateRunsCreate,
+  "runs.list": validateRunsList,
+  "runs.inspect": validateRunsInspect,
+  "runs.cancel": validateRunsCancel,
+  "runs.resolve": validateRunsResolve,
+  "runs.changes": validateRunsChanges,
+  "runs.artifact": validateRunsArtifact,
+  "runs.approve": validateRunsApprove,
+  "runs.reject": validateRunsReject,
+  "runs.editApprove": validateRunsEditApprove,
+  "runs.answer": validateRunsAnswer,
+  "runs.steer": validateRunsSteer,
+  "runs.subscribe": validateRunsSubscribe,
+  "runs.unsubscribe": validateRunsUnsubscribe,
+  "policy.list": validatePolicyList,
+  "policy.revoke": validatePolicyRevoke,
+  "host.selectDirectories": validateHostSelectDirectories,
+  "host.confirmHostFull": validateHostConfirmHostFull,
+  "runner.status": validateRunnerStatus
+};
+
+/**
+ * Schema lookup keyed by channel name. Each validator returns the
+ * normalised payload or throws a `validation_failed` Error.
+ *
+ * No longer returns `null`: the registry is total, so a known channel always
+ * has a validator. Unknown names are rejected earlier by `isKnownChannel`.
+ */
+export function ipcRequestSchema(channel: IpcChannel): ChannelValidator {
+  return IPC_VALIDATORS[channel];
 }
 
 /**

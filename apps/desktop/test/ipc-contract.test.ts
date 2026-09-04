@@ -193,14 +193,21 @@ describe("IPC contract", () => {
     }
   });
 
-  it("schema lookup falls back to a known sentinel for unknown channels", () => {
-    const fake: IpcChannel = "shell.exec" as IpcChannel;
-    expect(ipcRequestSchema(fake)).toBeNull();
+  it("rejects an unknown channel before a schema is ever looked up", () => {
+    // The registry is total over known channels, so an unknown name is stopped
+    // by `isKnownChannel` rather than by the lookup returning a sentinel. A
+    // lookup that could return null is what let a channel be registered while
+    // remaining unvalidated.
+    const fake = "shell.exec";
+    expect(isKnownChannel(fake)).toBe(false);
+    expect(() =>
+      validateIpcRequest({ channel: fake, payload: {} } as unknown as IpcRequest)
+    ).toThrow(/unknown channel/);
   });
 
   it("registers a validator for every documented channel", () => {
     for (const channel of IPC_CHANNELS) {
-      expect(ipcRequestSchema(channel)).not.toBeNull();
+      expect(typeof ipcRequestSchema(channel)).toBe("function");
     }
   });
 });

@@ -56,6 +56,16 @@ function basenameOf(path: string): string {
   return index >= 0 ? normalized.slice(index + 1) : normalized;
 }
 
+/**
+ * Channels the dispatch switch handles.
+ *
+ * `session.bootstrap` is excluded on purpose: it must run *before* the SDK
+ * exists, so it is handled in its own branch above and can never reach here.
+ * Naming that exclusion is what lets the switch's `default` be a `never`
+ * check — without it the compiler would consider bootstrap unhandled forever.
+ */
+type DispatchChannel = Exclude<IpcChannel, "session.bootstrap">;
+
 /** Wording for the `host_full` OS confirmation; shared by IPC and the grant service. */
 const HOST_FULL_CONFIRMATION: DangerConfirmationInput = {
   title: "Allow this Run to access your whole computer?",
@@ -267,7 +277,7 @@ export function createDesktopMain(options: DesktopMainOptions): DesktopMain {
     }
     const sdkInstance = requireSdk();
     try {
-      const r = request as { channel: IpcChannel; payload: unknown };
+      const r = request as { channel: DispatchChannel; payload: unknown };
       switch (r.channel) {
         case "session.openGitHubLogin": {
           const loginUrl = sdkInstance.getGitHubLoginUrl();
@@ -453,8 +463,19 @@ export function createDesktopMain(options: DesktopMainOptions): DesktopMain {
         case "runner.status": {
           return ok(runnerStatus());
         }
-        default:
-          return err("unknown_channel", `Channel ${r.channel} is not registered`);
+        default: {
+          /*
+           * Assigning to `never` makes the switch exhaustive at compile time.
+           *
+           * A plain `default: return unknown_channel` silently swallowed new
+           * channels: the contract would register and validate them while the
+           * dispatch fell through, producing a channel that compiles, passes
+           * its tests and does nothing at runtime. Adding a name to
+           * IPC_CHANNELS is now a type error here until a case exists.
+           */
+          const unhandled: never = r.channel;
+          return err("unknown_channel", `Channel ${String(unhandled)} is not registered`);
+        }
       }
     } catch (error) {
       // Strip stacks so the Renderer only sees the message — a leaked stack
