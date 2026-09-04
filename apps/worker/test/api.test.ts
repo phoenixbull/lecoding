@@ -910,6 +910,83 @@ describe("createRunApiHandler", () => {
     expect(runs.command).not.toHaveBeenCalled();
   });
 
+  it("awaits the async device authorizer before admitting a local Run", async () => {
+    /*
+     * Regression test for an authorization bypass.
+     *
+     * The authorizer is async, and the admission check used to test it
+     * synchronously: `!predicate(...)` evaluated a Promise object, which is
+     * always truthy, so the negation was always false and the rejection branch
+     * never ran. Every device was admitted, including one belonging to someone
+     * else — which is why the test goes through the real handler rather than
+     * calling a helper, and why the predicate here really is async.
+     */
+    const runs = createRuns([]);
+    const calls: Array<{ deviceId: string; projectId: string; userId: string }> = [];
+    const authorizer = vi.fn(async (input: {
+      deviceId: string;
+      projectId: string;
+      userId: string;
+    }) => {
+      calls.push(input);
+      // Deliberately deferred so a synchronous test of the return value would
+      // observe a pending Promise rather than the decision.
+      await new Promise<void>((resolve) => setTimeout(resolve, 1));
+      return input.deviceId === "device-mine";
+    });
+    const handler = createHandler(runs, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, authorizer);
+
+    const build = (deviceId: string) => new Request(
+      "http://127.0.0.1:8787/api/v1/projects/project-1/runs",
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          environmentId: `local:${deviceId}`,
+          task: "Add health endpoint",
+          acceptanceCriteria: ["Endpoint returns 200"],
+          approvalMode: "auto_review",
+          fileAccessScope: "workspace_only"
+        })
+      }
+    );
+
+    const mine = await handler.handle(build("device-mine"));
+    expect(mine.status).toBe(202);
+    expect(runs.start).toHaveBeenCalledTimes(1);
+
+    // Someone else's device must be refused, and must never reach the engine.
+    const theirs = await handler.handle(build("device-theirs"));
+    expect(theirs.status).toBe(404);
+    expect(runs.start).toHaveBeenCalledTimes(1);
+    expect(authorizer).toHaveBeenCalledTimes(2);
+    expect(calls[1]).toEqual({ deviceId: "device-theirs", projectId: "project-1", userId: "local-user" });
+  });
+
+  it("refuses a local Run when no device authorizer is configured", async () => {
+    // Fail closed: with nothing able to vouch for the device, the Run must not
+    // start. An absent check cannot be read as blanket approval.
+    const runs = createRuns([]);
+    const handler = createHandler(runs);
+
+    const response = await handler.handle(
+      new Request("http://127.0.0.1:8787/api/v1/projects/project-1/runs", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          environmentId: "local:device-1",
+          task: "Add health endpoint",
+          acceptanceCriteria: ["Endpoint returns 200"],
+          approvalMode: "auto_review",
+          fileAccessScope: "workspace_only"
+        })
+      })
+    );
+
+    expect(response.status).toBe(404);
+    expect(runs.start).not.toHaveBeenCalled();
+  });
+
   it("delegates resumable event requests to the SSE handler", async () => {
     const journal = createInMemoryRunEventJournal({
       now: () => "2026-08-26T00:00:00.000Z"
@@ -984,7 +1061,12 @@ function createHandler(
   projectPolicy?: RunApiProjectPolicyAdministration,
   artifacts?: RunApiArtifactReader,
   metrics?: import("@lecoding/run-events").RunOperationalMetricsReader,
-  actions?: import("@lecoding/run-events").RunOperationalActionRecorder
+  actions?: import("@lecoding/run-events").RunOperationalActionRecorder,
+  deviceAuthorizer?: (input: {
+    deviceId: string;
+    projectId: string;
+    userId: string;
+  }) => Promise<boolean>
 ) {
   return createRunApiHandler({
     defaultProjectId: "project-1",
@@ -999,6 +1081,7 @@ function createHandler(
     ...(artifacts ? { artifacts } : {}),
     ...(metrics ? { metrics } : {}),
     ...(actions ? { actions } : {}),
+    ...(deviceAuthorizer ? { isDeviceAuthorizedForProject: deviceAuthorizer } : {}),
     eventStream: {
       handle: vi.fn(async () => new Response("", { status: 200 }))
     }

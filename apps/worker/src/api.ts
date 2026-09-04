@@ -306,21 +306,31 @@ export function createRunApiHandler(
               "Server Runs require workspace-only file access"
             );
           }
-          if (
-            localDeviceId !== undefined &&
-            !options.isDeviceAuthorizedForProject?.({
+          if (localDeviceId !== undefined) {
+            /*
+             * Awaited, and compared against `true` rather than negated.
+             *
+             * The predicate is async, so a bare `!predicate(...)` tested a
+             * Promise object — always falsy, so the rejection branch could
+             * never run and *any* member could name *any* device id and have
+             * their Run executed on a colleague's machine.
+             *
+             * `!== true` is the fail-closed form: a predicate that is missing,
+             * or that returns anything but an explicit true, refuses the Run.
+             * Missing authorization must mean "no", not "assume yes".
+             */
+            const authorized = await options.isDeviceAuthorizedForProject?.({
               deviceId: localDeviceId,
               projectId,
               userId: principal.userId
-            })
-          ) {
-            // Without this, any member could name any device id in the project
-            // and have their Run executed on a colleague's machine.
-            return errorResponse(
-              404,
-              "device_not_found",
-              "Runner device was not found"
-            );
+            });
+            if (authorized !== true) {
+              return errorResponse(
+                404,
+                "device_not_found",
+                "Runner device was not found"
+              );
+            }
           }
           const runId = await options.runs.start(
             { projectId, ...input },
