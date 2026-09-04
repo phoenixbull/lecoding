@@ -49,9 +49,7 @@ const now = () => "2026-09-04T00:00:00.000Z";
 const identity: RunnerIdentity = {
   deviceId: "device-1",
   userId: "user-1",
-  email: "dev@example.com",
-  projectId: "project-1",
-  projectName: "project-1"
+  projectId: "project-1"
 };
 
 const TIERS: Record<FileAccessScope, EnforcementLevel> = {
@@ -159,7 +157,9 @@ function createChain(): Chain {
     },
     sourceRepo,
     worktreeRoot,
-    auditLogPath: "/state/host-access.jsonl",
+    // The audit log writes through the real filesystem, so it needs a real
+    // path inside the temp root rather than the journal's in-memory location.
+    auditLogPath: join(root, "host-access.jsonl"),
     worktreePathFor: (runId) => join(worktreeRoot, runId),
     now
   });
@@ -202,7 +202,9 @@ describe.skipIf(!gitAvailable())("local execution chain, end to end", () => {
   });
 
   afterEach(() => {
-    chain.runner.close(1000, "test done");
+    // 4004 is the protocol's "shutting down" code; the test transport accepts
+    // it without requiring a real close handshake.
+    chain.runner.close(4004, "test done");
     for (const root of roots.splice(0)) {
       if (existsSync(root)) {
         rmSync(root, { recursive: true, force: true });

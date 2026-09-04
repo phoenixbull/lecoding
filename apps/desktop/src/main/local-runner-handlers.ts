@@ -76,16 +76,37 @@ export function createLocalRunnerHandlers(
     now: options.now
   });
 
-  /** Records a refusal, so an attempt outside the grant is still evidence. */
+  /**
+   * Audit writes that failed, exposed so a caller can notice rather than lose
+   * the evidence silently. A refusal whose audit row was lost is still refused;
+   * the loss only weakens the record.
+   */
+  let auditFailures = 0;
+  let auditFailure: unknown;
+
+  /**
+   * Records a refusal, so an attempt outside the grant is still evidence.
+   *
+   * Called synchronously from inside the sandbox, before the command is
+   * refused, so the write is necessarily fire-and-forget. A failure is caught
+   * here rather than left to reject: an unhandled rejection would surface as a
+   * suite-level error during teardown and mask a real failure elsewhere, while
+   * the refusal itself has already been reported to the caller.
+   */
   async function recordViolation(violation: AccessViolation): Promise<void> {
-    for (const entry of violation.violations) {
-      await audit.append({
-        runId: violation.runId,
-        kind: "execute",
-        path: entry.canonicalPath,
-        origin: "command_argv",
-        outOfScope: true
-      });
+    try {
+      for (const entry of violation.violations) {
+        await audit.append({
+          runId: violation.runId,
+          kind: "execute",
+          path: entry.canonicalPath,
+          origin: "command_argv",
+          outOfScope: true
+        });
+      }
+    } catch (error) {
+      auditFailures += 1;
+      auditFailure = error;
     }
   }
 
@@ -259,6 +280,16 @@ export function createLocalRunnerHandlers(
       });
       prepared.delete(handle.id);
       return resolved as unknown as JsonValue;
+    },
+
+    /**
+     * Audit writes that failed, and the last error.
+     *
+     * Deliberately not a push channel: the Renderer has no use for it, and an
+     * operator reading the audit file already knows the count is short.
+     */
+    auditStatus(): { failures: number; lastError: unknown } {
+      return { failures: auditFailures, lastError: auditFailure };
     }
   };
 }
