@@ -295,7 +295,7 @@ M2 调整后总估时为 **14–22 个工作日**。若退回仅使用 TypeScrip
 
 执行按「本机可做 / 外部待验收」拆分，详见 [m3-implementation-plan.md](m3-implementation-plan.md) 第 2 节与本轮状态 [m3-completion-summary.md](m3-completion-summary.md)。
 
-**定性**：M3 未达成发布判定。本机完成了 CI 根因定位、PolicyEngine 无效字段清理、retention 确定性验证与文档收口；M3.A2 更新生产链路接线、M3.B 全部目标环境证据、M3.C 备份恢复与 schema 演练均未执行（缺 API key、PostgreSQL、Docker、证书与目标机器）。按实施文档 §3 最终判定条款，当前只交付 RC 与未完成清单，不把未执行写成通过。
+**定性**：M3 未达成发布判定。本机完成了 CI 根因定位、PolicyEngine 无效字段清理、更新生产链路接线、retention 确定性验证与文档收口；M3.B 全部目标环境证据与 M3.C 备份恢复 / schema 演练未执行（缺 API key、PostgreSQL、Docker、证书与目标机器），更新链路的真实升级亦待签名产物证据。按实施文档 §3 最终判定条款，当前只交付 RC 与未完成清单，不把未执行写成通过。
 
 已完成的代码工作：
 
@@ -305,7 +305,7 @@ M2 调整后总估时为 **14–22 个工作日**。若退回仅使用 TypeScrip
 
 未完成（均标记「待目标环境」，验收标准与命令见 m3-completion-summary.md §4）：
 
-- [ ] M3.A2 更新清单生产与 Main 接线（`installVerifiedUpdate` 调用点仅见测试）
+- [x] **M3.A2（部分）**：更新清单生产与 Main 接线已完成——发布侧对清单的确定性序列化字节做 SHA-256 + Ed25519 签名；应用侧公钥由桌面自身配置钉住，未配置即关闭更新而非降级信任 feed，覆盖错误签名/篡改/平台架构不符/版本不更新/下载失败全部拒绝路径。**真实升级与平台安装器行为仍待签名产物证据。**
 - [ ] M3.B 全部外部证据：Linux 隔离、Docker 契约、PostgreSQL smoke/并发、Anthropic 黄金任务、签名公证、三平台 smoke
 - [ ] M3.C 备份恢复与 schema 升级/回滚演练
 - [ ] M3.D 剩余：README 更新、Phase 4 audit 更新、证据索引、release notes 定稿
