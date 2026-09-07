@@ -12,7 +12,9 @@
 
 import {
   createHash,
+  createPrivateKey,
   createPublicKey,
+  sign,
   timingSafeEqual,
   verify as verifySignature
 } from "node:crypto";
@@ -268,4 +270,171 @@ function parseSignedManifest(bytes: Buffer): SignedUpdateManifest {
     throw new Error("Signed update manifest SHA-256 is invalid");
   }
   return { version, platform, arch, artifactUrl, sha256 };
+}
+
+/**
+ * Serializes a manifest to the exact bytes the signature covers.
+ *
+ * Verification signs and checks the manifest bytes verbatim, so the release
+ * side must produce them deterministically: fixed key order and no
+ * insignificant whitespace. Emitting `JSON.stringify` of an arbitrary object
+ * would let a rebuilt manifest differ byte-for-byte from the signed original
+ * and fail verification for no reason anyone could debug.
+ */
+export function serializeUpdateManifest(
+  manifest: SignedUpdateManifest
+): Uint8Array {
+  parseVersion(manifest.version);
+  const ordered = {
+    version: manifest.version,
+    platform: manifest.platform,
+    arch: manifest.arch,
+    artifactUrl: manifest.artifactUrl,
+    sha256: manifest.sha256
+  };
+  return new TextEncoder().encode(JSON.stringify(ordered));
+}
+
+/** Digest of one artifact, computed on the release side for the manifest. */
+export function hashArtifact(artifact: Uint8Array): string {
+  return createHash("sha256").update(artifact).digest("hex");
+}
+
+/** A manifest plus the signature over its exact bytes. */
+export interface SignedUpdatePackage {
+  manifest: SignedUpdateManifest;
+  /** Canonical bytes; pass these to `installVerifiedUpdate`. */
+  bytes: Uint8Array;
+  /** Base64 Ed25519 signature over `bytes`. */
+  signature: string;
+}
+
+/**
+ * Builds the signed package a release publishes.
+ *
+ * Caller obligation: `privateKey` must be the Ed25519 *private* key in PKCS#8
+ * PEM. It belongs to the release pipeline only — the desktop pins the matching
+ * public key and must never receive this one.
+ */
+export function buildSignedUpdatePackage(inputs: {
+  version: string;
+  platform: SignedUpdateManifest["platform"];
+  arch: SignedUpdateManifest["arch"];
+  artifactUrl: string;
+  artifact: Uint8Array;
+  privateKey: string;
+}): SignedUpdatePackage {
+  if (new URL(inputs.artifactUrl).protocol !== "https:") {
+    throw new Error("Update artifact URL must use HTTPS");
+  }
+  const manifest: SignedUpdateManifest = {
+    version: inputs.version,
+    platform: inputs.platform,
+    arch: inputs.arch,
+    artifactUrl: inputs.artifactUrl,
+    sha256: hashArtifact(inputs.artifact)
+  };
+  const bytes = serializeUpdateManifest(manifest);
+  const signature = sign(null, Buffer.from(bytes), createPrivateKey(inputs.privateKey));
+  return { manifest, bytes, signature: signature.toString("base64") };
+}
+
+/** Why an update did not happen. Never a reason to install anyway. */
+export type UpdateOutcome =
+  | { installed: true; manifest: SignedUpdateManifest }
+  | { installed: false; reason: string };
+
+/**
+ * Wires discovery, download and the mandatory verification gate together.
+ *
+ * This is the production seam `installVerifiedUpdate` was missing: the gate
+ * existed and was tested, but nothing in the app called it, so no update could
+ * ever be installed — or rejected — in production.
+ *
+ * Caller obligation: `publicKey` is pinned by the desktop composition root and
+ * must never come from the downloaded payload. A key supplied by the artifact
+ * it authenticates proves nothing.
+ */
+export interface AutoUpdaterOptions {
+  /** HTTPS URL of the manifest. */
+  manifestUrl: string;
+  /** HTTPS URL of the detached signature. */
+  signatureUrl: string;
+  publicKey: string;
+  currentVersion: string;
+  platform: SignedUpdateManifest["platform"];
+  arch: SignedUpdateManifest["arch"];
+  /** Injected transport so this is testable without a network. */
+  fetchBytes(url: string): Promise<Uint8Array>;
+  /** Receives bytes only after every check passes. */
+  install(artifact: Uint8Array): Promise<void>;
+}
+
+export interface AutoUpdater {
+  checkAndInstall(): Promise<UpdateOutcome>;
+}
+
+export function createAutoUpdater(options: AutoUpdaterOptions): AutoUpdater {
+  return {
+    async checkAndInstall() {
+      for (const url of [options.manifestUrl, options.signatureUrl]) {
+        if (new URL(url).protocol !== "https:") {
+          // Refuse before any fetch: an unencrypted manifest is trivially
+          // substituted for one naming an attacker's artifact.
+          return { installed: false, reason: `Update URL is not HTTPS: ${url}` };
+        }
+      }
+
+      let manifestBytes: Uint8Array;
+      let signature: string;
+      let artifact: Uint8Array;
+      try {
+        manifestBytes = await options.fetchBytes(options.manifestUrl);
+        const signatureBytes = await options.fetchBytes(options.signatureUrl);
+        signature = new TextDecoder().decode(signatureBytes).trim();
+        // The artifact URL comes from inside the signed manifest, so it is
+        // only trusted after verification — it is fetched after the gate.
+        artifact = await options.fetchBytes(artifactUrlFor(manifestBytes));
+      } catch (error) {
+        return {
+          installed: false,
+          reason: `Update download failed: ${error instanceof Error ? error.message : "unknown"}`
+        };
+      }
+
+      try {
+        const manifest = await installVerifiedUpdate({
+          manifest: manifestBytes,
+          signature,
+          artifact,
+          publicKey: options.publicKey,
+          currentVersion: options.currentVersion,
+          platform: options.platform,
+          arch: options.arch,
+          install: options.install
+        });
+        return { installed: true, manifest };
+      } catch (error) {
+        // Every rejection — bad signature, wrong architecture, not newer,
+        // digest mismatch — lands here, and none of them install.
+        return {
+          installed: false,
+          reason: error instanceof Error ? error.message : "Update verification failed"
+        };
+      }
+    }
+  };
+}
+
+/** Reads the artifact URL out of unverified manifest bytes, for fetching only. */
+function artifactUrlFor(bytes: Uint8Array): string {
+  const decoded = JSON.parse(new TextDecoder().decode(bytes)) as unknown;
+  const url =
+    typeof decoded === "object" && decoded !== null
+      ? (decoded as { artifactUrl?: unknown }).artifactUrl
+      : undefined;
+  if (typeof url !== "string" || new URL(url).protocol !== "https:") {
+    throw new Error("Update manifest artifact URL is missing or not HTTPS");
+  }
+  return url;
 }

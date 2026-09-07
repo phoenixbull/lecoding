@@ -36,6 +36,11 @@ import { createFileAccessGrantService } from "./file-access-grant-service.js";
 import { createLocalRunnerHandlers } from "./local-runner-handlers.js";
 import { createRunnerBroker } from "./runner-broker.js";
 import { createRunnerWebSocket, runnerWebSocketUrl } from "./runner-ws-client.js";
+import {
+  createDesktopUpdater,
+  loadUpdaterConfig,
+  runPlatformInstaller
+} from "./updater.js";
 import { createDesktopCredentialStore } from "./secure-store-factory.js";
 import type { ClientSdk, ElectronHost } from "./host.js";
 
@@ -343,6 +348,35 @@ async function bootstrap(): Promise<void> {
    * dispatched in that window would hang until the peer gave up.
    */
   await broker.start();
+
+  /*
+   * Auto-update, wired at the production composition root.
+   *
+   * The key is pinned here, from the desktop's own configuration, and the
+   * updater reports rather than throws: a failed update check must never
+   * prevent the app from starting.
+   */
+  const updater = createDesktopUpdater({
+    config: loadUpdaterConfig(),
+    currentVersion: app.getVersion(),
+    platform: process.platform,
+    arch: process.arch,
+    stagePath: join(runnerRoot, "updates"),
+    fetchBytes: async (url) => {
+      const response = await fetch(url);
+      if (!response.ok) {
+        throw new Error(`${response.status} ${url}`);
+      }
+      return new Uint8Array(await response.arrayBuffer());
+    },
+    runInstaller: runPlatformInstaller,
+    onOutcome: (outcome) => {
+      if (!outcome.installed) {
+        console.warn(`[update] ${outcome.reason}`);
+      }
+    }
+  });
+  void updater.checkAndInstall();
 }
 
 /** Base URL the desktop client is configured against. */
