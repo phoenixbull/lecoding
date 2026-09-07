@@ -12,10 +12,17 @@ import { createPolicyEngine, type CapabilityRequest } from "@lecoding/policy";
  * private network targets.
  */
 
+/**
+ * Builds a policy question.
+ *
+ * No `fileAccessScope` appears here: the policy engine does not decide which
+ * files a Run may reach — the sandbox enforces that at process creation. This
+ * suite proves the *other* protections still hold locally, the ones a
+ * filesystem fence does not even model.
+ */
 function request(capability: Capability, overrides: Partial<CapabilityRequest> = {}): CapabilityRequest {
   return {
     approvalMode: "full_access",
-    fileAccessScope: "workspace_only",
     capability,
     context: {
       runId: "run-1",

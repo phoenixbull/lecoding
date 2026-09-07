@@ -8,21 +8,18 @@ describe("PolicyEngine", () => {
     await expect(
       policy.authorize({
         approvalMode: "full_access",
-        fileAccessScope: "host_full",
         capability: { type: "protected_file_write", realpath: "/workspace/a.ts" }
       })
     ).resolves.toEqual({ decision: "allow" });
     await expect(
       policy.authorize({
         approvalMode: "manual",
-        fileAccessScope: "workspace_only",
         capability: { type: "command_exec", argv: ["pnpm", "test"], cwd: "/workspace" }
       })
     ).resolves.toMatchObject({ decision: "ask" });
     await expect(
       policy.authorize({
         approvalMode: "full_access",
-        fileAccessScope: "workspace_only",
         capability: { type: "command_exec", argv: ["curl"], cwd: "/workspace" },
         deniedCommands: ["curl"]
       })
@@ -35,7 +32,6 @@ describe("PolicyEngine", () => {
     await expect(
       policy.authorize({
         approvalMode: "full_access",
-        fileAccessScope: "host_full",
         capability: {
           type: "sensitive_file_read",
           realpath: "/var/run/docker.sock"
@@ -64,7 +60,6 @@ describe("PolicyEngine", () => {
         await expect(
           policy.authorize({
             approvalMode,
-            fileAccessScope: "workspace_only",
             capability: {
               type: "network_egress",
               scheme: "https",
@@ -96,7 +91,6 @@ describe("PolicyEngine", () => {
         await expect(
           policy.authorize({
             approvalMode,
-            fileAccessScope: "host_full",
             capability: { type: "sensitive_file_read", realpath }
           })
         ).resolves.toMatchObject({ decision: "deny" });
@@ -105,7 +99,6 @@ describe("PolicyEngine", () => {
         await expect(
           policy.authorize({
             approvalMode,
-            fileAccessScope: "host_full",
             capability: {
               type: "command_exec",
               argv: [executable, "--version"],
@@ -139,7 +132,6 @@ describe("PolicyEngine", () => {
         await expect(
           policy.authorize({
             approvalMode,
-            fileAccessScope: "host_full",
             capability: { type: "protected_file_write", realpath }
           })
         ).resolves.toMatchObject({ decision: "deny" });
@@ -159,7 +151,6 @@ describe("PolicyEngine", () => {
     const policy = createPolicyEngine({ reviewer: { review }, audit: { record } });
     const request = {
       approvalMode: "auto_review" as const,
-      fileAccessScope: "workspace_only" as const,
       capability: {
         type: "command_exec" as const,
         argv: ["git", "status"],
@@ -195,7 +186,6 @@ describe("PolicyEngine", () => {
     await expect(
       policy.authorize({
         approvalMode: "auto_review",
-        fileAccessScope: "workspace_only",
         capability: {
           type: "network_egress",
           scheme: "https",
@@ -238,7 +228,6 @@ describe("PolicyEngine", () => {
         await expect(
           policy.authorize({
             approvalMode,
-            fileAccessScope: "host_full",
             capability,
             context: {
               runId: "run-fixed-deny",
@@ -264,7 +253,6 @@ describe("PolicyEngine", () => {
     await expect(
       policy.authorize({
         approvalMode: "manual",
-        fileAccessScope: "workspace_only",
         capability: {
           type: "network_egress",
           scheme: "https",
@@ -283,7 +271,6 @@ describe("PolicyEngine", () => {
     await expect(
       policy.authorize({
         approvalMode: "full_access",
-        fileAccessScope: "workspace_only",
         capability: { type: "command_exec", argv: ["pnpm", "test"], cwd: "." },
         context: {
           runId: "run-1",
@@ -298,6 +285,44 @@ describe("PolicyEngine", () => {
       reason: "Project policy denies this exact capability",
       projectRule: "deny"
     });
+  });
+});
+
+describe("PolicyEngine filesystem-scope boundary", () => {
+  /*
+   * The engine must not carry a file-access scope at all. A `fileAccessScope`
+   * input used to exist and never influenced any decision, which read as a
+   * safety guarantee the engine did not actually provide. Filesystem scope is
+   * enforced by the sandbox at process creation, under a grant the user issued;
+   * keeping a dead field here would invite the same false promise again.
+   */
+  it("exposes no file-access scope on the authorization request", () => {
+    const keys = Object.keys({
+      approvalMode: "full_access",
+      capability: { type: "command_exec", argv: ["pnpm", "test"], cwd: "/work" },
+    });
+    // The contract is the type: a request carrying the old field would not
+    // compile. Type-level removal is worth a test because the field is easy to
+    // reintroduce and impossible to notice once it is ignored again.
+    expect(keys).toEqual(["approvalMode", "capability"]);
+  });
+
+  it("still denies what it denied, with no scope involved", async () => {
+    const engine = createPolicyEngine();
+    const credential = await engine.authorize({
+      approvalMode: "full_access",
+      capability: { type: "sensitive_file_read", realpath: "/home/dev/.ssh/id_rsa" },
+    });
+    expect(credential.decision).toBe("deny");
+  });
+
+  it("still allows a low-risk command, with no scope involved", async () => {
+    const engine = createPolicyEngine();
+    const decision = await engine.authorize({
+      approvalMode: "full_access",
+      capability: { type: "command_exec", argv: ["pnpm", "test"], cwd: "/work" },
+    });
+    expect(decision.decision).toBe("allow");
   });
 });
 
@@ -316,7 +341,6 @@ describe("PolicyEngine + project protectedPaths", () => {
       await expect(
         policy.authorize({
           approvalMode,
-          fileAccessScope: "workspace_only",
           capability: {
             type: "protected_file_write",
             realpath: "/workspace/.ai-agent/project.yaml"
@@ -338,7 +362,6 @@ describe("PolicyEngine + project protectedPaths", () => {
     await expect(
       policy.authorize({
         approvalMode: "full_access",
-        fileAccessScope: "workspace_only",
         capability: {
           type: "protected_file_write",
           realpath: "/workspace/src/index.ts"
@@ -356,7 +379,6 @@ describe("PolicyEngine + project protectedPaths", () => {
     await expect(
       policy.authorize({
         approvalMode: "manual",
-        fileAccessScope: "workspace_only",
         capability: {
           type: "sensitive_file_read",
           realpath: "/workspace/.ai-agent/project.yaml"
@@ -371,7 +393,6 @@ describe("PolicyEngine + project protectedPaths", () => {
     await expect(
       policy.authorize({
         approvalMode: "auto_review",
-        fileAccessScope: "workspace_only",
         capability: {
           type: "protected_file_write",
           realpath: "/workspace/.env.local"
@@ -394,7 +415,6 @@ describe("PolicyEngine + project askDomains", () => {
       await expect(
         policy.authorize({
           approvalMode,
-          fileAccessScope: "workspace_only",
           capability: {
             type: "network_egress",
             scheme: "https",
@@ -416,7 +436,6 @@ describe("PolicyEngine + project askDomains", () => {
     await expect(
       policy.authorize({
         approvalMode: "full_access",
-        fileAccessScope: "workspace_only",
         capability: {
           type: "network_egress",
           scheme: "https",
@@ -434,7 +453,6 @@ describe("PolicyEngine + project askDomains", () => {
     await expect(
       policy.authorize({
         approvalMode: "full_access",
-        fileAccessScope: "workspace_only",
         capability: {
           type: "network_egress",
           scheme: "https",
@@ -452,7 +470,6 @@ describe("PolicyEngine + project askDomains", () => {
     await expect(
       policy.authorize({
         approvalMode: "full_access",
-        fileAccessScope: "workspace_only",
         capability: {
           type: "network_egress",
           scheme: "https",
@@ -471,7 +488,6 @@ describe("PolicyEngine + project askDomains", () => {
     await expect(
       policy.authorize({
         approvalMode: "full_access",
-        fileAccessScope: "workspace_only",
         capability: {
           type: "network_egress",
           scheme: "https",
@@ -487,7 +503,6 @@ describe("PolicyEngine + project askDomains", () => {
     await expect(
       policy.authorize({
         approvalMode: "full_access",
-        fileAccessScope: "workspace_only",
         capability: {
           type: "network_egress",
           scheme: "https",
@@ -508,7 +523,6 @@ describe("PolicyEngine + project askDomains", () => {
     await expect(
       policy.authorize({
         approvalMode: "full_access",
-        fileAccessScope: "workspace_only",
         capability: {
           type: "protected_file_write",
           realpath: "/workspace/.github/workflows/release.yml"

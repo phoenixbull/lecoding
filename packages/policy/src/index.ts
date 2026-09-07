@@ -1,4 +1,4 @@
-import type { ApprovalMode, FileAccessScope } from "@lecoding/contracts";
+import type { ApprovalMode } from "@lecoding/contracts";
 import { isIP } from "node:net";
 
 export type Capability =
@@ -8,9 +8,19 @@ export type Capability =
   | { type: "network_egress"; scheme: "https"; domain: string; port: number }
   | { type: "model_upgrade"; modelId: string };
 
+/**
+ * One authorization question.
+ *
+ * This engine decides **what a capability is worth**, not **which files a Run
+ * may reach**. Filesystem scope is enforced by `@lecoding/host-sandbox` at
+ * process creation, under a grant the user issued through an OS dialog; a
+ * `fileAccessScope` field used to exist here but never influenced any decision,
+ * which made the engine look like it shared a responsibility it did not have.
+ * It was removed rather than implemented, so the boundary is stated once, in
+ * the place that actually enforces it.
+ */
 export interface CapabilityRequest {
   approvalMode: ApprovalMode;
-  fileAccessScope: FileAccessScope;
   capability: Capability;
   /**
    * Run 作用域的命令拒绝列表:argv[0] 命中即 deny,

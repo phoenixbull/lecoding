@@ -994,7 +994,6 @@ class DefaultRunEngine implements RunEngine, RunResumer, DisposableEngine {
           editedCapability.type === "command_exec"
             ? "auto_review"
             : stored.input.approvalMode,
-        fileAccessScope: stored.input.fileAccessScope,
         ...(stored.input.deniedCommands
           ? { deniedCommands: stored.input.deniedCommands }
           : {}),
@@ -1443,7 +1442,6 @@ class DefaultRunEngine implements RunEngine, RunResumer, DisposableEngine {
       const capabilityHash = hashCapability(capability);
       const policyDecision = await this.dependencies.policy.authorize({
         approvalMode: stored.input.approvalMode,
-        fileAccessScope: stored.input.fileAccessScope,
         ...(stored.input.deniedCommands
           ? { deniedCommands: stored.input.deniedCommands }
           : {}),

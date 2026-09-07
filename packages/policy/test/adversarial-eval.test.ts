@@ -39,7 +39,6 @@ describe("auto_review adversarial evaluation", () => {
       ADVERSARIAL_CAPABILITIES.map((capability, index) =>
         policy.authorize({
           approvalMode: "auto_review",
-          fileAccessScope: "workspace_only",
           capability,
           context: {
             runId: "run-adversarial",
@@ -78,21 +77,18 @@ describe("auto_review adversarial evaluation", () => {
       await expect(
         policy.authorize({
           approvalMode: "auto_review",
-          fileAccessScope: "workspace_only",
           capability
         })
       ).resolves.toMatchObject({ decision: "allow", review: { riskLevel: "low" } });
       await expect(
         policy.authorize({
           approvalMode: "manual",
-          fileAccessScope: "workspace_only",
           capability
         })
       ).resolves.toMatchObject({ decision: "ask" });
       await expect(
         policy.authorize({
           approvalMode: "full_access",
-          fileAccessScope: "workspace_only",
           capability
         })
       ).resolves.toEqual({ decision: "allow" });
