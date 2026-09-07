@@ -106,7 +106,7 @@ Commands are structured argv arrays and are executed without an implicit shell. 
 ```text
 apps/worker           production Worker, HTTP API, and process lifecycle root
 apps/web              Phase 1 single-user Run console
-apps/                 future Desktop and Local Runner processes
+apps/desktop          Electron shell: Main owns credentials, IPC and the Runner session
 packages/contracts    versioned shared Run and environment contracts
 packages/run-engine   orchestration through the RunEngine interface
 packages/run-environment portable execution environment interface
@@ -114,6 +114,9 @@ packages/run-events    ordered Run event journal and SSE resume encoding
 packages/policy       capability authorization and hard denies
 packages/verifier     reviewed-plan production verification and reports
 packages/workspace    Git worktree isolation
+packages/runner-protocol versioned, transport-free Local Runner protocol (dedupe, resume, heartbeat)
+packages/host-sandbox OS file-access enforcement, grants, audit log, process-tree termination
+packages/local-runner Local execution environment: Git worktree + fenced command execution
 packages/test-harness in-memory adapters for interface tests
 packages/golden-evals deterministic task fixtures and real-model baseline runner seams
 packages/openai-model strict Responses and Chat Completions transports and AgentModel adapters
@@ -122,3 +125,38 @@ docs/                 threat model and Phase 0 evidence
 ```
 
 The current implementation has PostgreSQL adapters for Run snapshots, tool-call idempotency, leases, cancellation, ordered steering mailboxes, events, and pg-boss recovery, while tests can still use in-memory adapters. The executable Worker, canonical multi-project registration boundary with legacy fallback, project-routed worktree/environment/Verifier/Diff ownership, trusted project-YAML plan loader, dependency-prepared offline verification image, immediate verification cancellation, authenticated HTTP/API boundary, durable recovery scheduling, and minimum Web console are implemented. The configured real PostgreSQL service has passed production Worker composition/start/stop with all seven Worker-owned tables, the pg-boss schema, and both recovery queues; see [`docs/evidence/postgres-worker-smoke-2026-08-27.md`](docs/evidence/postgres-worker-smoke-2026-08-27.md). An isolated two-consumer failover smoke also produced exactly one claimant and verified complete fixture cleanup; see [`docs/evidence/postgres-failover-smoke-2026-08-27.md`](docs/evidence/postgres-failover-smoke-2026-08-27.md). Real two-session cancellation fanout additionally survived one owned LISTEN disconnect and automatic re-LISTEN; see [`docs/evidence/postgres-cancel-reconnect-smoke-2026-08-27.md`](docs/evidence/postgres-cancel-reconnect-smoke-2026-08-27.md). Ordered/idempotent steering persistence was then read by a replacement adapter with two matching event/outbox records and verified cleanup; see [`docs/evidence/postgres-steering-smoke-2026-08-27.md`](docs/evidence/postgres-steering-smoke-2026-08-27.md). A different production target must rerun those smokes with its own injected environment. The configured third-party model passed the five-task Phase 0 development baseline; the 12/20 acceptance suite then passed 10/12 and 11/12 before malformed-JSON retry hardening, followed by a 12/12 post-change run; see [`docs/evidence/golden-baseline-2026-08-25.md`](docs/evidence/golden-baseline-2026-08-25.md) and [`docs/evidence/golden-acceptance-2026-08-27.md`](docs/evidence/golden-acceptance-2026-08-27.md). Real browser-driven Runs covered create, manual approval, SSE lifecycle, managed Diff, verification evidence, cancellation, host Diff Safety, terminal container cleanup, and a clean committed-baseline transition to `succeeded`; see [`docs/evidence/browser-e2e-2026-08-26.md`](docs/evidence/browser-e2e-2026-08-26.md). The project owner accepted target-Linux isolation as tracked environmental evidence debt on 2026-08-26 so it does not block subsequent Phase 1 work.
+
+## Desktop and Local Runner
+
+`apps/desktop` is an Electron shell. The Main process owns everything the
+Renderer may not hold: the device credential in OS secure storage, the IPC
+handlers, and the Local Runner's authenticated WSS session. The Renderer is a
+sandboxed React view that reaches Main only through a typed preload bridge; it
+never receives a token, a filesystem path or a socket, and its CSP forbids
+outbound connections.
+
+A local Run executes on the user's own machine: the server's RunEngine drives a
+`RunEnvironment` that forwards `prepare`/`perform`/`inspect`/`dispose` over WSS
+to the desktop. The command is created inside a Git worktree, under a
+file-access grant the user issued through an OS dialog, and the sandbox decides
+before the process exists — a refused command is never spawned.
+
+### Platform limits
+
+These are capability differences, not configuration choices, and the desktop UI
+states them to the user:
+
+- **macOS**: Seatbelt confines the process in the kernel (`kernel` tier).
+- **Windows**: no Job Object and no AppContainer. Commands are fenced by
+  canonicalized argv/cwd at creation time (`argv_fence`, best-effort) plus real
+  process-tree termination. A process that reaches outside the grant by some
+  route other than its arguments is **not** stopped by the OS.
+- **Linux**: local execution is refused rather than run unconfined.
+- No platform provides container-grade CPU, memory or PID limits locally.
+
+### Status
+
+The Local Runner loop is implemented and covered by deterministic tests. It is
+**not** release-accepted: target-platform evidence is still outstanding. See
+[`docs/m3-completion-summary.md`](docs/m3-completion-summary.md) for the
+current status, known limitations, and the evidence still required.

@@ -51,7 +51,7 @@ M1 当前开发基线见 [m1-completion-summary.md](m1-completion-summary.md)。
 | M0 | 恢复全仓库可信质量门禁 | 3–5 个工作日 | 无 | 已完成 |
 | M1 | 完成 Phase 4A Connected Desktop 用户闭环 | 7–12 个工作日 | M0 | 验收中（代码链路完成，外部证据待补） |
 | M2 | 完成 Phase 4B Local Runner 闭环 | 14–22 个工作日 | M0、M1 的 UI / 凭据 seam | 代码完成（2026-09-03）；目标平台证据待补，见 [m2-completion-summary.md](m2-completion-summary.md) |
-| M3 | 完成正式发布证据和文档收口 | 3–5 个工作日 | M0–M2 | 未开始 |
+| M3 | 完成正式发布证据和文档收口 | 7–11 个工作日（实施文档建议，证书与目标机器等待时间另计） | M0–M2 | 进行中：本机可做项已完成，外部证据全部待验收，仅达 RC 状态，见 [m3-completion-summary.md](m3-completion-summary.md) |
 
 预计：服务器 / Web 私有 Beta 还需 3–7 个工作日；严格完成 Phase 4A 还需约 2–3 周；严格完成 Phase 4A + 4B 还需约 5–8 周。M2 原估时 10–15 天建立在应用层路径检查假设上；确认采用 OS 级文件权限强制后，调整为 14–22 个工作日。
 
@@ -292,6 +292,23 @@ M2 调整后总估时为 **14–22 个工作日**。若退回仅使用 TypeScrip
 ## 8. M3：正式发布证据与文档收口
 
 目标：把“代码存在”提升为“目标环境可复现、可运维、可回滚”。
+
+执行按「本机可做 / 外部待验收」拆分，详见 [m3-implementation-plan.md](m3-implementation-plan.md) 第 2 节与本轮状态 [m3-completion-summary.md](m3-completion-summary.md)。
+
+**定性**：M3 未达成发布判定。本机完成了 CI 根因定位、PolicyEngine 无效字段清理、retention 确定性验证与文档收口；M3.A2 更新生产链路接线、M3.B 全部目标环境证据、M3.C 备份恢复与 schema 演练均未执行（缺 API key、PostgreSQL、Docker、证书与目标机器）。按实施文档 §3 最终判定条款，当前只交付 RC 与未完成清单，不把未执行写成通过。
+
+已完成的代码工作：
+
+- [x] **M3.0 CI 根因定位**：远端失败为 `packages/runner-protocol` 测试文件缺 `RunnerCommandOutcome` 导入；本地因 turbo 缓存未暴露。修复已随未推送提交补上，当前 HEAD 零缓存 25/25 通过。**「同 SHA CI 全绿」需推送后复核，推送由你执行。**
+- [x] **M3.A1（部分）**：删除 `CapabilityRequest.fileAccessScope`——该字段从未参与决策，保留会制造虚假安全承诺。本轮不实现 scope escalation。`environment.prepare` 的 scope 保留（环境真实消费），固定 deny 与 Run 级 deny list 不变。
+- [x] **M3.C（部分）**：retention worker 新增 9 条确定性测试（调度、上报、residual、失败路由、并发与生命周期）；cleanup/residual 告警此前已覆盖。**「七日边界删哪些行」由 PostgreSQL store 实现且无内存版本，故这些测试不构成真实 PostgreSQL 证据。**
+
+未完成（均标记「待目标环境」，验收标准与命令见 m3-completion-summary.md §4）：
+
+- [ ] M3.A2 更新清单生产与 Main 接线（`installVerifiedUpdate` 调用点仅见测试）
+- [ ] M3.B 全部外部证据：Linux 隔离、Docker 契约、PostgreSQL smoke/并发、Anthropic 黄金任务、签名公证、三平台 smoke
+- [ ] M3.C 备份恢复与 schema 升级/回滚演练
+- [ ] M3.D 剩余：README 更新、Phase 4 audit 更新、证据索引、release notes 定稿
 
 ### M3.1 外部环境证据
 
