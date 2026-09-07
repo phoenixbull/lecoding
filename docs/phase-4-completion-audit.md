@@ -1,6 +1,6 @@
 # Phase 4 Completion Audit
 
-Updated: 2026-09-02
+Updated: 2026-09-02 (gate status and Phase 4 status last revised 2026-09-07; see m3-completion-summary.md)
 
 This audit records what was closed during Phase 4-A bridge work plus
 the Wave 1 and initial Wave 2 forward work that followed. Phase 4-A is
@@ -23,14 +23,51 @@ the next depends on it.
 
 ## Final verification gate
 
-The previous counts are superseded by
-[`m1-completion-summary.md`](m1-completion-summary.md): `pnpm typecheck` passes
-**23/23** workspace tasks; `pnpm test` passes **805 tests with 9 skips and 0
-failures** across 105 files. Every skip is an explicit environment gate rather
-than a parked failure. Real PostgreSQL concurrency, Docker, model provider,
-installed-package smoke, signed installer, notarization and update evidence
-remain separately classified environment gates. Passing pure configuration
-tests is not sufficient to promote those items to “Proven”.
+**Updated 2026-09-07.** The counts below supersede the earlier M0/M1 numbers
+and are taken from
+[`m3-completion-summary.md`](m3-completion-summary.md), which is the current
+authoritative status. This audit no longer restates gate totals; it points at
+them so there is one place to update.
+
+| 命令 | 结果 |
+|---|---|
+| `pnpm exec turbo run typecheck --force` | **25/25** workspace tasks, **0 cached** |
+| `pnpm test` | **1200 passed / 16 skipped / 0 failed**, EXIT=0 |
+
+**The zero-cache typecheck is mandatory.** A cached `pnpm typecheck` reported
+green while the same commit failed CI: a missing type import in
+`packages/runner-protocol/test/session.test.ts` was hidden because the task's
+inputs had not changed. Verification runs must force execution.
+
+Every one of the 16 skips is an explicit environment gate — installed-app
+smoke (4), live model (2), real PostgreSQL concurrency (1), Docker contract
+suite (7), Docker environment (2) — not a parked failure. Real PostgreSQL,
+Docker, model provider, installed-package smoke, signed installer,
+notarization and update evidence remain separately classified environment
+gates. Passing pure configuration tests is not sufficient to promote those
+items to "Proven".
+
+## Phase 4 status as of 2026-09-07
+
+- **Phase 4A (Connected Desktop)**: code complete; real installation, OS
+  keychain round-trip, signing, notarization and upgrade evidence outstanding.
+  See [`m1-completion-summary.md`](m1-completion-summary.md).
+- **Phase 4B (Local Runner)**: code complete with a green gate; target-platform
+  evidence outstanding. See [`m2-completion-summary.md`](m2-completion-summary.md).
+- **Phase 4 is not complete.** Missing evidence is enumerated per item, with
+  commands and acceptance criteria, in
+  [`m3-completion-summary.md`](m3-completion-summary.md) §4. Evidence is
+  archived per candidate SHA under [`docs/evidence/m3/`](evidence/m3/README.md).
+  Items without evidence stay marked **待目标环境**; none are written as passed.
+
+Two scope corrections since this audit was last updated:
+
+- `CapabilityRequest.fileAccessScope` was **deleted**. It never influenced a
+  decision, so keeping it implied the policy engine shared responsibility for
+  file access, which the sandbox actually enforces at process creation.
+- Auto-update is **wired**. `installVerifiedUpdate` existed and was tested but
+  had no production caller, so no update could be installed or rejected. A
+  real upgrade is still unproven and needs signed artifacts.
 
 ## Limitations carried forward
 

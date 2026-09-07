@@ -330,3 +330,25 @@ acceptance lines below match the Worker deployment's actual behaviour:
 
 A clean run on all four lines is the Phase 3 "new operator can finish the
 four operations" acceptance gate.
+### R1.5 Schema, data and binary compatibility
+
+Restoring is only safe when the code version, the SQL schema and the Artifact
+bytes agree. The steps in R1.2 assume a **new database created by the version
+that will read it**; they do not, by themselves, make an old backup readable by
+new code or vice versa.
+
+| 维度 | 兼容规则 | 违反时的后果 |
+|---|---|---|
+| SQL schema | Worker 启动时执行 `CREATE TABLE IF NOT EXISTS`，**只增不删**。新增列必须可空或有默认值。 | 旧代码读新 schema 可能因非空无默认列写入失败；新代码读旧 schema 通常可行但未经保证。 |
+| 数据（Run / 事件 / 租约） | 事件按 `sequence` 单调恢复；未完成工具调用**不得自动重放**。 | 重放会重复副作用，其首次结果本就未知。 |
+| Artifact 二进制 | 以 SHA-256 引用；恢复后必须逐项校验摘要。 | 摘要不匹配的 Artifact 必须视为丢失并显式记录，不能静默替换。 |
+| pg-boss schema | 固定 10.4.2，由 Worker 启动时迁移。 | 跨大版本需在演练中验证，不得假定可就地迁移。 |
+
+**回滚优先恢复，不优先降级 schema。** 正确顺序是：用旧版本代码连接到一个
+新建并恢复到旧版本兼容点的数据库，然后切换流量——而不是让旧代码直接读新
+schema。若必须回退 schema，使用独立迁移夹具在演练分支验证，不得在生产
+schema 上为演练增删字段。
+
+**升级与回滚演练**须在独立 staging 与新建数据库中进行（见
+[`m3-completion-summary.md`](m3-completion-summary.md) §4.2），记录恢复
+耗时、数据损失窗口与人工步骤，不编造已达成的 RTO/RPO。
